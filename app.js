@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.4.0';
+const APP_VERSION = '0.5.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -1127,6 +1127,83 @@ function pendingForMe(c) {
   return false;
 }
 
+// ───────────────────────── Evidencias en archivo (Supabase Storage, bucket privado) ─────────────────────────
+const EVID_BUCKET = 'evidencias';
+const EVID_MAX = 10 * 1024 * 1024, EVID_MAX_FILES = 10;
+const EVID_ACCEPT = 'image/*,application/pdf,audio/*,video/mp4,video/quicktime,text/plain,.docx,.xlsx';
+const fmtSize = (n) => n == null ? '' : n < 1048576 ? Math.max(1, Math.round(n / 1024)) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+const mimeOf = (f) => f.type || (/\.docx$/i.test(f.name) ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : /\.xlsx$/i.test(f.name) ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : /\.txt$/i.test(f.name) ? 'text/plain' : '');
+const evidOk = (f) => /^(image\/|audio\/)|^application\/pdf$|^video\/(mp4|quicktime)$|^text\/plain$|officedocument\.(wordprocessingml|spreadsheetml)/.test(mimeOf(f));
+const fileIcon = (t) => /^image\//.test(t || '') ? 'IMG' : /pdf/.test(t || '') ? 'PDF' : /^audio\//.test(t || '') ? 'AUD' : /^video\//.test(t || '') ? 'VID' : 'DOC';
+const newId = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => { const r = Math.random() * 16 | 0; return (ch === 'x' ? r : (r & 3 | 8)).toString(16); }));
+const canAddEvidence = (c) => c.status !== 'cerrado' && !is('director', 'nomina');
+function fileBox(id) {
+  const files = [];
+  const html = `<div class="filebox" id="${id}">
+    <div class="fb-title">Archivos de evidencia <span class="small muted">(opcional)</span></div>
+    <label class="drop"><input type="file" multiple accept="${EVID_ACCEPT}" class="sr-only">
+      <span class="drop-ic" aria-hidden="true">⇪</span><b>Adjuntar archivos</b>
+      <span class="small muted">Fotos, capturas, PDF, audios o documentos · hasta 10 MB cada uno · máximo 10</span></label>
+    <div class="flist"></div></div>`;
+  const wire = (root) => {
+    const box = $('#' + id, root); const inp = $('input[type=file]', box); const list = $('.flist', box);
+    const draw = () => { list.innerHTML = files.map((f, i) => `<div class="fitem"><span class="fic">${fileIcon(mimeOf(f))}</span><span class="grow"><b>${esc(f.name)}</b><span class="small muted">${fmtSize(f.size)}</span></span><button type="button" class="x" data-rm="${i}" aria-label="Quitar ${esc(f.name)}">×</button></div>`).join(''); };
+    const add = (picked) => {
+      for (const f of picked) {
+        if (files.length >= EVID_MAX_FILES) { toast('Máximo 10 archivos por envío', true); break; }
+        if (!evidOk(f)) { toast(`${f.name}: tipo de archivo no permitido`, true); continue; }
+        if (f.size > EVID_MAX) { toast(`${f.name} pasa de 10 MB`, true); continue; }
+        if (!files.some((x) => x.name === f.name && x.size === f.size)) files.push(f);
+      }
+      draw();
+    };
+    inp.onchange = () => { add([...inp.files]); inp.value = ''; };
+    box.addEventListener('dragover', (e) => { e.preventDefault(); box.classList.add('over'); });
+    box.addEventListener('dragleave', () => box.classList.remove('over'));
+    box.addEventListener('drop', (e) => { e.preventDefault(); box.classList.remove('over'); add([...e.dataTransfer.files]); });
+    list.onclick = (e) => { const b = e.target.closest('[data-rm]'); if (b) { files.splice(Number(b.dataset.rm), 1); draw(); } };
+  };
+  return { html, wire, files };
+}
+async function uploadEvidence(caseId, files, onProgress) {
+  const failed = [];
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i]; onProgress && onProgress(i + 1, files.length);
+    const ext = (f.name.match(/\.([a-z0-9]{1,6})$/i) || [])[1];
+    const key = `${caseId}/${newId()}${ext ? '.' + ext.toLowerCase() : ''}`;
+    try {
+      await ensureFresh();
+      let r;
+      try { r = await fetch(`${CFG.url}/storage/v1/object/${EVID_BUCKET}/${key}`, { method: 'POST', headers: { apikey: CFG.key, Authorization: 'Bearer ' + S.session.access_token, 'Content-Type': mimeOf(f), 'x-upsert': 'false' }, body: f }); }
+      catch (e) { throw new Error(friendly(String(e.message || e))); }
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        const msg = r.status === 413 || /maximum allowed size/i.test(d.message || '') ? 'pasa de 10 MB' : r.status === 415 || /mime/i.test(d.message || '') ? 'tipo de archivo no permitido' : friendly(d.message || 'Error ' + r.status);
+        throw new Error(msg);
+      }
+      await db('case_files').insert([{ case_id: caseId, path: key, nombre: f.name.slice(0, 200), tipo: mimeOf(f), tamano: f.size }]);
+    } catch (e) { failed.push(`${f.name} (${e.message})`); }
+  }
+  return failed;
+}
+async function evidenceUrl(path) {
+  const d = await http(`/storage/v1/object/sign/${EVID_BUCKET}/${path}`, { method: 'POST', body: { expiresIn: 900 } });
+  const u = d.signedURL || d.signedUrl;
+  return /^(https?:|blob:|data:)/.test(u) ? u : CFG.url + '/storage/v1' + u;
+}
+function evidenceAddForm(c, onDone) {
+  const fb = fileBox('evid_add');
+  const m = modal({ title: `Adjuntar evidencia · caso #${c.folio}`, body: `<div class="notice n-info">Los archivos quedan en el expediente del caso. No se pueden borrar después; solo Daniel puede quitarlos.</div>${fb.html}`,
+    actions: [{ label: 'Cancelar' }, { label: 'Subir archivos', cls: 'primary', run: async ({ btn }) => {
+      if (!fb.files.length) throw new Error('Elige al menos un archivo.');
+      const failed = await uploadEvidence(c.id, fb.files, (i, n) => { btn.textContent = `Subiendo ${i} de ${n}…`; });
+      if (failed.length === fb.files.length) { btn.textContent = 'Subir archivos'; throw new Error('No se subió ningún archivo: ' + failed.join('; ')); }
+      onDone && onDone();
+      if (failed.length) toast('No se subieron: ' + failed.join('; '), true); else toast('Evidencia adjuntada');
+    } }] });
+  fb.wire(m.el);
+}
+
 function requestForm({ employee, tipo, fecha, existing, onDone }) {
   const c = existing || {};
   const t = tipo || c.solicitud_lider || c.riesgo_tipo;
@@ -1134,27 +1211,35 @@ function requestForm({ employee, tipo, fecha, existing, onDone }) {
   const label = RIESGO[t] || SOLICITUD_LIDER[t];
   const f = [
     { k: 'razon', label: 'Razón', type: 'textarea', req: true, full: true, val: c.hechos, hint: 'Qué pasó, solo hechos.' },
-    { k: 'evidencia', label: 'Evidencias', type: 'textarea', req: true, full: true, val: c.evidencia, hint: 'Qué evidencia hay y dónde está: capturas, chats, reportes, testigos.' },
+    { k: 'evidencia', label: 'Evidencias', type: 'textarea', full: true, val: c.evidencia, hint: 'Describe la evidencia (capturas, chats, reportes, testigos) y/o adjunta los archivos abajo.' },
     { k: 'fecha', label: 'Fecha (o desde)', type: 'date', req: true, val: c.fecha_hechos || fecha || todayMX(), max: todayMX() },
     { k: 'fecha_fin', label: 'Hasta (si fueron varios días)', type: 'date', val: c.fecha_fin || '', max: todayMX() },
     { k: 'hora_inicio', label: 'Hora desde (opcional)', type: 'time', val: c.hora_inicio ? String(c.hora_inicio).slice(0, 5) : '' },
     { k: 'hora_fin', label: 'Hora hasta (opcional)', type: 'time', val: c.hora_fin ? String(c.hora_fin).slice(0, 5) : '' }
   ];
   const isEdit = !!existing;
-  modal({
+  const fb = fileBox('evid_req');
+  const m = modal({
     title: `${label} · ${fullName(employee)}`, wide: true,
     body: `<div class="notice ${riesgo ? 'n-bad' : 'n-info'}">${riesgo ? 'Incidencia de riesgo: va directo a RH y Supervisión no la ve.' : isEdit ? 'Supervisión la regresó con un comentario: complétala y reenvíala.' : 'La solicitud va a Supervisión para validarla y después a RH. Tú reportas hechos; la decisión la toma RH.'}</div>
-      ${fieldsHtml(f)}${isEdit ? fieldsHtml([{ k: 'comentario', label: 'Qué corregiste', full: true }]) : ''}`,
-    actions: [{ label: 'Cancelar' }, { label: isEdit ? 'Reenviar a Supervisión' : riesgo ? 'Enviar a RH' : 'Enviar solicitud', cls: riesgo ? 'danger solid' : 'primary', run: async ({ el }) => {
+      ${fieldsHtml(f.slice(0, 2))}${fb.html}${fieldsHtml(f.slice(2))}${isEdit ? fieldsHtml([{ k: 'comentario', label: 'Qué corregiste', full: true }]) : ''}`,
+    actions: [{ label: 'Cancelar' }, { label: isEdit ? 'Reenviar a Supervisión' : riesgo ? 'Enviar a RH' : 'Enviar solicitud', cls: riesgo ? 'danger solid' : 'primary', run: async ({ el, btn }) => {
       const v = readFields(el, f);
+      if (!v.evidencia && !fb.files.length) throw new Error('Falta: Evidencias. Descríbelas o adjunta al menos un archivo.');
+      if (!v.evidencia) v.evidencia = 'Archivos adjuntos: ' + fb.files.map((x) => x.name).join(', ');
       if (v.fecha > todayMX() || (v.fecha_fin && v.fecha_fin > todayMX())) throw new Error('Las fechas no pueden ser futuras.');
       if (v.fecha_fin && v.fecha_fin < v.fecha) throw new Error('La fecha final es anterior a la inicial.');
       const args = { p_razon: v.razon, p_evidencia: v.evidencia, p_fecha: v.fecha, p_fecha_fin: v.fecha_fin, p_hora_inicio: v.hora_inicio, p_hora_fin: v.hora_fin };
+      let id = c.id;
       if (isEdit) await rpc('case_request_resubmit', { p_id: c.id, ...args, p_comentario: readFields(el, [{ k: 'comentario' }]).comentario });
-      else await rpc('case_request', { p_employee: employee.id, p_tipo: t, ...args });
+      else { const r = await rpc('case_request', { p_employee: employee.id, p_tipo: t, ...args }); id = Array.isArray(r) ? r[0] : r; }
+      // El caso ya quedó registrado: un archivo que falle no debe repetir el envío
+      const failed = fb.files.length ? await uploadEvidence(id, fb.files, (i, n) => { btn.textContent = `Subiendo archivo ${i} de ${n}…`; }) : [];
       onDone && onDone();
+      if (failed.length) toast(`Se envió, pero no se subieron: ${failed.join('; ')}. Agrégalos desde Casos.`, true);
     } }]
   });
+  fb.wire(m.el);
 }
 const caseType = (c) => c.riesgo_tipo ? RIESGO[c.riesgo_tipo] : c.solicitud_lider ? SOLICITUD_LIDER[c.solicitud_lider] : (c.kind === 'grave' ? 'Riesgo' : 'Incidencia');
 const caseDates = (c) => fmtDate(c.fecha_hechos) + (c.fecha_fin && c.fecha_fin !== c.fecha_hechos ? ' al ' + fmtDate(c.fecha_fin) : '');
@@ -1229,12 +1314,13 @@ async function openCase(id) {
   const [c] = await db('cases').eq('id', id).get();
   if (!c) return toast('Caso no encontrado o sin permiso', true);
   const since = addDays(c.fecha_hechos, -29);
-  const [events, [emp], att, corr, prev] = await Promise.all([
+  const [events, [emp], att, corr, prev, files] = await Promise.all([
     db('case_events').eq('case_id', id).order('at').get(),
     db('employees').select('id,nombre,apellido_paterno,apellido_materno,area_id,group_id,status,puesto').eq('id', c.employee_id).get(),
     db('attendance').select('fecha,status').eq('employee_id', c.employee_id).gte('fecha', since).lte('fecha', c.fecha_hechos).get(),
     is('nomina') ? Promise.resolve([]) : db('corrections').select('fecha,resultado').eq('employee_id', c.employee_id).gte('fecha', since).lte('fecha', c.fecha_hechos).get().catch(() => []),
-    db('cases').select('id,folio,status,fecha_hechos,decision,kind').eq('employee_id', c.employee_id).neq('id', id).get()
+    db('cases').select('id,folio,status,fecha_hechos,decision,kind').eq('employee_id', c.employee_id).neq('id', id).get(),
+    db('case_files').eq('case_id', id).order('created_at').get().catch(() => [])
   ]);
   const faltas = att.filter((a) => a.status === 'falta').length, retardos = att.filter((a) => a.status === 'retardo').length;
   const noCorr = corr.filter((x) => x.resultado === 'no_corrigio').length;
@@ -1245,6 +1331,13 @@ async function openCase(id) {
     <div class="card pad"><div class="eyebrow" style="margin-bottom:8px">Hechos · reportó ${esc(profName(c.created_by))}</div>${kv([
       [c.solicitud_lider || c.riesgo_tipo ? 'Razón' : 'Qué ocurrió', c.hechos], ['Cuándo', caseDates(c) + (c.hora_inicio ? ` · ${String(c.hora_inicio).slice(0, 5)} a ${String(c.hora_fin || '').slice(0, 5)}` : '')],
       ['Duración', c.duracion_min != null ? c.duracion_min + ' min' : null], ['Instrucción', c.instruccion], ['Indicador', c.indicador], ['Evidencias', c.evidencia], ['Sugerencia del líder', c.sugerencia]])}</div>
+    <section class="fbox evid">
+      <header>Evidencias adjuntas (${files.length})${canAddEvidence(c) ? '<button type="button" class="btn sm" id="evid_add">+ Adjuntar</button>' : ''}</header>
+      ${files.length ? `<div class="evid-list">${files.map((x) => `<a class="evid-item" data-path="${esc(x.path)}" target="_blank" rel="noopener" aria-disabled="true">
+        ${/^image\//.test(x.tipo || '') ? '<img alt="" class="thumb">' : `<span class="fic">${fileIcon(x.tipo)}</span>`}
+        <span class="grow"><b>${esc(x.nombre)}</b><span class="small muted">${fmtSize(x.tamano)}${x.tamano ? ' · ' : ''}${esc(profName(x.uploaded_by))} · ${fmtDateTime(x.created_at)}</span></span><span class="go" aria-hidden="true">↗</span></a>`).join('')}</div>`
+      : '<div class="fbody small muted">Sin archivos. Las evidencias descritas están en Hechos.</div>'}
+    </section>
     <div class="card pad"><div class="eyebrow" style="margin-bottom:8px">Antecedentes · 30 días antes de los hechos</div>
       <div class="row small"><span class="badge ${faltas > 3 ? 'b-bad' : faltas ? 'b-warn' : 'b-mut'}">${faltas} faltas</span><span class="badge ${retardos ? 'b-warn' : 'b-mut'}">${retardos} retardos</span>${is('nomina') ? '' : `<span class="badge ${noCorr ? 'b-bad' : 'b-mut'}">${corr.length} correcciones · ${noCorr} sin corregir</span>`}<span class="badge ${prev.length ? 'b-warn' : 'b-mut'}">${prev.length} casos anteriores</span></div>
       ${prev.length ? `<div class="small muted" style="margin-top:6px">${prev.map((p) => `#${p.folio} ${fmtDate(p.fecha_hechos)} · ${CASE_ST[p.status][0]}${p.decision ? ' · ' + MEDIDAS[p.decision] : ''}`).join('<br>')}</div>` : ''}</div>
@@ -1271,7 +1364,17 @@ async function openCase(id) {
   if (c.status === 'decidido' && is('developer')) actions.push({ label: 'Cerrar caso', cls: 'primary', run: () => { setTimeout(() => simpleCaseAction('Cerrar caso', [{ k: 'r', label: 'Resultado que se comunica a Marketing', type: 'textarea', req: true, full: true, hint: 'Solo lo necesario para operar: cambio de equipo, periodo de seguimiento o baja.' }], (v) => rpc('case_close', { p_id: c.id, p_resultado: v.r }), reload,
     c.decision === 'terminacion' ? 'Recuerda aplicar la baja en Personal con su motivo.' : null), 0); } });
   if (is('developer')) actions.push({ label: 'Ver ficha laboral', run: () => { setTimeout(() => openEmployee(c.employee_id), 0); } });
-  modal({ title: `Caso #${c.folio} · ${fullName(emp)}`, body, actions, wide: true });
+  const cm = modal({ title: `Caso #${c.folio} · ${fullName(emp)}`, body, actions, wide: true });
+  const add = $('#evid_add', cm.el);
+  if (add) add.onclick = () => evidenceAddForm(c, () => { cm.close(); openCase(c.id); });
+  // Enlaces firmados (15 min) para ver/descargar cada archivo privado
+  $$('.evid-item', cm.el).forEach(async (a) => {
+    try {
+      const url = await evidenceUrl(a.dataset.path);
+      a.href = url; a.removeAttribute('aria-disabled');
+      const img = $('img.thumb', a); if (img) img.src = url;
+    } catch (e) { a.classList.add('err'); a.title = e.message; }
+  });
 }
 function simpleCaseAction(title, fields, run, done, note) {
   modal({ title, body: (note ? `<div class="notice n-info">${esc(note)}</div>` : '') + fieldsHtml(fields), actions: [{ label: 'Cancelar' }, { label: 'Confirmar', cls: 'primary', run: async ({ el }) => { await run(readFields(el, fields)); toast('Listo'); done(); } }] });
