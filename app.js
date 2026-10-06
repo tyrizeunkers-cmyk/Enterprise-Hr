@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.5.0';
+const APP_VERSION = '0.6.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -32,18 +32,36 @@ const ROLES = {
 const STATUS = { alta_pendiente: ['Alta pendiente', 'b-warn'], activo: ['Activo', 'b-ok'], baja: ['Baja', 'b-mut'], rechazado: ['Rechazado', 'b-bad'] };
 // Pase de lista: estatus (A/F/R) + aviso opcional (Nuevo ingreso / Baja) + incidencia del día (Permiso / Descanso / Inactividad, con comentario)
 const ATT = { asistio: 'Asistencia', falta: 'Falta', retardo: 'Retardo' };
+const ATT_PM = { asistio: 'Presente', falta: 'Ausente', salida: 'Salida anticipada' };   // pase de la tarde (cierre)
+const TURNO = { manana: 'Mañana · Entrada', tarde: 'Tarde · Cierre' };
+const stLabel = (a) => a && a.status ? (a.turno === 'tarde' ? ATT_PM : ATT)[a.status] : null;
 const AVISO = { nuevo_ingreso: 'Nuevo ingreso', baja: 'Baja' };
 const INC = { permiso: 'Permiso', descanso: 'Descanso', inactividad: 'Inactividad' };
-const ATT_SHORT = { asistio: 'A', falta: 'F', retardo: 'R', permiso: 'P', descanso: 'D', inactividad: 'I' };
-const ATT_COLOR = { asistio: 'var(--ok)', falta: 'var(--bad)', retardo: 'var(--warn)', permiso: '#4453A8', descanso: '#6B7785', inactividad: '#B23A0A' };
-const ATT_BADGE = { asistio: 'b-ok', falta: 'b-bad', retardo: 'b-warn', permiso: 'b-acc', descanso: 'b-mut', inactividad: 'b-warn', nuevo_ingreso: 'b-acc', baja: 'b-mut' };
-const attCounts = () => Object.fromEntries([...Object.keys(ATT), ...Object.keys(INC), ...Object.keys(AVISO)].map((k) => [k, 0]));
-const countAtt = (c, a) => { if (!a) return; if (a.status) c[a.status]++; if (a.incidencia) c[a.incidencia]++; if (a.aviso) c[a.aviso]++; };
-const attParts = (a) => a ? [ATT[a.status], a.aviso && 'Aviso: ' + AVISO[a.aviso], INC[a.incidencia]].filter(Boolean) : [];
+const ATT_SHORT = { asistio: 'A', falta: 'F', retardo: 'R', salida: 'S', permiso: 'P', descanso: 'D', inactividad: 'I' };
+const ATT_COLOR = { asistio: 'var(--ok)', falta: 'var(--bad)', retardo: 'var(--warn)', salida: 'var(--warn)', permiso: '#4453A8', descanso: '#6B7785', inactividad: '#B23A0A' };
+const ATT_BADGE = { asistio: 'b-ok', falta: 'b-bad', retardo: 'b-warn', salida: 'b-warn', permiso: 'b-acc', descanso: 'b-mut', inactividad: 'b-warn', nuevo_ingreso: 'b-acc', baja: 'b-mut' };
+const attCounts = () => Object.fromEntries([...Object.keys(ATT), 'salida', ...Object.keys(INC), ...Object.keys(AVISO)].map((k) => [k, 0]));
+// Asistencia/Falta/Retardo cuentan solo en la mañana; en la tarde solo cuenta la salida anticipada
+const countAtt = (c, a) => { if (!a) return; if (a.status && (a.turno !== 'tarde' || a.status === 'salida')) c[a.status]++; if (a.incidencia) c[a.incidencia]++; if (a.aviso) c[a.aviso]++; };
+const attParts = (a) => a ? [stLabel(a), a.aviso && 'Aviso: ' + AVISO[a.aviso], INC[a.incidencia]].filter(Boolean) : [];
+// Diferencia entre la entrada y el cierre del mismo día
+function attMismatch(m, t) {
+  if (!t) return null;
+  if (!m) return 'Sin registro en la mañana';
+  const presentM = m.status === 'asistio' || m.status === 'retardo';
+  if (presentM && t.status === 'falta') return 'Asistió en la mañana; ausente al cierre';
+  if (m.status === 'falta' && (t.status === 'asistio' || t.status === 'salida')) return 'Faltó en la mañana; presente al cierre';
+  if (!m.status && m.incidencia === 'descanso' && t.status && t.status !== 'falta') return 'Descanso en la mañana; presente al cierre';
+  return null;
+}
+const nowHM = () => new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+const areaCierre = (areaId) => String(((S.areas || []).find((a) => a.id === areaId) || {}).hora_cierre || '16:00').slice(0, 5);
+const pmOpen = (areaId, fecha) => fecha < todayMX() || is('developer') || nowHM() >= areaCierre(areaId);
 const attLabel = (a) => attParts(a).join(' · ');
 const attShort = (a) => a ? (ATT_SHORT[a.status] || '') + (a.incidencia ? (a.status ? '+' : '') + ATT_SHORT[a.incidencia] : '') : '';
+const groupLabel = (g) => (g.tipo === 'lideres' ? 'Líderes' : g.name);
 const attKey = (a) => a ? (a.status || a.incidencia) : null;
-const attBadges = (a) => [a.status && `<span class="badge ${ATT_BADGE[a.status]}">${ATT[a.status]}</span>`, a.incidencia && `<span class="badge ${ATT_BADGE[a.incidencia]}">${INC[a.incidencia]}</span>`, a.aviso && `<span class="badge ${ATT_BADGE[a.aviso]}">Aviso: ${AVISO[a.aviso]}</span>`].filter(Boolean).join(' ');
+const attBadges = (a) => [a.status && `<span class="badge ${ATT_BADGE[a.status]}">${stLabel(a)}</span>`, a.incidencia && `<span class="badge ${ATT_BADGE[a.incidencia]}">${INC[a.incidencia]}</span>`, a.aviso && `<span class="badge ${ATT_BADGE[a.aviso]}">Aviso: ${AVISO[a.aviso]}</span>`].filter(Boolean).join(' ');
 const SOLICITUD_LIDER = { acta: 'Acta administrativa', carta: 'Carta de advertencia', cambio_equipo: 'Cambio de equipo', baja: 'Baja' };
 const RIESGO = { fraude: 'Fraude', intento_fraude: 'Intento de fraude', faltas_injustificadas: 'Faltas injustificadas', abandono: 'Baja (abandono de trabajo)' };
 
@@ -282,7 +300,10 @@ function renderNoRole() {
 }
 async function logout() {
   try { if (S.session) await http('/auth/v1/logout', { method: 'POST' }); } catch { /* se cierra igual */ }
-  setSession(null); S.me = null; location.hash = ''; renderLogin();
+  setSession(null); S.me = null; location.hash = '';
+  // La siguiente persona en este dispositivo empieza limpia
+  Object.assign(LS, { group: null, fecha: null, open: null, turno: null }); store.del('hr.lista.group');
+  renderLogin();
 }
 
 // ───────────────────────── shell y rutas ─────────────────────────
@@ -322,7 +343,7 @@ function renderShell() {
 function route() {
   const views = myViews(); if (!views.length) return renderNoRole();
   let k = (location.hash.match(/^#\/(\w+)/) || [])[1];
-  if (!k || !VIEWS[k] || !VIEWS[k].roles.includes(role())) k = is('tl') ? 'lista' : 'personal';
+  if (!k || !VIEWS[k] || !VIEWS[k].roles.includes(role())) k = is('tl', 'supervisor') ? 'lista' : 'personal';
   $$('[data-v]').forEach((a) => a.classList.toggle('on', a.dataset.v === k));
   const ttl = $('#ttl'); if (ttl) ttl.textContent = VIEWS[k].label;
   const v = $('#view'); v.innerHTML = '<div class="empty">Cargando…</div>';
@@ -347,10 +368,12 @@ function changePassword() {
 }
 
 // ───────────────────────── Pase de lista ─────────────────────────
-const LS = { group: null, fecha: null, open: null };
+const LS = { group: null, fecha: null, open: null, turno: null };
+const sortGroups = (gs) => gs.sort((a, b) => ((is('supervisor') && a.tipo === 'lideres' ? '0' : '1') + areaName(a.area_id) + (a.tipo === 'lideres' ? '0' : '1') + a.name)
+  .localeCompare((is('supervisor') && b.tipo === 'lideres' ? '0' : '1') + areaName(b.area_id) + (b.tipo === 'lideres' ? '0' : '1') + b.name, 'es'));
 async function viewLista() {
   const v = $('#view');
-  const groups = writableGroups().sort((a, b) => (areaName(a.area_id) + a.name).localeCompare(areaName(b.area_id) + b.name, 'es'));
+  const groups = sortGroups(writableGroups());
   if (!groups.length) { v.innerHTML = `<div class="card empty">${is('tl') ? 'Aún no tienes un grupo asignado. Pide a Daniel que te asigne uno.' : 'No hay grupos en tus áreas.'}</div>`; return; }
   if (!LS.group || !groups.some((g) => g.id === LS.group)) LS.group = (store.get('hr.lista.group') && groups.some((g) => g.id === store.get('hr.lista.group'))) ? store.get('hr.lista.group') : groups[0].id;
   if (!LS.fecha) LS.fecha = todayMX();
@@ -365,59 +388,82 @@ async function viewLista() {
     db('attendance').in('employee_id', ids).eq('fecha', LS.fecha).get(),
     db('faltas_30d').in('employee_id', ids).get()
   ]) : [[], []];
-  const rec = Object.fromEntries(att.map((a) => [a.employee_id, a]));
+  const recM = {}, recT = {};
+  att.forEach((a) => { (a.turno === 'tarde' ? recT : recM)[a.employee_id] = a; });
   const fx = Object.fromEntries(faltas.map((f) => [f.employee_id, f.faltas]));
   const d = day[0] || {};
-  const locked = !!d.reviewed_at && !is('developer', 'nomina');
-  const S2 = { emps, rec, fx, d, locked, g };
-  renderLista(S2, groups);
+  // Turno inicial: la tarde si la mañana ya se envió y el cierre está habilitado
+  if (!LS.turno) LS.turno = d.sent_at && !d.sent_pm_at && pmOpen(g.area_id, LS.fecha) ? 'tarde' : (d.sent_pm_at ? 'tarde' : 'manana');
+  const lockedDay = !!d.reviewed_at && !is('developer', 'nomina');
+  renderLista({ emps, recM, recT, fx, d, lockedDay, g }, groups);
 }
 function renderLista(st, groups) {
   const v = $('#view');
-  const { emps, rec, fx, d, locked, g } = st;
+  const { emps, recM, recT, fx, d, lockedDay, g } = st;
+  const tarde = LS.turno === 'tarde';
+  const rec = st.rec = tarde ? recT : recM;
+  const open = !tarde || pmOpen(g.area_id, LS.fecha);
+  const locked = lockedDay || !open;
+  st.locked = locked;
   const done = emps.filter((e) => rec[e.id]).length, total = emps.length, pct = total ? Math.round(done * 100 / total) : 0;
+  const diffs = tarde ? emps.filter((e) => attMismatch(recM[e.id], recT[e.id])).length : 0;
   const multiArea = new Set(groups.map((x) => x.area_id)).size > 1;
+  const sentAt = tarde ? d.sent_pm_at : d.sent_at, sentBy = tarde ? d.sent_pm_by : d.sent_by;
+  const lider = g.tipo === 'lideres';
+  const segBtn = (k) => { const sa = k === 'tarde' ? d.sent_pm_at : d.sent_at; return `<button type="button" data-turno="${k}" class="${LS.turno === k ? 'on' : ''}" aria-pressed="${LS.turno === k}">${TURNO[k]}<span>${sa ? '✓ enviado ' + fmtTime(sa) : k === 'tarde' && !pmOpen(g.area_id, LS.fecha) ? 'desde las ' + areaCierre(g.area_id) : 'pendiente'}</span></button>`; };
   v.innerHTML = `
   <div class="att-head">
     <div class="row" style="justify-content:space-between">
-      <div><div class="eyebrow" style="color:#A9B6C2">${esc(areaName(g.area_id))}${g.tl_id ? ' · TL ' + esc(profName(g.tl_id)) : ''}</div><div style="font-size:20px;font-weight:700">Pase de lista</div></div>
+      <div><div class="eyebrow" style="color:#A9B6C2">${esc(areaName(g.area_id))}${g.tl_id ? ' · TL ' + esc(profName(g.tl_id)) : ''}${lider ? ' · Supervisión' : ''}</div><div style="font-size:20px;font-weight:700">${lider ? 'Pase de lista de líderes' : 'Pase de lista'}</div></div>
       <input type="date" id="lf_date" value="${LS.fecha}" max="${todayMX()}" aria-label="Fecha" class="mono">
     </div>
-    ${groups.length > 1 ? `<select id="lf_group" aria-label="Grupo">${groups.map((x) => `<option value="${x.id}"${x.id === g.id ? ' selected' : ''}>${multiArea ? esc(areaName(x.area_id)) + ' · ' : ''}${esc(x.name)}${x.tl_id && !is('tl') ? ' — ' + esc(profName(x.tl_id)) : ''}</option>`).join('')}</select>` : `<div style="font-weight:600">${esc(g.name)}</div>`}
+    ${groups.length > 1 ? `<select id="lf_group" aria-label="Grupo">${groups.map((x) => `<option value="${x.id}"${x.id === g.id ? ' selected' : ''}>${multiArea ? esc(areaName(x.area_id)) + ' · ' : ''}${esc(groupLabel(x))}${x.tl_id && !is('tl') ? ' — ' + esc(profName(x.tl_id)) : ''}</option>`).join('')}</select>` : `<div style="font-weight:600">${esc(groupLabel(g))}</div>`}
+    <div class="turnos" role="group" aria-label="Turno">${segBtn('manana')}${segBtn('tarde')}</div>
     <div class="row"><div class="prog"><i style="width:${pct}%"></i></div><span style="font-size:13px;font-weight:600">${done} de ${total}</span></div>
   </div>
-  ${locked ? `<div class="notice n-warn" style="margin-bottom:10px">Nómina ya revisó este día (${fmtDateTime(d.reviewed_at)}). Para corregir, pídelo a Nómina.</div>` : ''}
-  ${d.reviewed_at && !locked ? `<div class="notice n-info" style="margin-bottom:10px">Día revisado por ${esc(profName(d.reviewed_by))} · ${fmtDateTime(d.reviewed_at)}. Puedes corregir porque tienes rol de ${esc(ROLES[role()])}.</div>` : ''}
-  ${total && !locked ? `<div class="row" style="margin-bottom:10px"><button class="btn ghost grow" id="allok"${done === total ? ' disabled' : ''}>Marcar pendientes como “Asistió”</button></div>` : ''}
-  <div class="list" id="people">${total ? emps.map((e) => personCard(e, rec[e.id], fx[e.id], locked)).join('') : '<div class="card empty">No hay personal activo en este grupo.</div>'}</div>
+  ${lockedDay ? `<div class="notice n-warn" style="margin-bottom:10px">Nómina ya revisó este día (${fmtDateTime(d.reviewed_at)}). Para corregir, pídelo a Nómina.</div>` : ''}
+  ${d.reviewed_at && !lockedDay ? `<div class="notice n-info" style="margin-bottom:10px">Día revisado por ${esc(profName(d.reviewed_by))} · ${fmtDateTime(d.reviewed_at)}. Puedes corregir porque tienes rol de ${esc(ROLES[role()])}.</div>` : ''}
+  ${tarde && !open ? `<div class="notice n-info" style="margin-bottom:10px">El pase de la tarde (cierre) se habilita a partir de las <b>${areaCierre(g.area_id)}</b>.</div>` : ''}
+  ${tarde && open && diffs ? `<div class="notice n-warn" style="margin-bottom:10px"><b>${diffs}</b> ${diffs === 1 ? 'persona no coincide' : 'personas no coinciden'} con el pase de la mañana. Revísalas antes de enviar el cierre.</div>` : ''}
+  ${total && !locked ? `<div class="row" style="margin-bottom:10px"><button class="btn ghost grow" id="allok"${done === total ? ' disabled' : ''}>${tarde ? 'Marcar pendientes igual que en la mañana' : 'Marcar pendientes como “Asistencia”'}</button></div>` : ''}
+  <div class="list" id="people">${total ? emps.map((e) => personCard(e, rec[e.id], fx[e.id], locked, tarde ? recM[e.id] : null)).join('') : `<div class="card empty">${lider ? 'Aún no hay líderes en este grupo. Asígnalos desde Personal (grupo “Líderes”).' : 'No hay personal activo en este grupo.'}</div>`}</div>
   ${total ? `<div class="stickybar">
-    <button class="btn primary" id="send" ${done < total || locked ? 'disabled' : ''} style="${d.sent_at && done === total ? 'background:var(--ok);border-color:var(--ok)' : ''}">${done < total ? `Faltan ${total - done} por registrar` : d.sent_at ? 'Reporte enviado ✓ · reenviar' : 'Enviar reporte del día'}</button>
-    <span class="small muted" style="text-align:center">${d.sent_at ? `Enviado por ${esc(profName(d.sent_by))} a las ${fmtTime(d.sent_at)}. ` : ''}Cada cambio se guarda al momento y queda en la bitácora con fecha y hora.</span>
+    <button class="btn primary" id="send" ${done < total || locked ? 'disabled' : ''} style="${sentAt && done === total ? 'background:var(--ok);border-color:var(--ok)' : ''}">${done < total ? `Faltan ${total - done} por registrar` : sentAt ? `${tarde ? 'Cierre enviado' : 'Entrada enviada'} ✓ · reenviar` : tarde ? 'Enviar cierre (tarde)' : 'Enviar entrada (mañana)'}</button>
+    <span class="small muted" style="text-align:center">${sentAt ? `Enviado por ${esc(profName(sentBy))} a las ${fmtTime(sentAt)}. ` : ''}Se envía dos veces al día: entrada por la mañana y cierre al final de la jornada.</span>
   </div>` : ''}`;
   const reload = () => viewLista().catch((e) => toast(e.message, true));
-  $('#lf_date').onchange = (e) => { const val = e.target.value; if (!val || val > todayMX()) { e.target.value = LS.fecha; return toast('No se puede pasar lista a futuro', true); } LS.fecha = val; reload(); };
-  if ($('#lf_group')) $('#lf_group').onchange = (e) => { LS.group = e.target.value; store.set('hr.lista.group', LS.group); LS.open = null; reload(); };
+  $('#lf_date').onchange = (e) => { const val = e.target.value; if (!val || val > todayMX()) { e.target.value = LS.fecha; return toast('No se puede pasar lista a futuro', true); } LS.fecha = val; LS.turno = null; reload(); };
+  if ($('#lf_group')) $('#lf_group').onchange = (e) => { LS.group = e.target.value; store.set('hr.lista.group', LS.group); LS.open = null; LS.turno = null; reload(); };
+  $$('[data-turno]').forEach((b) => b.onclick = () => { if (LS.turno === b.dataset.turno) return; LS.turno = b.dataset.turno; renderLista(st, groups); });
   if ($('#allok')) $('#allok').onclick = async (ev) => {
     const pend = emps.filter((e) => !rec[e.id]); if (!pend.length) return;
+    let rows;
+    if (tarde) {   // Copia la entrada: presente → Presente, falta → Ausente; incidencias del día se conservan
+      rows = pend.filter((e) => recM[e.id]).map((e) => { const m = recM[e.id];
+        return { employee_id: e.id, fecha: LS.fecha, turno: 'tarde', status: m.status ? (m.status === 'falta' ? 'falta' : 'asistio') : null, aviso: null, incidencia: m.incidencia || null, comentario: m.incidencia ? m.comentario : null, incidencias: [] }; });
+      if (!rows.length) return toast('Nadie pendiente tiene registro en la mañana', true);
+    } else rows = pend.map((e) => ({ employee_id: e.id, fecha: LS.fecha, turno: 'manana', status: 'asistio', aviso: null, incidencia: null, comentario: null, incidencias: [] }));
     ev.target.disabled = true;
     try {
-      const rows = await db('attendance').insert(pend.map((e) => ({ employee_id: e.id, fecha: LS.fecha, status: 'asistio', aviso: null, incidencia: null, comentario: null, incidencias: [] })), { onConflict: 'employee_id,fecha' });
-      rows.forEach((r) => { rec[r.employee_id] = r; }); toast(`${rows.length} marcados como Asistió`); renderLista(st, groups);
+      const saved = await db('attendance').insert(rows, { onConflict: 'employee_id,fecha,turno' });
+      saved.forEach((r) => { rec[r.employee_id] = r; }); toast(`${saved.length} registrados`); renderLista(st, groups);
     } catch (e) { toast(e.message, true); ev.target.disabled = false; }
   };
   if ($('#send')) $('#send').onclick = async (ev) => {
     ev.target.disabled = true;
-    try { await rpc('send_day', { p_group: g.id, p_fecha: LS.fecha }); toast('Reporte enviado'); reload(); }
+    try { await rpc('send_turno', { p_group: g.id, p_fecha: LS.fecha, p_turno: LS.turno }); toast(tarde ? 'Cierre enviado' : 'Entrada enviada'); reload(); }
     catch (e) { toast(e.message, true); ev.target.disabled = false; }
   };
   $$('#people .person').forEach((card) => wirePerson(card, st, groups));
 }
-function personCard(e, r, faltas, locked) {
+function personCard(e, r, faltas, locked, morning) {
   const open = LS.open === e.id;
   const col = r ? ATT_COLOR[attKey(r)] : null;
   const summary = r ? attLabel(r) : 'Sin registrar';
   const dis = locked ? ' disabled' : '';
-  const stBtn = (k) => `<button type="button" class="${k}${r && r.status === k ? ' on' : ''}" data-att="${k}" aria-pressed="${!!(r && r.status === k)}"${dis}>${ATT[k]}</button>`;
+  const tarde = LS.turno === 'tarde'; const ST = tarde ? ATT_PM : ATT;
+  const diff = tarde ? attMismatch(morning, r) : null;
+  const stBtn = (k) => `<button type="button" class="${k}${r && r.status === k ? ' on' : ''}" data-att="${k}" aria-pressed="${!!(r && r.status === k)}"${dis}>${ST[k]}</button>`;
   const avBtn = (k) => `<button type="button" class="aviso${r && r.aviso === k ? ' on' : ''}" data-aviso="${k}" aria-pressed="${!!(r && r.aviso === k)}"${dis}>${AVISO[k]}</button>`;
   const incBtn = (k) => `<button type="button" class="${k}${r && r.incidencia === k ? ' on' : ''}" data-inc="${k}" aria-pressed="${!!(r && r.incidencia === k)}"${dis}>${INC[k]}</button>`;
   const reqRow = (k, l, risk) => `<button type="button" class="req-row${risk ? ' risk' : ''}" data-req="${k}"><b class="grow">${esc(l)}</b><span class="go" aria-hidden="true">›</span></button>`;
@@ -425,14 +471,15 @@ function personCard(e, r, faltas, locked) {
     <button type="button" class="ph" aria-expanded="${open}">
       <span class="dot" style="${col ? `background:${col};border-color:${col}` : ''}"></span>
       <span class="grow"><span style="display:block;font-weight:600">${esc(fullName(e))}</span><span class="small muted">${esc(summary.length > 90 ? summary.slice(0, 90) + '…' : summary)}</span></span>
-      ${faltasBadge(faltas)}<span class="muted" aria-hidden="true">${open ? '▴' : '▾'}</span>
+      ${diff ? '<span class="badge b-warn">No coincide</span>' : ''}${faltasBadge(faltas)}<span class="muted" aria-hidden="true">${open ? '▴' : '▾'}</span>
     </button>
     ${open ? `<div class="body">
+      ${tarde ? `<div class="morning-ref${diff ? ' diff' : ''}"><span class="small muted">En la mañana</span><span>${morning ? attBadges(morning) : '<span class="badge b-mut">Sin registro</span>'}</span>${diff ? `<span class="small" style="color:var(--warn);font-weight:600">${esc(diff)}</span>` : ''}</div>` : ''}
       <section class="fbox">
-        <header>Asistencia</header>
+        <header>${tarde ? 'Asistencia al cierre' : 'Asistencia'}</header>
         <div class="fbody">
-          <div class="att3">${Object.keys(ATT).map(stBtn).join('')}</div>
-          <div class="aviso-row"><span class="small muted">Aviso a RH <span class="hint">(opcional, si sigue en lista)</span></span><div class="att2">${Object.keys(AVISO).map(avBtn).join('')}</div></div>
+          <div class="att3">${Object.keys(ST).map(stBtn).join('')}</div>
+          ${tarde ? '' : `<div class="aviso-row"><span class="small muted">Aviso a RH <span class="hint">(opcional, si sigue en lista)</span></span><div class="att2">${Object.keys(AVISO).map(avBtn).join('')}</div></div>`}
         </div>
       </section>
       <section class="fbox">
@@ -463,9 +510,9 @@ function wirePerson(card, st, groups) {
   $('.ph', card).onclick = () => { LS.open = LS.open === id ? null : id; redraw(); };
   const save = async (patch) => {
     const cur = rec[id] || {};
-    const row = { employee_id: id, fecha: LS.fecha, status: cur.status || null, aviso: cur.aviso || null, incidencia: cur.incidencia || null, comentario: cur.comentario || null, incidencias: cur.incidencias || [], ...patch };
+    const row = { employee_id: id, fecha: LS.fecha, turno: LS.turno, status: cur.status || null, aviso: cur.aviso || null, incidencia: cur.incidencia || null, comentario: cur.comentario || null, incidencias: cur.incidencias || [], ...patch };
     if (!row.incidencia) row.comentario = null;
-    const [saved] = await db('attendance').insert([row], { onConflict: 'employee_id,fecha' });
+    const [saved] = await db('attendance').insert([row], { onConflict: 'employee_id,fecha,turno' });
     rec[id] = saved;
   };
   const run = async (patch, msg) => {
@@ -598,7 +645,7 @@ async function openEmployee(id, fx = {}) {
     </div>` : '<span class="muted small">Sin datos capturados.</span>'}</div>` : ''}
     <div><div class="eyebrow" style="margin-bottom:6px">Asistencia · últimos 30 días</div>
       <div class="row small"><span class="badge b-ok">${c.asistio} asistencias</span><span class="badge b-bad">${c.falta} faltas</span><span class="badge b-warn">${c.retardo} retardos</span></div>
-      ${att.length ? `<div class="scrollx" style="margin-top:8px"><table class="tbl"><tbody>${att.slice(0, 12).map((a) => `<tr><td class="mono">${fmtDate(a.fecha)}</td><td>${esc(attLabel(a))}</td><td class="small muted">${esc([...(a.incidencias || []), a.comentario].filter(Boolean).join(' · '))}</td></tr>`).join('')}</tbody></table></div>` : ''}
+      ${att.length ? `<div class="scrollx" style="margin-top:8px"><table class="tbl"><tbody>${att.slice(0, 12).map((a) => `<tr><td class="mono">${fmtDate(a.fecha)}${a.turno === 'tarde' ? ' <span class="small muted">tarde</span>' : ''}</td><td>${esc(attLabel(a))}</td><td class="small muted">${esc([...(a.incidencias || []), a.comentario].filter(Boolean).join(' · '))}</td></tr>`).join('')}</tbody></table></div>` : ''}
     <
     ${metrics.length ? `<div><div class="eyebrow" style="margin-bottom:6px">Métricas · últimos 30 días (${acts.length} días capturados)</div>${acts.length ? `<div class="scrollx"><table class="tbl"><thead><tr><th>Métrica</th><th>Promedio diario</th><th>Meta</th><th>Días bajo meta</th></tr></thead><tbody>${metrics.map((m) => { const xs = acts.map((x) => (x.valores || {})[m.key]).filter((x) => x != null); const avg = xs.length ? Math.round(xs.reduce((s2, x) => s2 + x, 0) / xs.length) : null; const under = xs.filter((x) => x < Number(m.daily_goal)).length; return `<tr><td>${esc(m.label)}</td><td class="mono" style="color:${avg == null ? 'inherit' : avg >= Number(m.daily_goal) ? 'var(--ok)' : 'var(--bad)'}">${avg ?? '—'}</td><td class="mono">${Number(m.daily_goal)}</td><td class="mono">${under}</td></tr>`; }).join('')}</tbody></table></div>` : '<span class="small muted">Sin actividad capturada.</span>'}</div>` : ''}
     ${!is('nomina') && corrs.length ? `<div><div class="eyebrow" style="margin-bottom:6px">Correcciones operativas · últimos 30 días</div><div class="row small"><span class="badge b-mut">${corrs.length} correcciones</span><span class="badge b-ok">${corrs.filter((x) => x.resultado === 'corrigio').length} corrigió</span><span class="badge b-bad">${corrs.filter((x) => x.resultado === 'no_corrigio').length} no corrigió</span></div></div>` : ''}
@@ -773,15 +820,16 @@ async function viewAsistencia() {
   let af = db('attendance').eq('fecha', AS.fecha);
   if (AS.area) { ef = ef.eq('area_id', AS.area); af = af.eq('area_id', AS.area); }
   const [emps, att, days, faltas] = await Promise.all([ef.get(), af.get(), db('attendance_days').eq('fecha', AS.fecha).get(), db('faltas_30d').gte('faltas', 3).get()]);
-  const byEmp = Object.fromEntries(att.map((a) => [a.employee_id, a]));
+  const byEmp = {}, byEmpT = {};
+  att.forEach((a) => { (a.turno === 'tarde' ? byEmpT : byEmp)[a.employee_id] = a; });
   const dayBy = Object.fromEntries(days.map((d) => [d.group_id, d]));
   const empById = Object.fromEntries(emps.map((e) => [e.id, e]));
   const canReview = is('developer', 'nomina');
   const rows = groups.map((g) => {
     const people = emps.filter((e) => e.group_id === g.id).sort(sortName);
-    const c = attCounts(); let n = 0;
-    people.forEach((e) => { const a = byEmp[e.id]; if (a) { n++; countAtt(c, a); } });
-    return { g, people, c, n, d: dayBy[g.id] || {} };
+    const c = attCounts(); let n = 0, nT = 0, dif = 0;
+    people.forEach((e) => { const a = byEmp[e.id], t = byEmpT[e.id]; if (a) { n++; countAtt(c, a); } if (t) { nT++; countAtt(c, t); } if (attMismatch(a, t)) dif++; });
+    return { g, people, c, n, nT, dif, d: dayBy[g.id] || {} };
   });
   const noGroup = emps.filter((e) => !e.group_id).length;
   const alerts = faltas.filter((f) => empById[f.employee_id]).sort((a, b) => b.faltas - a.faltas);
@@ -793,16 +841,20 @@ async function viewAsistencia() {
   ${alerts.length ? `<div class="card pad" style="margin-bottom:12px"><div class="eyebrow" style="margin-bottom:8px">Alertas · faltas en los últimos 30 días</div>
     <div class="list">${alerts.map((f) => { const e = empById[f.employee_id]; return `<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:8px"><span><b>${esc(fullName(e))}</b><br><span class="small muted">${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))}${f.retardos ? ` · ${f.retardos} retardos` : ''}</span></span>${faltasBadge(f.faltas)}</div>`; }).join('')}</div>
     <div class="small muted" style="margin-top:8px">Rojo: más de 3 faltas en 30 días (LFT art. 47 fr. X). Ámbar: 3 faltas.</div></div>` : ''}
-  <div class="card scrollx"><table class="tbl"><thead><tr><th>Grupo</th><th>Capturados</th><th>F</th><th>R</th><th>Enviado</th><th>Revisión</th></tr></thead><tbody>
+  <div class="card scrollx"><table class="tbl"><thead><tr><th>Grupo</th><th>Mañana</th><th>F</th><th>R</th><th>Tarde</th><th>S</th><th>Dif.</th><th>Revisión</th></tr></thead><tbody>
     ${rows.map((r) => `<tr data-g="${r.g.id}" style="cursor:pointer">
-      <td><b>${esc(r.g.name)}</b><br><span class="small muted">${esc(areaName(r.g.area_id))}${r.g.tl_id ? ' · ' + esc(profName(r.g.tl_id)) : ' · sin TL'}</span></td>
-      <td class="mono">${r.n}/${r.people.length}${r.people.length && r.n === r.people.length ? ' <span class="badge b-ok">completo</span>' : ''}</td>
+      <td><b>${esc(groupLabel(r.g))}</b><br><span class="small muted">${esc(areaName(r.g.area_id))}${r.g.tl_id ? ' · ' + esc(profName(r.g.tl_id)) : r.g.tipo === 'lideres' ? ' · pasa lista Supervisión' : ' · sin TL'}</span></td>
+      <td class="mono small">${r.n}/${r.people.length}<br>${r.d.sent_at ? `<span class="badge b-ok">✓ ${fmtTime(r.d.sent_at)}</span>` : '<span class="badge b-mut">sin enviar</span>'}</td>
       <td class="mono" style="color:var(--bad)">${r.c.falta || ''}</td><td class="mono" style="color:var(--warn)">${r.c.retardo || ''}</td>
-      <td class="small">${r.d.sent_at ? fmtTime(r.d.sent_at) + '<br><span class="muted">' + esc(profName(r.d.sent_by)) + '</span>' : '<span class="muted">—</span>'}</td>
+      <td class="mono small">${r.nT}/${r.people.length}<br>${r.d.sent_pm_at ? `<span class="badge b-ok">✓ ${fmtTime(r.d.sent_pm_at)}</span>` : '<span class="badge b-mut">sin enviar</span>'}</td>
+      <td class="mono" style="color:var(--warn)">${r.c.salida || ''}</td>
+      <td>${r.dif ? `<span class="badge b-warn">${r.dif}</span>` : r.nT ? '<span class="small muted">0</span>' : ''}</td>
       <td>${r.d.reviewed_at ? `<span class="badge b-ok">Revisado ${fmtTime(r.d.reviewed_at)}</span>` : '<span class="badge b-mut">Pendiente</span>'}
         ${canReview ? `<br><button class="btn sm" data-rev="${r.g.id}" data-on="${r.d.reviewed_at ? '0' : '1'}" style="margin-top:4px">${r.d.reviewed_at ? 'Quitar revisión' : 'Marcar revisado'}</button>` : ''}</td></tr>
-      ${AS.open === r.g.id ? `<tr><td colspan="6" style="background:var(--soft)">${r.people.length ? r.people.map((e) => { const a = byEmp[e.id]; return `<div class="row small" style="padding:4px 0"><span class="grow">${esc(fullName(e))}</span>${a ? `${attBadges(a)}<span class="muted">${esc([...(a.incidencias || []), a.comentario].filter(Boolean).join(' · '))}</span>` : '<span class="badge b-mut">Sin registrar</span>'}</div>`; }).join('') : '<span class="muted">Sin personal</span>'}
-        ${canWriteAttendance() && writableGroups().some((x) => x.id === r.g.id) ? `<button class="btn sm ghost" data-goto="${r.g.id}" style="margin-top:8px">Abrir pase de lista</button>` : ''}</td></tr>` : ''}`).join('') || '<tr><td colspan="6" class="empty">Sin grupos</td></tr>'}
+      ${AS.open === r.g.id ? `<tr><td colspan="8" style="background:var(--soft)">${r.people.length ? `<table class="tbl sub"><thead><tr><th>Persona</th><th>Mañana</th><th>Tarde</th></tr></thead><tbody>${r.people.map((e) => { const a = byEmp[e.id], t = byEmpT[e.id]; const dif = attMismatch(a, t);
+          const cell = (x) => x ? `${attBadges(x)}${x.comentario ? `<br><span class="small muted">${esc(x.comentario)}</span>` : ''}` : '<span class="badge b-mut">Sin registrar</span>';
+          return `<tr${dif ? ' class="dif"' : ''}><td>${esc(fullName(e))}${dif ? `<br><span class="small" style="color:var(--warn);font-weight:600">${esc(dif)}</span>` : ''}</td><td>${cell(a)}</td><td>${cell(t)}</td></tr>`; }).join('')}</tbody></table>` : '<span class="muted">Sin personal</span>'}
+        ${canWriteAttendance() && writableGroups().some((x) => x.id === r.g.id) ? `<button class="btn sm ghost" data-goto="${r.g.id}" style="margin-top:8px">Abrir pase de lista</button>` : ''}</td></tr>` : ''}`).join('') || '<tr><td colspan="8" class="empty">Sin grupos</td></tr>'}
   </tbody></table></div>
   ${noGroup ? `<div class="small muted" style="margin-top:8px">${noGroup} personas activas sin grupo asignado (no aparecen en ningún pase de lista).</div>` : ''}`;
   $('#as_date').onchange = (e) => { if (e.target.value && e.target.value <= todayMX()) { AS.fecha = e.target.value; viewAsistencia(); } };
@@ -822,25 +874,25 @@ function exportPeriod() {
   const from = d <= 15 ? t.slice(0, 8) + '01' : t.slice(0, 8) + '16';
   const f = [{ k: 'from', label: 'Desde', type: 'date', req: true, val: from, max: t }, { k: 'to', label: 'Hasta', type: 'date', req: true, val: t, max: t }];
   modal({
-    title: 'Exportar asistencia (CSV para Excel)', body: fieldsHtml(f) + '<div class="small muted">Una fila por persona y una columna por día (A = asistió, F = falta, R = retardo, P = permiso, D = descanso, I = inactividad), con totales. Incluye solo lo que tu rol puede ver.</div>',
+    title: 'Exportar asistencia (CSV para Excel)', body: fieldsHtml(f) + '<div class="small muted">Una fila por persona y una columna por día (mañana/tarde: A = asistió/presente, F = falta/ausente, R = retardo, S = salida anticipada, P = permiso, D = descanso, I = inactividad), con totales. Incluye solo lo que tu rol puede ver.</div>',
     actions: [{ label: 'Cancelar' }, { label: 'Descargar', cls: 'primary', run: async ({ el }) => {
       const v = readFields(el, f);
       if (v.from > v.to) throw new Error('La fecha inicial es posterior a la final.');
       const days = []; for (let x = v.from; x <= v.to; x = addDays(x, 1)) { days.push(x); if (days.length > 62) throw new Error('Máximo 62 días por exportación.'); }
-      let qa = db('attendance').select('employee_id,fecha,status,aviso,incidencia,incidencias,comentario,area_id').gte('fecha', v.from).lte('fecha', v.to);
+      let qa = db('attendance').select('employee_id,fecha,turno,status,aviso,incidencia,incidencias,comentario,area_id').gte('fecha', v.from).lte('fecha', v.to);
       if (AS.area) qa = qa.eq('area_id', AS.area);
       const [att, emps] = await Promise.all([qa.get(), db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,area_id,group_id,status').get()]);
       const empById = Object.fromEntries(emps.map((e) => [e.id, e]));
-      const per = {}; att.forEach((a) => { (per[a.employee_id] = per[a.employee_id] || {})[a.fecha] = a; });
+      const per = {}, perT = {}; att.forEach((a) => { const m = a.turno === 'tarde' ? perT : per; (m[a.employee_id] = m[a.employee_id] || {})[a.fecha] = a; if (!per[a.employee_id]) per[a.employee_id] = {}; });
       const ids = Object.keys(per).sort((a, b) => sortName(empById[a] || { apellido_paterno: '', nombre: '' }, empById[b] || { apellido_paterno: '', nombre: '' }));
       const q = (s) => '"' + String(s ?? '').replace(/"/g, '""') + '"';
-      const lines = [['No.', 'Nombre', 'Área', 'Grupo', ...days.map(fmtDate), 'Asistencias', 'Faltas', 'Retardos', 'Permisos', 'Descansos', 'Inactividad', 'Avisos', 'Comentarios'].map(q).join(',')];
+      const lines = [['No.', 'Nombre', 'Área', 'Grupo', ...days.map(fmtDate), 'Asistencias', 'Faltas', 'Retardos', 'Salidas anticipadas', 'Permisos', 'Descansos', 'Inactividad', 'Diferencias mañana/tarde', 'Avisos', 'Comentarios'].map(q).join(',')];
       for (const id of ids) {
-        const e = empById[id] || { nombre: '(sin acceso)', apellido_paterno: '' }; const r = per[id];
+        const e = empById[id] || { nombre: '(sin acceso)', apellido_paterno: '' }; const r = per[id]; const rt = perT[id] || {}; let dif = 0;
         const c = attCounts(); const inc = [];
         const av = [];
-        days.forEach((dd) => { const a = r[dd]; if (a) { countAtt(c, a); if (a.aviso) av.push(fmtDate(dd) + ': ' + AVISO[a.aviso]); if ((a.incidencias || []).length || a.comentario) inc.push(fmtDate(dd) + ': ' + [INC[a.incidencia], ...(a.incidencias || []), a.comentario].filter(Boolean).join('/')); } });
-        lines.push([e.num_empleado, fullName(e), areaName(e.area_id), groupName(e.group_id), ...days.map((dd) => attShort(r[dd])), c.asistio, c.falta, c.retardo, c.permiso, c.descanso, c.inactividad, av.join(' | '), inc.join(' | ')].map(q).join(','));
+        days.forEach((dd) => { for (const [a, tt] of [[r[dd], ''], [rt[dd], ' tarde']]) { if (!a) continue; countAtt(c, a); if (a.aviso) av.push(fmtDate(dd) + ': ' + AVISO[a.aviso]); if ((a.incidencias || []).length || a.comentario) inc.push(fmtDate(dd) + tt + ': ' + [INC[a.incidencia], ...(a.incidencias || []), a.comentario].filter(Boolean).join('/')); } if (attMismatch(r[dd], rt[dd])) dif++; });
+        lines.push([e.num_empleado, fullName(e), areaName(e.area_id), groupName(e.group_id), ...days.map((dd) => (r[dd] || rt[dd]) ? attShort(r[dd]) + '/' + attShort(rt[dd]) : ''), c.asistio, c.falta, c.retardo, c.salida, c.permiso, c.descanso, c.inactividad, dif, av.join(' | '), inc.join(' | ')].map(q).join(','));
       }
       if (CFG.demo) {
         setTimeout(() => modal({ title: 'Vista previa del CSV', wide: true, body: `<div class="notice n-info">En la demo no se descargan archivos. En la app real se descarga este CSV para abrirlo en Excel.</div><textarea class="inp mono" style="min-height:260px;font-size:12px;white-space:pre" readonly>${esc(lines.join('\n'))}</textarea>`, actions: [{ label: 'Cerrar', cls: 'primary' }] }), 0);
@@ -920,22 +972,23 @@ async function viewCatalogos() {
   const v = $('#view');
   const tls = S.profiles.filter((p) => p.role === 'tl' && p.active);
   v.innerHTML = `<div class="pagehead"><h1>Áreas y grupos</h1><div class="row"><button class="btn" id="na">+ Área</button><button class="btn primary" id="ng">+ Grupo</button></div></div>
-  ${S.areas.map((a) => `<div class="card" style="margin-bottom:12px"><div class="pad row" style="border-bottom:1px solid var(--line)"><b class="grow">${esc(a.name)}</b>${a.active ? '' : '<span class="badge b-mut">Inactiva</span>'}<button class="btn sm" data-ea="${a.id}">Editar</button></div>
-    <table class="tbl"><tbody>${S.groups.filter((g) => g.area_id === a.id).map((g) => `<tr><td><b>${esc(g.name)}</b>${g.active ? '' : ' <span class="badge b-mut">Inactivo</span>'}</td><td>${g.tl_id ? esc(profName(g.tl_id)) : '<span class="badge b-warn">Sin TL</span>'}</td><td style="text-align:right"><button class="btn sm" data-eg="${g.id}">Editar</button></td></tr>`).join('') || '<tr><td class="muted">Sin grupos</td></tr>'}</tbody></table></div>`).join('')}
+  ${S.areas.map((a) => `<div class="card" style="margin-bottom:12px"><div class="pad row" style="border-bottom:1px solid var(--line)"><b class="grow">${esc(a.name)}</b><span class="small muted">Cierre desde ${String(a.hora_cierre || '16:00').slice(0, 5)}</span>${a.active ? '' : '<span class="badge b-mut">Inactiva</span>'}<button class="btn sm" data-ea="${a.id}">Editar</button></div>
+    <table class="tbl"><tbody>${S.groups.filter((g) => g.area_id === a.id).map((g) => `<tr><td><b>${esc(g.name)}</b>${g.tipo === 'lideres' ? ' <span class="badge b-acc">Líderes</span>' : ''}${g.active ? '' : ' <span class="badge b-mut">Inactivo</span>'}</td><td>${g.tipo === 'lideres' ? '<span class="small muted">Pasa lista: Supervisión</span>' : g.tl_id ? esc(profName(g.tl_id)) : '<span class="badge b-warn">Sin TL</span>'}</td><td style="text-align:right"><button class="btn sm" data-eg="${g.id}">Editar</button></td></tr>`).join('') || '<tr><td class="muted">Sin grupos</td></tr>'}</tbody></table></div>`).join('')}
   <div class="card pad"><div class="eyebrow" style="margin-bottom:8px">Cambios de área no permitidos</div>
     ${S.blocks.map((b) => `<div class="row" style="padding:4px 0"><span class="grow">${esc(areaName(b.from_area))} → ${esc(areaName(b.to_area))}</span><button class="btn sm danger" data-db="${b.from_area}|${b.to_area}">Quitar</button></div>`).join('') || '<span class="muted small">Ninguno</span>'}
     <button class="btn sm" id="nb" style="margin-top:8px">+ Bloquear cambio</button></div>`;
   const areaOpts = S.areas.map((a) => [a.id, a.name]);
   $('#na').onclick = () => simpleForm('Nueva área', [{ k: 'name', label: 'Nombre', req: true, full: true }], (x) => db('areas').insert([x]));
-  $$('[data-ea]').forEach((b) => b.onclick = () => { const a = S.areas.find((x) => x.id === b.dataset.ea); simpleForm('Editar área', [{ k: 'name', label: 'Nombre', req: true, val: a.name }, { k: 'active', label: 'Estado', type: 'select', val: a.active ? '1' : '0', options: [['1', 'Activa'], ['0', 'Inactiva']] }], (x) => mustUpdate(db('areas').eq('id', a.id).update({ name: x.name, active: x.active === '1' }))); });
+  $$('[data-ea]').forEach((b) => b.onclick = () => { const a = S.areas.find((x) => x.id === b.dataset.ea); simpleForm('Editar área', [{ k: 'name', label: 'Nombre', req: true, val: a.name }, { k: 'hora_cierre', label: 'Pase de la tarde desde', type: 'time', req: true, val: String(a.hora_cierre || '16:00').slice(0, 5) }, { k: 'active', label: 'Estado', type: 'select', val: a.active ? '1' : '0', options: [['1', 'Activa'], ['0', 'Inactiva']] }], (x) => mustUpdate(db('areas').eq('id', a.id).update({ name: x.name, hora_cierre: x.hora_cierre, active: x.active === '1' })), 'Hora de Ciudad de México. Antes de esa hora no se puede capturar ni enviar el cierre del día.'); });
   const gFields = (g) => [
     { k: 'area_id', label: 'Área', type: 'select', req: true, options: areaOpts, val: g ? g.area_id : '' },
     { k: 'name', label: 'Nombre del grupo', req: true, val: g ? g.name : '' },
+    { k: 'tipo', label: 'Tipo', type: 'select', val: g ? g.tipo || 'agentes' : 'agentes', options: [['agentes', 'Agentes (lo pasa su TL)'], ['lideres', 'Líderes (lo pasa Supervisión)']] },
     { k: 'tl_id', label: 'Team Leader', type: 'select', val: g ? g.tl_id || '' : '', options: [['', 'Sin TL'], ...tls.map((p) => [p.id, p.full_name])] },
     ...(g ? [{ k: 'active', label: 'Estado', type: 'select', val: g.active ? '1' : '0', options: [['1', 'Activo'], ['0', 'Inactivo']] }] : [])
   ];
-  $('#ng').onclick = () => simpleForm('Nuevo grupo', gFields(null), (x) => db('groups').insert([{ ...x, tl_id: x.tl_id || null }]), 'Solo aparecen como TL los usuarios con rol Team Leader.');
-  $$('[data-eg]').forEach((b) => b.onclick = () => { const g = S.groups.find((x) => x.id === b.dataset.eg); simpleForm('Editar grupo', gFields(g), (x) => mustUpdate(db('groups').eq('id', g.id).update({ area_id: x.area_id, name: x.name, tl_id: x.tl_id || null, active: x.active === '1' }))); });
+  $('#ng').onclick = () => simpleForm('Nuevo grupo', gFields(null), (x) => db('groups').insert([{ ...x, tl_id: x.tipo === 'lideres' ? null : x.tl_id || null }]), 'Solo aparecen como TL los usuarios con rol Team Leader. Un grupo de Líderes no lleva TL.');
+  $$('[data-eg]').forEach((b) => b.onclick = () => { const g = S.groups.find((x) => x.id === b.dataset.eg); simpleForm('Editar grupo', gFields(g), (x) => mustUpdate(db('groups').eq('id', g.id).update({ area_id: x.area_id, name: x.name, tipo: x.tipo, tl_id: x.tipo === 'lideres' ? null : x.tl_id || null, active: x.active === '1' }))); });
   $('#nb').onclick = () => simpleForm('Bloquear cambio de área', [{ k: 'from_area', label: 'De', type: 'select', options: areaOpts }, { k: 'to_area', label: 'A', type: 'select', options: areaOpts }], (x) => { if (x.from_area === x.to_area) throw new Error('Elige áreas distintas'); return db('area_transfer_blocks').insert([x]); }, 'Se bloquea solo en esa dirección. Agrega también la inversa si aplica.');
   $$('[data-db]').forEach((b) => b.onclick = async () => { const [fa, ta] = b.dataset.db.split('|'); try { await db('area_transfer_blocks').eq('from_area', fa).eq('to_area', ta).remove(); viewCatalogos(); } catch (e) { toast(e.message, true); } });
 }
@@ -960,7 +1013,7 @@ async function viewBitacora() {
   $('#bl_d').onchange = (e) => { if (e.target.value) { BS.fecha = e.target.value; viewBitacora(); } };
   $('#bl_u').onchange = (e) => { BS.user = e.target.value; viewBitacora(); };
 }
-const FIELD_LABEL = { status: 'Estatus', area_id: 'Área', group_id: 'Grupo', nombre: 'Nombre', apellido_paterno: 'Apellido paterno', apellido_materno: 'Apellido materno', puesto: 'Puesto', fecha_ingreso: 'Ingreso', fecha_baja: 'Baja', num_empleado: 'No. empleado', incidencias: 'Incidencias', comentario: 'Comentario', aviso: 'Aviso', incidencia: 'Incidencia', role: 'Rol', active: 'Activo', full_name: 'Nombre', tl_id: 'TL', name: 'Nombre', reviewed_at: 'Revisión', sent_at: 'Envío' };
+const FIELD_LABEL = { status: 'Estatus', area_id: 'Área', group_id: 'Grupo', nombre: 'Nombre', apellido_paterno: 'Apellido paterno', apellido_materno: 'Apellido materno', puesto: 'Puesto', fecha_ingreso: 'Ingreso', fecha_baja: 'Baja', num_empleado: 'No. empleado', incidencias: 'Incidencias', comentario: 'Comentario', aviso: 'Aviso', incidencia: 'Incidencia', role: 'Rol', active: 'Activo', full_name: 'Nombre', tl_id: 'TL', name: 'Nombre', reviewed_at: 'Revisión', sent_at: 'Envío', turno: 'Turno', hora_cierre: 'Hora de cierre', tipo: 'Tipo' };
 function fmtVal(k, v) {
   if (v == null || v === '') return '—';
   if (k === 'status') return (STATUS[v] && STATUS[v][0]) || ATT[v] || v;
@@ -984,13 +1037,14 @@ function describeLog(l, empName) {
   switch (l.entity) {
     case 'attendance': {
       const emp = a.employee_id || b.employee_id;
-      if (act === 'insert') return `Pase de lista · ${who(emp)} · ${fmtDate(a.fecha)} → <b>${esc(attLabel(a))}</b>${a.incidencias && a.incidencias.length ? ' · ' + esc(a.incidencias.join(', ')) : ''}`;
+      if (act === 'insert') return `Pase de lista${a.turno === 'tarde' ? ' (tarde)' : ''} · ${who(emp)} · ${fmtDate(a.fecha)} → <b>${esc(attLabel(a))}</b>${a.incidencias && a.incidencias.length ? ' · ' + esc(a.incidencias.join(', ')) : ''}`;
       if (act === 'update') { const [id, f] = (l.record_id || '').split('|'); return `${'status' in a ? '<span class="badge b-warn">Corrección</span> ' : 'Actualizó '}asistencia · ${who(emp || id)} · ${fmtDate(f)} · ${changes()}`; }
       return `Borró asistencia de ${who(emp)} del ${fmtDate(b.fecha)}`;
     }
     case 'attendance_days': {
       const [g, f] = (l.record_id || '').split('|');
-      if (a.sent_at && (act === 'insert' || !('reviewed_at' in a))) return `Envió reporte del día · ${esc(groupName(g))} · ${fmtDate(f)}`;
+      if (a.sent_pm_at && !('reviewed_at' in a)) return `Envió cierre (tarde) · ${esc(groupName(g))} · ${fmtDate(f)}`;
+      if (a.sent_at && (act === 'insert' || !('reviewed_at' in a))) return `Envió entrada (mañana) · ${esc(groupName(g))} · ${fmtDate(f)}`;
       if ('reviewed_at' in a) return a.reviewed_at ? `Marcó revisado ${esc(groupName(g))} · ${fmtDate(f)}` : `Quitó revisión de ${esc(groupName(g))} · ${fmtDate(f)}`;
       return `Reporte del día · ${esc(groupName(g))} · ${fmtDate(f)}`;
     }
@@ -1081,7 +1135,7 @@ function wireOps(card, st, redraw) {
 const OP = { group: null, fecha: null };
 async function viewOperacion() {
   const v = $('#view');
-  const groups = writableGroups().sort((a, b) => (areaName(a.area_id) + a.name).localeCompare(areaName(b.area_id) + b.name, 'es'));
+  const groups = writableGroups().filter((g) => g.tipo !== 'lideres').sort((a, b) => (areaName(a.area_id) + a.name).localeCompare(areaName(b.area_id) + b.name, 'es'));
   if (!groups.length) { v.innerHTML = '<div class="card empty">No hay grupos en tus áreas.</div>'; return; }
   if (!OP.group || !groups.some((g) => g.id === OP.group)) OP.group = groups[0].id;
   if (!OP.fecha) OP.fecha = todayMX();
@@ -1317,7 +1371,7 @@ async function openCase(id) {
   const [events, [emp], att, corr, prev, files] = await Promise.all([
     db('case_events').eq('case_id', id).order('at').get(),
     db('employees').select('id,nombre,apellido_paterno,apellido_materno,area_id,group_id,status,puesto').eq('id', c.employee_id).get(),
-    db('attendance').select('fecha,status').eq('employee_id', c.employee_id).gte('fecha', since).lte('fecha', c.fecha_hechos).get(),
+    db('attendance').select('fecha,status,turno').eq('employee_id', c.employee_id).eq('turno', 'manana').gte('fecha', since).lte('fecha', c.fecha_hechos).get(),
     is('nomina') ? Promise.resolve([]) : db('corrections').select('fecha,resultado').eq('employee_id', c.employee_id).gte('fecha', since).lte('fecha', c.fecha_hechos).get().catch(() => []),
     db('cases').select('id,folio,status,fecha_hechos,decision,kind').eq('employee_id', c.employee_id).neq('id', id).get(),
     db('case_files').eq('case_id', id).order('created_at').get().catch(() => [])
