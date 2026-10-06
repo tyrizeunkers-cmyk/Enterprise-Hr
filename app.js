@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.3.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -30,9 +30,17 @@ const ROLES = {
   rh_area: 'RH de área', supervisor: 'Supervisor', tl: 'Team Leader'
 };
 const STATUS = { alta_pendiente: ['Alta pendiente', 'b-warn'], activo: ['Activo', 'b-ok'], baja: ['Baja', 'b-mut'], rechazado: ['Rechazado', 'b-bad'] };
-const ATT = { asistio: 'Asistió', falta: 'No asistió', retardo: 'Retardo' };
-const ATT_SHORT = { asistio: 'A', falta: 'F', retardo: 'R' };
-const INCIDENCIAS = ['Se desconectó', 'No realiza actividades', 'No manda evidencia', 'Bajo rendimiento'];
+const ATT = { asistio: 'Asistencia', falta: 'Falta', retardo: 'Retardo', baja: 'Baja', nuevo_ingreso: 'Nuevo ingreso', permiso: 'Permiso', descanso: 'Descanso', inactividad: 'Inactividad' };
+const ATT_SHORT = { asistio: 'A', falta: 'F', retardo: 'R', baja: 'B', nuevo_ingreso: 'N', permiso: 'P', descanso: 'D', inactividad: 'I' };
+const ATT_COLOR = { asistio: 'var(--ok)', falta: 'var(--bad)', retardo: 'var(--warn)', baja: 'var(--ink)', nuevo_ingreso: 'var(--accent)', permiso: '#4453A8', descanso: '#6B7785', inactividad: '#B23A0A' };
+const ATT_BADGE = { asistio: 'b-ok', falta: 'b-bad', retardo: 'b-warn', baja: 'b-mut', nuevo_ingreso: 'b-acc', permiso: 'b-acc', descanso: 'b-mut', inactividad: 'b-warn' };
+const ATT_MAIN = ['asistio', 'falta', 'retardo'];
+const ATT_MOVE = ['baja', 'nuevo_ingreso'];
+const ATT_OTHER = ['permiso', 'descanso', 'inactividad'];
+const ATT_NEEDS_COMMENT = ['baja', 'nuevo_ingreso', 'permiso', 'descanso', 'inactividad'];
+const attCounts = () => Object.fromEntries(Object.keys(ATT).map((k) => [k, 0]));
+const SOLICITUD_LIDER = { acta: 'Acta administrativa', carta: 'Carta de advertencia', cambio_equipo: 'Cambio de equipo', baja: 'Baja' };
+const RIESGO = { fraude: 'Fraude', intento_fraude: 'Intento de fraude', faltas_injustificadas: 'Faltas injustificadas', abandono: 'Baja (abandono de trabajo)' };
 
 // ───────────────────────── estado ─────────────────────────
 const S = { session: null, me: null, areas: [], groups: [], profiles: [], myAreas: [], blocks: [] };
@@ -407,49 +415,55 @@ function renderLista(st, groups) {
 }
 function personCard(e, r, faltas, locked, st) {
   const open = LS.open === e.id;
-  const col = r ? { asistio: 'var(--ok)', falta: 'var(--bad)', retardo: 'var(--warn)' }[r.status] : null;
-  const summary = r ? ATT[r.status] + (r.incidencias && r.incidencias.length ? ' · ' + r.incidencias.join(', ') : '') : 'Sin registrar';
+  const col = r ? ATT_COLOR[r.status] : null;
+  const summary = r ? ATT[r.status] + (r.comentario ? ' · ' + r.comentario : '') : 'Sin registrar';
+  const attBtn = (k) => `<button type="button" class="${k}${r && r.status === k ? ' on' : ''}" data-att="${k}"${locked ? ' disabled' : ''}>${ATT[k]}</button>`;
   return `<div class="person${open ? ' open' : ''}" data-id="${e.id}">
     <button type="button" class="ph" aria-expanded="${open}">
       <span class="dot" style="${col ? `background:${col};border-color:${col}` : ''}"></span>
-      <span class="grow"><span style="display:block;font-weight:600">${esc(fullName(e))}</span><span class="small muted">${esc(summary)}</span></span>
+      <span class="grow"><span style="display:block;font-weight:600">${esc(fullName(e))}</span><span class="small muted">${esc(summary.length > 90 ? summary.slice(0, 90) + '…' : summary)}</span></span>
       ${faltasBadge(faltas)}<span class="muted" aria-hidden="true">${open ? '▴' : '▾'}</span>
     </button>
     ${open ? `<div class="body">
-      <div><div class="eyebrow" style="margin-bottom:6px">Asistencia</div><div class="att3">${Object.entries(ATT).map(([k, l]) => `<button type="button" class="${k}${r && r.status === k ? ' on' : ''}" data-att="${k}"${locked ? ' disabled' : ''}>${l}</button>`).join('')}</div></div>
-      <div><div class="eyebrow" style="margin-bottom:6px">Incidencias del día</div><div class="chips">${INCIDENCIAS.map((l) => `<button type="button" class="chip${r && r.incidencias.includes(l) ? ' on' : ''}" data-inc="${esc(l)}"${!r || locked ? ' disabled title="Primero marca la asistencia"' : ''}>${esc(l)}</button>`).join('')}</div></div>
-      <label class="field">Comentario<textarea data-com rows="2" placeholder="Ej. se desconectó de 11:20 a 11:45"${!r || locked ? ' disabled' : ''}>${esc(r && r.comentario || '')}</textarea></label>
+      <div class="att3">${ATT_MAIN.map(attBtn).join('')}</div>
+      <div class="att-sec"><div class="att2">${ATT_MOVE.map(attBtn).join('')}</div><div class="att3">${ATT_OTHER.map(attBtn).join('')}</div></div>
+      <label class="field">Comentarios${r && ATT_NEEDS_COMMENT.includes(r.status) ? ' *' : ''}<textarea data-com rows="2" placeholder="Obligatorio en Baja, Nuevo ingreso, Permiso, Descanso e Inactividad"${!r || locked ? ' disabled' : ''}>${esc(r && r.comentario || '')}</textarea></label>
       ${r ? `<div class="small muted">Último cambio: ${esc(profName(r.updated_by))} · ${fmtDateTime(r.updated_at)}</div>` : ''}
       ${opsHtml(e, st)}
+      ${canReportCase() ? `<div><div class="eyebrow" style="margin-bottom:6px">Solicitud de incidencias</div><div class="chips">${Object.entries(SOLICITUD_LIDER).map(([k, l]) => `<button type="button" class="chip" data-req="${k}">${esc(l)}</button>`).join('')}</div></div>
+      <div><div class="eyebrow" style="margin-bottom:6px;color:var(--bad)">Incidencias de riesgo · directo a RH</div><div class="chips">${Object.entries(RIESGO).map(([k, l]) => `<button type="button" class="chip risk" data-req="${k}">${esc(l)}</button>`).join('')}</div></div>` : ''}
     </div>` : ''}
   </div>`;
 }
 function wirePerson(card, st, groups) {
   const id = card.dataset.id; const { rec } = st;
+  const emp = st.emps.find((x) => x.id === id);
   $('.ph', card).onclick = () => { LS.open = LS.open === id ? null : id; renderLista(st, groups); };
   const save = async (patch) => {
     const cur = rec[id];
-    const row = { employee_id: id, fecha: LS.fecha, status: patch.status || cur.status, incidencias: patch.incidencias || (cur ? cur.incidencias : []), comentario: 'comentario' in patch ? patch.comentario : (cur ? cur.comentario : null) };
+    const row = { employee_id: id, fecha: LS.fecha, status: patch.status || cur.status, incidencias: cur ? cur.incidencias : [], comentario: 'comentario' in patch ? patch.comentario : (cur ? cur.comentario : null) };
     const [saved] = await db('attendance').insert([row], { onConflict: 'employee_id,fecha' });
     rec[id] = saved;
   };
   $$('[data-att]', card).forEach((b) => b.onclick = async () => {
+    const k = b.dataset.att; const cur = rec[id];
+    if (ATT_NEEDS_COMMENT.includes(k)) {
+      const f = [{ k: 'comentario', label: 'Comentarios', type: 'textarea', req: true, full: true, val: cur && cur.comentario || '', hint: k === 'baja' ? 'Marcar Baja aquí no da de baja a la persona: avisa a RH. Para pedir la baja formal usa “Solicitud de incidencias”.' : 'Explica el motivo; es obligatorio.' }];
+      modal({ title: `${ATT[k]} · ${fullName(emp)}`, body: fieldsHtml(f), actions: [{ label: 'Cancelar' }, { label: 'Guardar', cls: 'primary', run: async ({ el }) => {
+        const v = readFields(el, f); await save({ status: k, comentario: v.comentario }); toast('Guardado'); renderLista(st, groups);
+      } }] });
+      return;
+    }
     $$('[data-att]', card).forEach((x) => { x.disabled = true; });
-    try { await save({ status: b.dataset.att }); renderLista(st, groups); }
+    try { await save({ status: k }); renderLista(st, groups); }
     catch (e) { toast(e.message, true); renderLista(st, groups); }
-  });
-  $$('[data-inc]', card).forEach((b) => b.onclick = async () => {
-    const cur = rec[id]; if (!cur) return;
-    const l = b.dataset.inc; const inc = cur.incidencias.includes(l) ? cur.incidencias.filter((x) => x !== l) : [...cur.incidencias, l];
-    b.disabled = true;
-    try { await save({ incidencias: inc }); renderLista(st, groups); }
-    catch (e) { toast(e.message, true); b.disabled = false; }
   });
   const ta = $('[data-com]', card);
   if (ta) ta.onchange = async () => {
     try { await save({ comentario: ta.value.trim() || null }); toast('Comentario guardado'); }
-    catch (e) { toast(e.message, true); }
+    catch (e) { toast(e.message, true); ta.value = (rec[id] && rec[id].comentario) || ''; }
   };
+  $$('[data-req]', card).forEach((b) => b.onclick = () => requestForm({ employee: emp, tipo: b.dataset.req, fecha: LS.fecha, onDone: () => toast(RIESGO[b.dataset.req] ? 'Incidencia de riesgo enviada a RH' : 'Solicitud enviada a Supervisión') }));
   wireOps(card, st, groups);
 }
 
@@ -522,7 +536,7 @@ async function openEmployee(id, fx = {}) {
     seesCases ? db('cases').select('id,folio,status,fecha_hechos,decision,kind,hechos').eq('employee_id', id).order('created_at', false).get() : Promise.resolve([])
   ]);
   const p = priv[0] || null;
-  const c = { asistio: 0, falta: 0, retardo: 0 }; att.forEach((a) => c[a.status]++);
+  const c = attCounts(); att.forEach((a) => c[a.status]++);
   const inMyArea = seesAllAreas() || S.myAreas.includes(e.area_id);
   const canMove = (is('developer') || (is('rh_general', 'rh_area', 'supervisor') && inMyArea)) && ['activo', 'alta_pendiente'].includes(e.status);
   const canEdit = is('developer') || (is('rh_general', 'rh_area') && inMyArea && e.status === 'alta_pendiente');
@@ -726,7 +740,7 @@ async function viewAsistencia() {
   const canReview = is('developer', 'nomina');
   const rows = groups.map((g) => {
     const people = emps.filter((e) => e.group_id === g.id).sort(sortName);
-    const c = { asistio: 0, falta: 0, retardo: 0 }; let n = 0;
+    const c = attCounts(); let n = 0;
     people.forEach((e) => { const a = byEmp[e.id]; if (a) { n++; c[a.status]++; } });
     return { g, people, c, n, d: dayBy[g.id] || {} };
   });
@@ -748,7 +762,7 @@ async function viewAsistencia() {
       <td class="small">${r.d.sent_at ? fmtTime(r.d.sent_at) + '<br><span class="muted">' + esc(profName(r.d.sent_by)) + '</span>' : '<span class="muted">—</span>'}</td>
       <td>${r.d.reviewed_at ? `<span class="badge b-ok">Revisado ${fmtTime(r.d.reviewed_at)}</span>` : '<span class="badge b-mut">Pendiente</span>'}
         ${canReview ? `<br><button class="btn sm" data-rev="${r.g.id}" data-on="${r.d.reviewed_at ? '0' : '1'}" style="margin-top:4px">${r.d.reviewed_at ? 'Quitar revisión' : 'Marcar revisado'}</button>` : ''}</td></tr>
-      ${AS.open === r.g.id ? `<tr><td colspan="6" style="background:var(--soft)">${r.people.length ? r.people.map((e) => { const a = byEmp[e.id]; return `<div class="row small" style="padding:4px 0"><span class="grow">${esc(fullName(e))}</span>${a ? `<span class="badge ${a.status === 'asistio' ? 'b-ok' : a.status === 'falta' ? 'b-bad' : 'b-warn'}">${ATT[a.status]}</span><span class="muted">${esc([...(a.incidencias || []), a.comentario].filter(Boolean).join(' · '))}</span>` : '<span class="badge b-mut">Sin registrar</span>'}</div>`; }).join('') : '<span class="muted">Sin personal</span>'}
+      ${AS.open === r.g.id ? `<tr><td colspan="6" style="background:var(--soft)">${r.people.length ? r.people.map((e) => { const a = byEmp[e.id]; return `<div class="row small" style="padding:4px 0"><span class="grow">${esc(fullName(e))}</span>${a ? `<span class="badge ${ATT_BADGE[a.status]}">${ATT[a.status]}</span><span class="muted">${esc([...(a.incidencias || []), a.comentario].filter(Boolean).join(' · '))}</span>` : '<span class="badge b-mut">Sin registrar</span>'}</div>`; }).join('') : '<span class="muted">Sin personal</span>'}
         ${canWriteAttendance() && writableGroups().some((x) => x.id === r.g.id) ? `<button class="btn sm ghost" data-goto="${r.g.id}" style="margin-top:8px">Abrir pase de lista</button>` : ''}</td></tr>` : ''}`).join('') || '<tr><td colspan="6" class="empty">Sin grupos</td></tr>'}
   </tbody></table></div>
   ${noGroup ? `<div class="small muted" style="margin-top:8px">${noGroup} personas activas sin grupo asignado (no aparecen en ningún pase de lista).</div>` : ''}`;
@@ -784,7 +798,7 @@ function exportPeriod() {
       const lines = [['No.', 'Nombre', 'Área', 'Grupo', ...days.map(fmtDate), 'Asistencias', 'Faltas', 'Retardos', 'Incidencias'].map(q).join(',')];
       for (const id of ids) {
         const e = empById[id] || { nombre: '(sin acceso)', apellido_paterno: '' }; const r = per[id];
-        const c = { asistio: 0, falta: 0, retardo: 0 }; const inc = [];
+        const c = attCounts(); const inc = [];
         days.forEach((dd) => { if (r[dd]) { c[r[dd].status]++; if ((r[dd].incidencias || []).length || r[dd].comentario) inc.push(fmtDate(dd) + ': ' + [...(r[dd].incidencias || []), r[dd].comentario].filter(Boolean).join('/')); } });
         lines.push([e.num_empleado, fullName(e), areaName(e.area_id), groupName(e.group_id), ...days.map((dd) => r[dd] ? ATT_SHORT[r[dd].status] : ''), c.asistio, c.falta, c.retardo, inc.join(' | ')].map(q).join(','));
       }
@@ -976,9 +990,9 @@ function opsHtml(e, st) {
       <div class="row small"><b class="mono">${esc(String(c.hora).slice(0, 5))}</b><span class="grow">${esc(c.avance)} · ${esc(c.instruccion)}</span><span class="badge ${RESULTADO[c.resultado][1]}">${RESULTADO[c.resultado][0]}</span></div>
       ${c.resultado === 'pendiente' ? `<div class="row"><button type="button" class="btn sm" data-cres="${c.id}" data-val="corrigio">Corrigió</button><button type="button" class="btn sm danger" data-cres="${c.id}" data-val="no_corrigio">No corrigió</button></div>` : ''}
     </div>`).join('')}</div>` : '<div class="small muted">Sin correcciones hoy.</div>'}</div>` : '';
-  const btns = (canCorrect() || canReportCase()) ? `<div class="row">
+  const btns = canCorrect() ? `<div class="row">
     ${canCorrect() ? '<button type="button" class="btn sm" data-newcorr>+ Corrección operativa</button>' : ''}
-    ${canReportCase() ? '<button type="button" class="btn sm danger" data-newcase>Incidencia formal</button>' : ''}</div>` : '';
+</div>` : '';
   return metricHtml + corrHtml + btns;
 }
 function wireOps(card, st, groups) {
@@ -1041,6 +1055,37 @@ function pendingForMe(c) {
   return false;
 }
 
+function requestForm({ employee, tipo, fecha, existing, onDone }) {
+  const c = existing || {};
+  const t = tipo || c.solicitud_lider || c.riesgo_tipo;
+  const riesgo = !!RIESGO[t];
+  const label = RIESGO[t] || SOLICITUD_LIDER[t];
+  const f = [
+    { k: 'razon', label: 'Razón', type: 'textarea', req: true, full: true, val: c.hechos, hint: 'Qué pasó, solo hechos.' },
+    { k: 'evidencia', label: 'Evidencias', type: 'textarea', req: true, full: true, val: c.evidencia, hint: 'Qué evidencia hay y dónde está: capturas, chats, reportes, testigos.' },
+    { k: 'fecha', label: 'Fecha (o desde)', type: 'date', req: true, val: c.fecha_hechos || fecha || todayMX(), max: todayMX() },
+    { k: 'fecha_fin', label: 'Hasta (si fueron varios días)', type: 'date', val: c.fecha_fin || '', max: todayMX() },
+    { k: 'hora_inicio', label: 'Hora desde (opcional)', type: 'time', val: c.hora_inicio ? String(c.hora_inicio).slice(0, 5) : '' },
+    { k: 'hora_fin', label: 'Hora hasta (opcional)', type: 'time', val: c.hora_fin ? String(c.hora_fin).slice(0, 5) : '' }
+  ];
+  const isEdit = !!existing;
+  modal({
+    title: `${label} · ${fullName(employee)}`, wide: true,
+    body: `<div class="notice ${riesgo ? 'n-bad' : 'n-info'}">${riesgo ? 'Incidencia de riesgo: va directo a RH y Supervisión no la ve.' : isEdit ? 'Supervisión la regresó con un comentario: complétala y reenvíala.' : 'La solicitud va a Supervisión para validarla y después a RH. Tú reportas hechos; la decisión la toma RH.'}</div>
+      ${fieldsHtml(f)}${isEdit ? fieldsHtml([{ k: 'comentario', label: 'Qué corregiste', full: true }]) : ''}`,
+    actions: [{ label: 'Cancelar' }, { label: isEdit ? 'Reenviar a Supervisión' : riesgo ? 'Enviar a RH' : 'Enviar solicitud', cls: riesgo ? 'danger solid' : 'primary', run: async ({ el }) => {
+      const v = readFields(el, f);
+      if (v.fecha > todayMX() || (v.fecha_fin && v.fecha_fin > todayMX())) throw new Error('Las fechas no pueden ser futuras.');
+      if (v.fecha_fin && v.fecha_fin < v.fecha) throw new Error('La fecha final es anterior a la inicial.');
+      const args = { p_razon: v.razon, p_evidencia: v.evidencia, p_fecha: v.fecha, p_fecha_fin: v.fecha_fin, p_hora_inicio: v.hora_inicio, p_hora_fin: v.hora_fin };
+      if (isEdit) await rpc('case_request_resubmit', { p_id: c.id, ...args, p_comentario: readFields(el, [{ k: 'comentario' }]).comentario });
+      else await rpc('case_request', { p_employee: employee.id, p_tipo: t, ...args });
+      onDone && onDone();
+    } }]
+  });
+}
+const caseType = (c) => c.riesgo_tipo ? RIESGO[c.riesgo_tipo] : c.solicitud_lider ? SOLICITUD_LIDER[c.solicitud_lider] : (c.kind === 'grave' ? 'Riesgo' : 'Incidencia');
+const caseDates = (c) => fmtDate(c.fecha_hechos) + (c.fecha_fin && c.fecha_fin !== c.fecha_hechos ? ' al ' + fmtDate(c.fecha_fin) : '');
 function caseForm({ employee, fecha, existing, onDone }) {
   const c = existing || {};
   const f = [
@@ -1090,7 +1135,7 @@ async function viewCasos() {
     </div>
     <div class="list" id="clist">${rows.length ? rows.map((c) => { const e = empById[c.employee_id]; return `<button type="button" class="item" data-case="${c.id}">
       <span class="mono small muted" style="width:44px">#${c.folio}</span>
-      <span class="grow"><span class="nm">${esc(fullName(e))}</span>${c.kind === 'grave' ? ' <span class="badge b-bad">Grave</span>' : ''}<br><span class="small muted">${esc(areaName(c.area_id))} · ${fmtDate(c.fecha_hechos)} · ${esc(c.hechos.slice(0, 80))}</span></span>
+      <span class="grow"><span class="nm">${esc(fullName(e))}</span> <span class="badge ${c.kind === 'grave' ? 'b-bad' : 'b-acc'}">${esc(caseType(c))}</span><br><span class="small muted">${esc(areaName(c.area_id))} · ${caseDates(c)} · ${esc(c.hechos.slice(0, 80))}</span></span>
       ${caseBadge(c.status)}</button>`; }).join('') : `<div class="card empty">${CS.tab === 'pend' ? 'No tienes casos pendientes.' : 'Sin casos.'}</div>`}</div>`;
   $$('[data-ct]').forEach((b) => b.onclick = () => { CS.tab = b.dataset.ct; viewCasos(); });
   $('#cq').oninput = (e) => { CS.q = e.target.value; clearTimeout(viewCasos._t); viewCasos._t = setTimeout(() => viewCasos().then(() => { const i = $('#cq'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }), 300); };
@@ -1124,10 +1169,10 @@ async function openCase(id) {
   const kv = (rows) => `<div class="kv">${rows.filter((r) => r[1] != null && r[1] !== '').map(([k, val]) => `<span>${esc(k)}</span><span>${esc(val)}</span>`).join('')}</div>`;
   const val = c.validacion || {};
   const body = `
-    <div class="row">${caseBadge(c.status)}${c.kind === 'grave' ? '<span class="badge b-bad">Caso grave</span>' : ''}<span class="small muted">${esc(areaName(c.area_id))} · ${esc(groupName(c.group_id))}</span></div>
+    <div class="row">${caseBadge(c.status)}<span class="badge ${c.kind === 'grave' ? 'b-bad' : 'b-acc'}">${c.kind === 'grave' ? 'Riesgo · ' : 'Solicitud · '}${esc(caseType(c))}</span><span class="small muted">${esc(areaName(c.area_id))} · ${esc(groupName(c.group_id))}</span></div>
     <div class="card pad"><div class="eyebrow" style="margin-bottom:8px">Hechos · reportó ${esc(profName(c.created_by))}</div>${kv([
-      ['Qué ocurrió', c.hechos], ['Cuándo', fmtDate(c.fecha_hechos) + (c.hora_inicio ? ` · ${String(c.hora_inicio).slice(0, 5)} a ${String(c.hora_fin || '').slice(0, 5)}` : '')],
-      ['Duración', c.duracion_min != null ? c.duracion_min + ' min' : null], ['Instrucción', c.instruccion], ['Indicador', c.indicador], ['Evidencia', c.evidencia], ['Sugerencia del líder', c.sugerencia]])}</div>
+      [c.solicitud_lider || c.riesgo_tipo ? 'Razón' : 'Qué ocurrió', c.hechos], ['Cuándo', caseDates(c) + (c.hora_inicio ? ` · ${String(c.hora_inicio).slice(0, 5)} a ${String(c.hora_fin || '').slice(0, 5)}` : '')],
+      ['Duración', c.duracion_min != null ? c.duracion_min + ' min' : null], ['Instrucción', c.instruccion], ['Indicador', c.indicador], ['Evidencias', c.evidencia], ['Sugerencia del líder', c.sugerencia]])}</div>
     <div class="card pad"><div class="eyebrow" style="margin-bottom:8px">Antecedentes · 30 días antes de los hechos</div>
       <div class="row small"><span class="badge ${faltas > 3 ? 'b-bad' : faltas ? 'b-warn' : 'b-mut'}">${faltas} faltas</span><span class="badge ${retardos ? 'b-warn' : 'b-mut'}">${retardos} retardos</span>${is('nomina') ? '' : `<span class="badge ${noCorr ? 'b-bad' : 'b-mut'}">${corr.length} correcciones · ${noCorr} sin corregir</span>`}<span class="badge ${prev.length ? 'b-warn' : 'b-mut'}">${prev.length} casos anteriores</span></div>
       ${prev.length ? `<div class="small muted" style="margin-top:6px">${prev.map((p) => `#${p.folio} ${fmtDate(p.fecha_hechos)} · ${CASE_ST[p.status][0]}${p.decision ? ' · ' + MEDIDAS[p.decision] : ''}`).join('<br>')}</div>` : ''}</div>
@@ -1138,7 +1183,7 @@ async function openCase(id) {
   const reload = () => { viewCasos().catch(() => {}); };
   const actions = [];
   const area = c.area_id;
-  if (c.status === 'regresado' && (c.created_by === S.me.id || is('developer'))) actions.push({ label: 'Completar y reenviar', cls: 'primary', run: () => { setTimeout(() => caseForm({ employee: emp, existing: c, onDone: () => { toast('Reenviado a Supervisión'); reload(); } }), 0); } });
+  if (c.status === 'regresado' && (c.created_by === S.me.id || is('developer'))) actions.push({ label: 'Completar y reenviar', cls: 'primary', run: () => { setTimeout(() => (c.solicitud_lider || c.riesgo_tipo ? requestForm : caseForm)({ employee: emp, existing: c, onDone: () => { toast('Reenviado a Supervisión'); reload(); } }), 0); } });
   if (c.status === 'en_validacion' && (is('developer') || (is('supervisor') && S.myAreas.includes(area)))) {
     actions.push({ label: 'Regresar al líder', cls: 'danger', run: () => { setTimeout(() => simpleCaseAction('Regresar al líder', [{ k: 'c', label: 'Qué falta para completar el expediente', type: 'textarea', req: true, full: true }], (v) => rpc('case_return', { p_id: c.id, p_comentario: v.c }), reload), 0); } });
     actions.push({ label: 'Validar y escalar a RH', cls: 'primary', run: () => { setTimeout(() => validateForm(c, reload), 0); } });
