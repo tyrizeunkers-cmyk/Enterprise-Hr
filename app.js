@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.8.4';
+const APP_VERSION = '0.8.5';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -1673,6 +1673,12 @@ function validateForm(c, done) {
 
 // ───────────────────────── PWA ─────────────────────────
 if ('serviceWorker' in navigator && location.protocol === 'https:' && !CFG.demo) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  // Actualización automática: busca versión nueva al abrir y al volver a la app; al activarse, recarga una sola vez
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (!reloading) { reloading = true; location.reload(); } });
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+    reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+  }).catch(() => {}));
 }
 boot();
