@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.9.1';
+const APP_VERSION = '0.10.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -317,6 +317,7 @@ const VIEWS = {
   lista: { label: 'Pase de lista', short: 'Lista', ic: '✓', grupo: 'Operación', roles: ['developer', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewLista() },
   personal: { label: 'Personal', ic: '👥', grupo: 'Personal', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewPersonal() },
   casos: { label: 'Casos', ic: '⚑', grupo: 'Operación', roles: ['developer', 'director', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewCasos() },
+  reclutamiento: { label: 'Reclutamiento', short: 'Reclut.', ic: '＋', grupo: 'Personal', roles: ['developer', 'director', 'rh_general', 'rh_area', 'supervisor'], render: () => viewReclutamiento() },
   documentos: { label: 'Documentos', short: 'Docs', ic: '📄', grupo: 'Personal', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewDocumentos() },
   operacion: { label: 'Actividad', ic: '◔', grupo: 'Operación', roles: ['developer', 'supervisor'], render: () => viewOperacion() },
   asistencia: { label: 'Asistencia', ic: '▦', grupo: 'Operación', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor'], render: () => viewAsistencia() },
@@ -332,6 +333,7 @@ const ICONS = {
   lista: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/>',
   personal: '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3 3-4.8 5.5-4.8s4.9 1.8 5.5 4.8"/><circle cx="16.5" cy="9" r="2.6"/><path d="M15.5 14.4c2.3-.3 4.4 1.2 5 4.6"/>',
   casos: '<path d="M6 21V4"/><path d="M6 4h11l-2.5 4 2.5 4H6"/>',
+  reclutamiento: '<circle cx="10" cy="8" r="3.5"/><path d="M3.5 20c.7-3.7 3.4-5.8 6.5-5.8 1.4 0 2.7.4 3.8 1.2"/><path d="M18 14v6M15 17h6"/>',
   documentos: '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M10 12h5M10 15.5h5"/>',
   operacion: '<path d="M3 12h4l2.5-6 4 12 2.5-6H21"/>',
   asistencia: '<rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
@@ -346,9 +348,9 @@ const ICONS = {
 };
 const icon = (k, sz = 22) => `<svg viewBox="0 0 24 24" width="${sz}" height="${sz}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[k] || ''}</svg>`;
 // En el celular: máximo 4 secciones abajo + "Más" (el resto en un panel agrupado)
-const TAB_PRIO = ['lista', 'personal', 'casos', 'documentos', 'asistencia', 'operacion', 'buzon', 'usuarios', 'catalogos', 'plantillas', 'bitacora'];
+const TAB_PRIO = ['lista', 'personal', 'casos', 'documentos', 'reclutamiento', 'asistencia', 'operacion', 'buzon', 'usuarios', 'catalogos', 'plantillas', 'bitacora'];
 // Supervisión: su trabajo diario es la lista y la actividad; documentos va en "Más"
-const TAB_PRIO_SUP = ['lista', 'personal', 'casos', 'operacion', 'asistencia', 'documentos'];
+const TAB_PRIO_SUP = ['lista', 'personal', 'casos', 'operacion', 'asistencia', 'reclutamiento', 'documentos'];
 const navCount = (k) => Number(($(`.nav a[data-v="${k}"] .cnt`) || {}).textContent || 0);
 function refreshMoreBadge() {
   const t = $('#tabMore'); if (!t) return;
@@ -885,13 +887,13 @@ function editEmployee(e, p, { basic, priv }) {
   });
 }
 
-function moveGroup(e) {
+function moveGroup(e, done) {
   const opts = [['', 'Sin grupo'], ...S.groups.filter((g) => g.area_id === e.area_id && g.active).map((g) => [g.id, g.name + (g.tl_id ? ' — ' + profName(g.tl_id) : '')])];
   const f = [{ k: 'group_id', label: 'Grupo / líder', type: 'select', options: opts, val: e.group_id || '', full: true }];
   modal({
     title: 'Cambiar grupo · ' + fullName(e), body: fieldsHtml(f) + '<div class="small muted">Solo grupos de la misma área.</div>',
     actions: [{ label: 'Cancelar' }, { label: 'Guardar', cls: 'primary', run: async ({ el }) => {
-      const v = readFields(el, f); await mustUpdate(db('employees').eq('id', e.id).update({ group_id: v.group_id || null })); toast('Grupo actualizado'); viewPersonal();
+      const v = readFields(el, f); await mustUpdate(db('employees').eq('id', e.id).update({ group_id: v.group_id || null })); toast('Grupo actualizado'); (done || viewPersonal)();
     } }]
   });
 }
@@ -1746,9 +1748,15 @@ const DOC_TIPOS = {
   renuncia: { label: 'Renuncia voluntaria', code: 'REN', grupo: 'Bajas', desc: 'Manifestación libre de separación. Firmada, da de baja al trabajador.' },
   rescision: { label: 'Aviso de rescisión', code: 'RES', grupo: 'Bajas', desc: 'Despido con causal del art. 47 LFT, hechos, fechas y antecedentes.' },
   convenio: { label: 'Convenio de terminación', code: 'CNV', grupo: 'Bajas', desc: 'Acuerdo de terminación por mutuo consentimiento (art. 53-I LFT).' },
-  constancia_baja: { label: 'Constancia de baja', code: 'BAJ', grupo: 'Bajas', desc: 'Cierre administrativo de la baja, ligado al documento que la origina.' }
+  constancia_baja: { label: 'Constancia de baja', code: 'BAJ', grupo: 'Bajas', desc: 'Cierre administrativo de la baja, ligado al documento que la origina.' },
+  contrato: { label: 'Contrato de trabajo', code: 'CON', grupo: 'Contratación', desc: '15 días, 30 días o tiempo indeterminado. Se genera solo al contratar desde Reclutamiento.' },
+  reglamento: { label: 'Reglamento interior', code: 'RIT', grupo: 'Contratación', desc: 'Reglamento Interior de Trabajo con constancia de recepción.' },
+  confidencialidad: { label: 'Acuerdo de confidencialidad', code: 'ACF', grupo: 'Contratación', desc: 'Obligaciones de confidencialidad y manejo de información.' }
 };
 const DOC_BAJA = ['renuncia', 'rescision', 'convenio'];
+const DOC_CONTRATA = ['contrato', 'reglamento', 'confidencialidad'];
+const CONTRATOS = { '15_dias': 'Periodo a prueba · 15 días', '30_dias': 'Periodo a prueba · 30 días', indeterminado: 'Tiempo indeterminado' };
+const docTipoBadge = (t) => t.grupo === 'Bajas' ? 'b-bad' : t.grupo === 'Contratación' ? 'b-ok' : 'b-acc';
 const DOC_LIDER = ['acta', 'advertencia'];
 const DOC_ST = { emitido: ['Emitido', 'b-acc'], con_lider: ['Con el líder', 'b-warn'], firmado: ['Firmado', 'b-ok'], negativa: ['Negativa de firma', 'b-bad'], anulado: ['Anulado', 'b-mut'] };
 const docBadge = (s) => `<span class="badge ${DOC_ST[s][1]}">${DOC_ST[s][0]}</span>`;
@@ -1862,6 +1870,13 @@ function docFields(tipo, d = {}) {
       { k: 'recontratable', label: '¿Recontratable?', type: 'select', req: true, val: d.recontratable == null ? '' : String(d.recontratable), options: yesNo },
       { k: 'conceptos', label: 'Desglose de conceptos', type: 'textarea', req: true, full: true, val: d.conceptos || '', hint: 'Un concepto por renglón. Ej. "Aguinaldo proporcional: $1,250.00". Usa el cálculo del finiquito.' },
       { k: 'antecedentes', label: 'Antecedentes (opcional)', type: 'textarea', full: true, val: d.antecedentes || '', hint: 'Breve relación de por qué las partes acuerdan terminar.' }];
+    case 'contrato': return [
+      { k: 'contrato_tipo', label: 'Tipo de contrato', type: 'select', req: true, val: d.contrato_tipo || '', options: [['', 'Elegir…'], ...Object.entries(CONTRATOS)] },
+      { k: 'fecha_ingreso', label: 'Fecha de ingreso', type: 'date', req: true, val: d.fecha_ingreso || t },
+      { k: 'sueldo', label: 'Sueldo mensual (MXN)', type: 'number', req: true, val: d.sueldo ?? '' },
+      { k: 'horario', label: 'Horario', val: d.horario || '', hint: 'Ej. Lunes a viernes 08:00 a 17:00' },
+      { k: 'representante', label: 'Firma por la empresa', val: d.representante || S.me.full_name || '' }];
+    case 'reglamento': case 'confidencialidad': return [];
     case 'constancia_baja': return [
       { k: 'tipo_salida', label: 'Tipo de salida', type: 'select', req: true, val: d.tipo_salida || '', options: [['', 'Elegir…'], ...opts(SALIDAS)] },
       { k: 'rh_nombre', label: 'Firma por RH', val: d.rh_nombre || S.me.full_name || '' },
@@ -1877,6 +1892,12 @@ function empSnapshot(e) {
   return { nombre: fullName(e), num: e.num_empleado || '', puesto: e.puesto || '', area: areaName(e.area_id), grupo: e.group_id ? g.name || '' : '', lider: g.tl_id ? profName(g.tl_id) : '', ingreso: e.fecha_ingreso || '' };
 }
 
+
+// Textos base de contratación (de la versión de escritorio M02); editables en Plantillas
+const TXT_CLAUSULAS = "**TERCERA. Modalidad y lugar de prestación.** La modalidad de trabajo (presencial, home office o híbrida) será la que asigne EL PATRÓN conforme al puesto. LA PERSONA TRABAJADORA deberá contar con las condiciones operativas necesarias para conectarse y desempeñar sus funciones conforme a los procedimientos internos. La modalidad y sus condiciones específicas se sujetarán en todo momento a las disposiciones legales aplicables.\n\n**CUARTA. Jornada, asistencia y descansos.** La jornada será de ocho horas efectivas conforme al horario asignado, además de una hora para alimentos. El descanso semanal será el indicado en las condiciones de trabajo aplicables. La asistencia, puntualidad y permanencia durante la jornada serán obligatorias, salvo permiso o causa justificada.\n\n**QUINTA. Salario y pago.** EL PATRÓN pagará el salario señalado en la carátula, en la periodicidad y forma convenidas. Los descuentos únicamente procederán en los casos permitidos por la legislación aplicable.\n\n**SEXTA. Obligaciones de desempeño.** LA PERSONA TRABAJADORA se obliga a cumplir las funciones, instrucciones lícitas, procesos, horarios, reportes y requisitos mínimos de desempeño correspondientes a su puesto y área. Los indicadores serán objetivos, medibles, verificables y previamente comunicados.\n\n**SÉPTIMA. Cumplimiento mínimo y bajo rendimiento.** El cumplimiento sostenido de los requisitos mínimos del puesto constituye una obligación laboral esencial. Cuando exista bajo rendimiento o incumplimiento, EL PATRÓN podrá documentar los hechos y aplicar las medidas internas que correspondan. Cuando los hechos acreditados actualicen una causa legal de rescisión o hagan procedente la terminación conforme a la legislación aplicable, podrán ejercerse las acciones correspondientes respetando el procedimiento y formalidades legales.\n\n**OCTAVA. Medición, evidencias y seguimiento.** LA PERSONA TRABAJADORA deberá registrar su actividad y resultados en los sistemas, bases, enlaces, reportes o medios autorizados. La ausencia o insuficiencia de actividad deberá analizarse junto con las demás evidencias disponibles antes de determinar una medida laboral.\n\n**NOVENA. Asistencia, conexión y disponibilidad.** Durante su jornada, LA PERSONA TRABAJADORA deberá mantenerse disponible para el desempeño de sus funciones y registrar su asistencia conforme al mecanismo vigente.\n\n**DÉCIMA. Confidencialidad y datos.** LA PERSONA TRABAJADORA guardará confidencialidad sobre bases de datos, clientes, prospectos, cartera, estrategias, procesos, accesos, contraseñas, métricas y demás información no pública. Esta obligación se complementará con el acuerdo de confidencialidad suscrito por separado.\n\n**DÉCIMA PRIMERA. Reglamento y políticas internas.** LA PERSONA TRABAJADORA deberá observar el Reglamento Interior de Trabajo y demás protocolos que le sean comunicados, siempre que sean compatibles con la legislación aplicable.\n\n**DÉCIMA SEGUNDA. Capacitación, retroalimentación y mejora.** La empresa podrá impartir capacitación y retroalimentación. Cuando se detecten desviaciones de desempeño, podrán establecerse compromisos o planes de mejora con indicadores, periodo de seguimiento y evidencia de resultados.\n\n**DÉCIMA TERCERA. Medidas disciplinarias y documentación.** Las incidencias laborales podrán documentarse mediante reportes, actas administrativas, cartas de advertencia, constancias de retroalimentación y demás medios de prueba pertinentes, sin sustituir los requisitos legales para una rescisión o terminación.\n\n**DÉCIMA CUARTA. Rescisión y terminación.** La relación laboral podrá rescindirse o terminarse cuando se actualice alguno de los supuestos previstos por la Ley Federal del Trabajo y se cumplan las formalidades correspondientes.\n\n**DÉCIMA QUINTA. Modificaciones y prevalencia legal.** Toda modificación relevante de las condiciones de trabajo se documentará cuando corresponda. Ninguna disposición interna podrá interpretarse como renuncia a derechos irrenunciables; en caso de contradicción prevalecerá la legislación aplicable.\n\n## METAS E INDICADORES DE DESEMPEÑO\n\nLA PERSONA TRABAJADORA deberá cumplir con las metas, métricas e indicadores de desempeño correspondientes a su puesto y área. Dichos parámetros serán establecidos y comunicados por EL PATRÓN al inicio de cada periodo mensual de evaluación, a través de los medios internos autorizados. Las metas e indicadores deberán ser objetivos, medibles, verificables y acordes con las funciones del puesto, y servirán como referencia para el seguimiento y evaluación del desempeño durante el periodo correspondiente. Cualquier modificación aplicable al periodo deberá ser comunicada por los medios internos autorizados.";
+const TXT_RIT = "Aplicable al personal en México | Modalidades: teletrabajo, presencial/coworking e híbrida\n\n## FUNDAMENTO Y OBJETO\n\nEl presente Reglamento tiene por objeto establecer disposiciones obligatorias para la persona empleadora y las personas trabajadoras durante el desarrollo del trabajo, de conformidad con los artículos 422 a 425 de la Ley Federal del Trabajo (LFT), sin perjuicio de las condiciones de trabajo pactadas individual o colectivamente y de los derechos irrenunciables previstos en la legislación aplicable.\n\nPara las personas que laboren bajo la modalidad de teletrabajo serán además aplicables el Capítulo XII Bis de la LFT y la NOM-037-STPS-2023, Teletrabajo-Condiciones de seguridad y salud en el trabajo, cuando legalmente corresponda.\n\n## CAPÍTULO I. DISPOSICIONES GENERALES\n\n**Artículo 1. Ámbito personal.** El Reglamento será aplicable a todas las personas trabajadoras sujetas a una relación laboral con la empresa en México, cualquiera que sea su puesto, área, modalidad o lugar autorizado de prestación de servicios.\n\n**Artículo 2. Modalidades.** La prestación de servicios podrá desarrollarse en modalidad presencial/coworking, híbrida o de teletrabajo, conforme al contrato individual, convenio o documento aplicable. La modalidad no modifica por sí misma la subordinación, jornada, obligaciones ni derechos legales.\n\n**Artículo 3. Principios.** La interpretación y aplicación de este Reglamento deberá respetar la dignidad, igualdad, no discriminación, privacidad, protección de datos, seguridad y salud, debido procedimiento disciplinario y derechos laborales irrenunciables.\n\n## CAPÍTULO II. JORNADAS, HORARIOS Y ASISTENCIA \n\n**Artículo 4. Horarios ordinarios.** La empresa podrá operar, según puesto y asignación documentada, con jornadas de 07:00 a 16:00 horas o de 08:00 a 17:00 horas. Cualquier cambio deberá ser comunicado por los canales autorizados y respetar los límites legales y contractuales.\n\n**Artículo 5. Comida.** La jornada contempla un periodo de comida de una hora, que podrá asignarse de 13:00 a 14:00 o de 14:00 a 15:00 horas, conforme a la operación y asignación comunicada.\n\n**Artículo 6. Pausas durante la jornada.** No se establecen descansos adicionales fijos de quince minutos. Las pausas adicionales podrán ser autorizadas y organizadas por el Team Leader (TL) o Supervisor, atendiendo a la carga de trabajo, continuidad de la operación y necesidades del servicio. Su autorización en una jornada determinada no genera un derecho permanente para jornadas posteriores. En todo caso deberán respetarse los periodos de descanso, seguridad y salud que resulten obligatorios conforme a la legislación y normas aplicables, particularmente en la modalidad de teletrabajo.\n\n**Artículo 7. Registro de asistencia.** La asistencia podrá verificarse mediante Teams, Meet, Lark u otra plataforma autorizada, además de registros objetivos del CRM o sistemas corporativos. La persona trabajadora deberá participar en el pase de lista y, cuando sea requerido para identificación o interacción directa, encender cámara durante dicho pase, con respeto a la privacidad y proporcionalidad.\n\n**Artículo 8. Retardos.** No existe periodo interno de tolerancia. La conexión posterior a la hora asignada podrá registrarse como retardo. La empresa documentará por separado retardos, ausencias parciales, interrupciones no autorizadas y faltas completas, atendiendo a la duración y circunstancias reales; una regla interna no sustituirá los supuestos legales de rescisión.\n\n**Artículo 9. Disponibilidad.** Durante la jornada la persona trabajadora deberá mantenerse disponible y desempeñando las actividades asignadas, salvo comida, pausas autorizadas, permisos, incapacidades, contingencias justificadas o causas legales. Registrar asistencia y posteriormente abandonar o suspender las actividades sin autorización constituye una incidencia distinta al simple retardo.\n\n**Artículo 10. Descanso semanal.** Se otorgará al menos el descanso semanal que corresponda conforme a la LFT. En la operación con descanso rolado, la selección o asignación se documentará conforme al esquema operativo vigente, sin afectar derechos mínimos legales.\n\n## CAPÍTULO III. TELETRABAJO Y CONTINUIDAD OPERATIVA\n\n**Artículo 11. Teletrabajo.** Cuando se actualice legalmente la modalidad de teletrabajo, la empresa y la persona trabajadora observarán las obligaciones previstas en los artículos 330-A y siguientes de la LFT y la NOM-037-STPS-2023.\n\n**Artículo 12. Lugar de teletrabajo.** El teletrabajo se realizará en el lugar o lugares acordados o informados conforme a los instrumentos aplicables. Podrán admitirse ubicaciones alternativas cuando resulten compatibles con la seguridad, confidencialidad, conectividad y condiciones de seguridad y salud requeridas.\n\n**Artículo 13. Equipos y costos.** La empresa regularizará y documentará, cuando resulte aplicable el régimen legal de teletrabajo, la provisión, instalación, mantenimiento de equipos y la asunción de costos que correspondan conforme a la LFT, incluidos los servicios de telecomunicación y la parte proporcional de electricidad en los términos legalmente procedentes. Este Reglamento no transfiere al trabajador obligaciones patronales irrenunciables.\n\n**Artículo 14. Fallas de conectividad.** Ante falla de internet, energía, equipo o plataforma que impida laborar, la persona trabajadora deberá informar tan pronto como sea posible al Team Leader (TL) o a Recursos Humanos (RH) asignado, explicar la incidencia, aportar evidencia razonable cuando exista y mantener comunicación para reanudar actividades. La incidencia será valorada según sus circunstancias y no se presumirá injustificada automáticamente.\n\n**Artículo 15. Supervisión.** La empresa podrá utilizar registros de conexión, desconexión, tiempo de actividad, llamadas, mensajes, registros, operaciones, CRM y evidencias generadas por sistemas de trabajo, siempre bajo criterios de necesidad, proporcionalidad, finalidad laboral, privacidad y protección de datos.\n\n## CAPÍTULO IV. SEGURIDAD DE INFORMACIÓN, DATOS Y ACCESOS \n\n**Artículo 16. Información protegida.** La información de clientes, teléfonos, cuentas, datos financieros, bases de datos, contraseñas, códigos, expedientes, estrategias, métricas y demás información no pública sólo podrá utilizarse para fines laborales autorizados.\n\n**Artículo 17. Descargas y capturas.** Cuando las funciones permitan descargar información o realizar capturas en equipos personales, su uso se limitará estrictamente a fines laborales autorizados. Queda prohibida su conservación, explotación, difusión, transferencia o utilización para beneficio personal o de terceros.\n\n**Artículo 18. WhatsApp y dispositivos personales.** El uso autorizado de WhatsApp o dispositivos personales para actividades de trabajo no autoriza el uso personal de la información de clientes ni su envío a personas ajenas a la operación.\n\n**Artículo 19. Credenciales.** Los usuarios, contraseñas y accesos son personales. Queda prohibido prestarlos, compartirlos, intercambiarlos, utilizar credenciales ajenas o permitir que terceros operen con ellas, salvo mecanismos institucionales expresamente autorizados.\n\n## CAPÍTULO V. COBRANZA, PAGOS Y PREVENCIÓN DE DESVÍOS \n\n**Artículo 20. Medios de pago.** Las personas que realicen cobranza únicamente podrán proporcionar a clientes los medios, cuentas, CLABE, referencias, enlaces o mecanismos de pago expresamente autorizados por la empresa.\n\n**Artículo 21. Prohibición absoluta de desvío.** Queda prohibido proporcionar cuentas bancarias personales, de familiares, compañeros o terceros no autorizados; recibir, solicitar, redirigir o intentar redirigir pagos de clientes a medios distintos de los autorizados; apropiarse de pagos; ocultar operaciones; alterar comprobantes; o inducir al cliente a pagar fuera de los canales autorizados.\n\n**Artículo 22. Preservación de evidencia.** Ante indicios de desvío, manipulación o apropiación de recursos, deberán preservarse logs, mensajes, grabaciones, comprobantes, CRM y demás evidencia disponible. RH realizará el análisis laboral correspondiente, sin perjuicio de que la empresa determine otras acciones legales procedentes.\n\n## CAPÍTULO VI. MÉTRICAS Y DESEMPEÑO\n\n**Artículo 23. Métricas objetivas.** Las personas trabajadoras deberán cumplir las funciones y parámetros de desempeño lícitos, objetivos, razonables y previamente comunicados que correspondan a su puesto. Las cifras y metas específicas podrán constar en políticas, anexos, tableros o comunicaciones operativas, para permitir su actualización sin alterar indebidamente el Reglamento.\n\n**Artículo 24. Marketing.** Entre los indicadores de Marketing podrán considerarse número de llamadas, mensajes y registros, además de otros indicadores objetivos comunicados previamente.\n\n**Artículo 25. Cobranza.** Entre los indicadores de Cobranza podrán considerarse número de llamadas, mensajes y pagos efectuados, además de otros indicadores objetivos comunicados previamente.\n\n**Artículo 26. Validación.** El TL realizará la medición operativa; el Supervisor validará la información y RH podrá corroborar evidencia y consistencia antes de utilizarla en un procedimiento disciplinario o de terminación.\n\n**Artículo 27. Distinción de conductas.** El bajo rendimiento, incumplimiento de jornada, abandono de actividades, falsificación de evidencias, manipulación, desvío de pagos y faltas de asistencia serán analizados como conductas diferentes y no se presumirán equivalentes.\n\n## CAPÍTULO VII. PERMISOS, AUSENCIAS E INCAPACIDADES \n\n**Artículo 28. Permisos.** Los permisos previsibles deberán solicitarse al TL con al menos dos días de anticipación cuando las circunstancias lo permitan. El TL canalizará la solicitud y RH resolverá conforme a las políticas, necesidades operativas y derechos legales.\n\n**Artículo 29. Justificación.** Las ausencias podrán acreditarse mediante documentación idónea, incluyendo constancias médicas, incapacidades legalmente reconocidas, citatorios o constancias de comparecencia ante autoridad u organismo jurisdiccional, según corresponda. RH valorará la suficiencia y autenticidad de la documentación.\n\n**Artículo 30. Faltas injustificadas.** Las faltas se documentarán individualmente. Cuando se actualice el supuesto legal de más de tres faltas de asistencia en un periodo de treinta días, sin permiso o causa justificada, RH analizará la procedencia de la rescisión conforme a la LFT; no operará una baja automática sin revisión y procedimiento.\n\n**Artículo 31. Incomunicación.** Cuando una persona deje de conectarse o presentarse y no responda, TL y RH deberán documentar intentos razonables de contacto, días de ausencia y evidencia disponible antes de determinar la medida procedente.\n\n## CAPÍTULO VIII. CONDUCTAS PROHIBIDAS\n\n**Artículo 32. Prohibiciones generales.** Se prohíben, entre otras conductas: falsificar o alterar registros; simular llamadas o actividades; manipular capturas o evidencias; registrar operaciones inexistentes; extraer o utilizar indebidamente bases de datos; compartir información confidencial; desviar pagos; usar credenciales ajenas; acosar, hostigar o discriminar; presentarse o laborar bajo efectos que comprometan la seguridad o desempeño; abandonar actividades; dormir durante la jornada cuando implique incumplimiento; realizar actividades personales prolongadas incompatibles con la jornada; y desobedecer instrucciones lícitas relacionadas con el trabajo.\n\n**Artículo 33. Otro empleo durante jornada.** No podrá prestarse simultáneamente un servicio para otra empresa o tercero durante la jornada comprometida con la empresa cuando ello implique incumplimiento de horario, disponibilidad, confidencialidad, conflicto de interés o afectación de las funciones. Esta regla no constituye una prohibición general de actividades lícitas fuera de la jornada.\n\n**Artículo 34. Conducta en reuniones.** En videollamadas, reuniones con clientes o juntas internas se mantendrá una conducta profesional, respetuosa y compatible con la función. Las reglas de presentación deberán ser razonables y no discriminatorias.\n\n**Artículo 35. Grabaciones.** Las grabaciones de llamadas o videollamadas se realizarán únicamente cuando exista finalidad laboral legítima, información previa o base aplicable y medidas de protección de datos. Queda prohibida su difusión o utilización para fines personales.\n\n## CAPÍTULO IX. RESPONSABILIDADES Y LÍMITES DE MANDO\n\n**Artículo 36. Cadena de reporte.** Los TL reportarán a su Supervisor y los Supervisores al RH asignado, conforme a la estructura vigente.\n\n**Artículo 37. Límites.** Ningún TL o Supervisor podrá por decisión unilateral cambiar horarios en contravención de las condiciones aplicables, amenazar con despidos, ejecutar una baja sin intervención de RH, exigir trabajo fuera de jornada sin el tratamiento legal correspondiente, modificar métricas retroactivamente, ordenar alterar evidencia, ocultar irregularidades o tolerar conscientemente un posible desvío o fraude sin reportarlo.\n\n**Artículo 38. Bajas.** Toda propuesta de terminación o rescisión deberá canalizarse a RH. La decisión y comunicación deberán realizarse por las personas facultadas y conforme a la LFT y documentación aplicable.\n\n## CAPÍTULO X. PROCEDIMIENTO DISCIPLINARIO\n\n**Artículo 39. Principios.** Las medidas disciplinarias deberán guardar relación con la conducta acreditada, gravedad, intencionalidad cuando resulte demostrable, afectación, reincidencia, antecedentes y demás circunstancias objetivas. No podrán imponerse sanciones prohibidas por la ley.\n\n**Artículo 40. Flujo.** El procedimiento ordinario será: (1) TL detecta y solicita; (2) Supervisor revisa y valida; (3) RH analiza la evidencia; (4) se informa a la persona trabajadora la conducta atribuida; (5) se le permite manifestar lo que a su derecho convenga y aportar elementos; (6) RH documenta el resultado; y (7) se determina, en su caso, la medida procedente.\n\n**Artículo 41. Acta administrativa.** Cuando corresponda, RH elaborará el acta administrativa describiendo hechos objetivos, fechas, sistemas o evidencias, manifestaciones de la persona trabajadora, personas intervinientes y conclusión. La negativa a firmar podrá asentarse y no equivaldrá por sí sola a aceptación de los hechos.\n\n**Artículo 42. Derecho de audiencia.** Antes de aplicar una suspensión disciplinaria, la persona trabajadora tendrá derecho a ser oída, conforme al artículo 423, fracción X, de la LFT.\n\n## CAPÍTULO XI. SISTEMA DE MEDIDAS DISCIPLINARIAS\n\n**Artículo 43. Escala orientativa.** La siguiente escala establece rangos máximos internos y no sustituye el análisis individual. La reincidencia no será el único criterio y la empresa podrá aplicar una medida menor cuando las circunstancias lo justifiquen. Cuando los hechos pudieran constituir una causa legal de rescisión, RH realizará el análisis correspondiente en lugar de presumir que procede una suspensión.\n\n- **I - Menor** · Ejemplos: Retardo aislado; incumplimiento operativo menor; omisión subsanable sin daño relevante. · Medidas posibles: Amonestación verbal documentada o escrita; capacitación; acta cuando proceda. · Control: Evidencia + registro.\n- **II - Relevante** · Ejemplos: Reincidencia; desconexión no autorizada; ausencia parcial; incumplimiento relevante de procedimiento. · Medidas posibles: Amonestación escrita, acta y/o suspensión de 1 a 2 días sin goce de salario. · Control: Audiencia previa.\n- **III - Grave** · Ejemplos: Abandono significativo de jornada; falsificación o manipulación relevante sin perjuicio mayor acreditado; reincidencia grave. · Medidas posibles: Suspensión de 3 a 5 días sin goce de salario. · Control: Audiencia + resolución de RH.\n- **IV - Muy grave** · Ejemplos: Conductas de alta afectación que, tras análisis, no se encaucen directamente a rescisión; reincidencia especialmente grave. · Medidas posibles: Suspensión de 6 a 8 días sin goce de salario. · Control: Máximo reglamentario: 8 días.\n- **Especial** · Ejemplos: Hechos que pudieran actualizar causas de rescisión, desvío de pagos, apropiación, violencia, revelación grave de información u otros supuestos legales. · Medidas posibles: Preservación de evidencia y análisis jurídico-laboral; no se aplica automáticamente la escala progresiva. · Control: RH + representante facultado.\n\n**Artículo 44. Suspensión disciplinaria.** Cuando proceda conforme a este Reglamento, podrá imponerse suspensión temporal sin goce de salario hasta por un máximo de ocho días, previa audiencia de la persona trabajadora. La duración concreta se determinará atendiendo a la gravedad de la conducta, reincidencia, antecedentes, afectación y demás circunstancias objetivas, y deberá quedar justificada por escrito.\n\n**Artículo 45. No duplicidad automática.** Una medida disciplinaria aplicada respecto de determinados hechos deberá considerarse al analizar cualquier actuación posterior relacionada con los mismos, evitando decisiones automáticas o contradictorias y sujetando cualquier rescisión al marco legal aplicable.\n\n## CAPÍTULO XII. DISPOSICIONES FINALES Y FORMALIZACIÓN\n\n**Artículo 46. Comisión Mixta.** El Reglamento deberá formularse por una comisión mixta de representantes de las personas trabajadoras y de la persona empleadora, conforme al artículo 424 de la LFT.\n\n**Artículo 47. Depósito.** Una vez acordado y firmado, se realizarán las gestiones de depósito ante el Centro Federal de Conciliación y Registro Laboral dentro del plazo legal aplicable.\n\n**Artículo 48. Difusión.** Una vez que resulte jurídicamente aplicable, deberá entregarse o difundirse a las personas trabajadoras y mantenerse visible o accesible por los medios correspondientes, conforme a la LFT.\n\n**Artículo 49. Jerarquía normativa.** Cualquier disposición de este Reglamento contraria a la LFT, normas oficiales, contrato colectivo aplicable o demás normas imperativas se tendrá por no puesta en la medida de la contradicción.\n\n**Artículo 50. Vigencia.** El presente Reglamento surtirá efectos a partir de su depósito ante el Centro Federal de Conciliación y Registro Laboral, conforme al procedimiento legal aplicable, y deberá difundirse entre las personas trabajadoras por los medios correspondientes.\n\n**Artículo 51. Modificaciones.** La Empresa podrá proponer revisiones o modificaciones al presente Reglamento cuando existan necesidades operativas, organizacionales o cambios normativos, sin que sea necesario un aviso previo para iniciar su revisión. Ninguna modificación surtirá efectos por la sola decisión unilateral de la Empresa: deberá observarse el procedimiento legal aplicable, incluida la intervención de la Comisión Mixta y el depósito correspondiente cuando proceda. Una vez formalizada, la modificación será comunicada al personal por los medios autorizados.\n\n## ANEXO A. MATRIZ OPERATIVA DE INCIDENCIAS\n\n- **Retardo** · Evidencia mínima: Registro de pase de lista/conexión · TL: Reporta · Supervisor: Valida · RH: Registra/decide\n- **Desconexión o ausencia parcial** · Evidencia mínima: Logs + comunicaciones · TL: Documenta · Supervisor: Valida · RH: Escucha y resuelve\n- **Bajo rendimiento** · Evidencia mínima: Métricas comunicadas + periodo · TL: Mide · Supervisor: Valida · RH: Corrobora\n- **Falta injustificada** · Evidencia mínima: Asistencia + intentos de contacto · TL: Reporta · Supervisor: Valida · RH: Califica\n- **Falsificación** · Evidencia mínima: Originales, logs y comparativo · TL: Preserva · Supervisor: Valida · RH: Investiga\n- **Desvío de pago** · Evidencia mínima: CRM + conversación + cuenta + comprobante · TL: Escala · Supervisor: Escala · RH: Investigación prioritaria\n\n## ANEXO B. BASE LEGAL DE REFERENCIA\n\nLey Federal del Trabajo, artículos 422 a 425: Reglamento Interior de Trabajo, contenido, formulación, depósito y vigencia.\n\nLey Federal del Trabajo, artículo 423, fracción X: disposiciones disciplinarias, audiencia previa y suspensión disciplinaria hasta por ocho días.\n\nLey Federal del Trabajo, artículo 47: causas de rescisión de la relación de trabajo sin responsabilidad para el patrón.\n\nLey Federal del Trabajo, artículos 330-A a 330-K: régimen especial de teletrabajo.\n\nNOM-037-STPS-2023: condiciones de seguridad y salud aplicables al teletrabajo.";
+const TXT_CONF = "## DECLARACIÓN\n\nLa persona firmante reconoce que, por razón de sus funciones, servicios, capacitación, acceso a sistemas o herramientas de trabajo, puede conocer información no pública de {empresa}, sus operaciones, clientes, personal, proveedores y procesos. Se obliga a utilizar dicha información únicamente para fines autorizados relacionados con sus funciones y a conservar su confidencialidad.\n\n## 1. INFORMACIÓN CONFIDENCIAL\n\nPodrá considerarse información confidencial, cuando no sea pública y su naturaleza justifique su reserva: bases de datos y datos de clientes; información de cobranza, marketing, telesales y operaciones; carteras, métricas, indicadores, estrategias, guiones, procedimientos, manuales y reportes; accesos, usuarios, contraseñas y configuraciones; información financiera o comercial; información de personal y Recursos Humanos; expedientes, incidencias, compensaciones y datos personales; información de proveedores; planes, proyectos, métodos de trabajo y demás información interna conocida por razón de las funciones.\n\n## 2. OBLIGACIONES DE CONFIDENCIALIDAD\n\nLa persona se obliga a no divulgar, compartir, publicar, reenviar, copiar, extraer o utilizar información confidencial para fines no autorizados; no proporcionar accesos o credenciales a terceros no autorizados; adoptar medidas razonables para evitar pérdida, filtración o acceso indebido; reportar de inmediato cualquier incidente de seguridad o divulgación; y, al terminar su relación con la empresa, devolver o poner a disposición de ésta la información y materiales de trabajo correspondientes, sin conservar copias no autorizadas.\n\n## 3. TRABAJO REMOTO Y DISPOSITIVOS\n\nLa obligación de confidencialidad se mantiene cuando las funciones se realicen desde casa, coworking u otros lugares autorizados, así como cuando se utilicen dispositivos propios o proporcionados para el trabajo. Deberá evitarse el acceso visual, físico o digital de terceros no autorizados y utilizarse los canales, cuentas y sistemas autorizados por la empresa.\n\n## 4. DATOS PERSONALES\n\nLos datos personales de clientes, candidatos, trabajadores u otras personas deberán tratarse únicamente conforme a las funciones autorizadas y las instrucciones aplicables, evitando su consulta, uso, transferencia o divulgación para fines ajenos al trabajo.\n\n## 5. EXCLUSIONES\n\nNo se considerará confidencial la información que sea legítimamente pública; que la persona pueda acreditar que conocía lícitamente sin obligación de reserva; que obtenga legítimamente de un tercero sin deber de confidencialidad; o cuya revelación sea exigida por ley o autoridad competente. Cuando legalmente sea posible, deberá informarse previamente a la empresa sobre este último supuesto.\n\n## 6. VIGENCIA\n\nLa obligación se mantendrá durante la relación con la empresa y continuará, después de su terminación, respecto de la información que legalmente conserve carácter confidencial. Este acuerdo no pretende impedir el ejercicio de derechos laborales ni restringir comunicaciones, quejas o denuncias protegidas por la ley.\n\n## 7. INCUMPLIMIENTO, MEDIDAS Y CONSECUENCIAS\n\nCualquier posible incumplimiento será investigado y valorado individualmente, atendiendo a la naturaleza y grado de confidencialidad de la información involucrada, la conducta realizada, su intencionalidad o negligencia, el alcance de la divulgación o acceso no autorizado, la reincidencia, el daño o riesgo generado, las pruebas disponibles y la legislación aplicable. La firma de este acuerdo no produce por sí sola una sanción automática ni la terminación automática de la relación de trabajo.\n\n### 7.1 Incumplimientos de menor gravedad\n\nCuando la conducta represente un incumplimiento a las medidas de protección de información, pero no exista evidencia de divulgación intencional, apropiación, aprovechamiento indebido o afectación grave, podrán adoptarse, según corresponda y conforme al Reglamento Interior de Trabajo y demás disposiciones aplicables:\n\na) Amonestación verbal documentada;\nb) Amonestación escrita;\nc) Levantamiento de acta administrativa;\nd) Capacitación o reentrenamiento obligatorio en materia de confidencialidad, protección de datos o seguridad de la información; y\ne) Las medidas disciplinarias válidamente previstas en el Reglamento Interior de Trabajo.\n\nLa aplicación de estas medidas no será automática y deberá respetar el derecho de la persona trabajadora a manifestar lo que a su interés corresponda.\n\n### 7.2 Incumplimientos graves\n\nPodrán considerarse de especial gravedad, sujeto a la acreditación de los hechos y al análisis jurídico del caso concreto, entre otras conductas:\n\na) Compartir deliberadamente bases de datos, carteras de clientes, información de cobranza, marketing, telesales u operaciones con personas no autorizadas;\nb) Entregar, publicar, vender, transferir o utilizar información confidencial para beneficio propio o de terceros;\nc) Compartir usuarios, contraseñas, accesos o credenciales que permitan a terceros ingresar a sistemas de la empresa;\nd) Extraer, descargar, copiar o conservar deliberadamente información confidencial fuera de los medios autorizados, especialmente después de terminar la relación con la empresa;\ne) Revelar secretos técnicos, comerciales, de fabricación o asuntos de carácter reservado cuando la conducta actualice los supuestos previstos por la legislación laboral aplicable;\nf) Alterar, eliminar, ocultar o destruir evidencia relacionada con un incidente de confidencialidad;\ng) Utilizar datos personales de clientes, candidatos, trabajadores o terceros para fines distintos de los autorizados; y\nh) Reincidir en conductas previamente documentadas relacionadas con el manejo indebido de información.\n\nCuando los hechos acreditados actualicen una causa legal de rescisión, la empresa podrá proceder a la rescisión de la relación de trabajo sin responsabilidad para el patrón, particularmente cuando resulte aplicable el artículo 47, fracción IX, de la Ley Federal del Trabajo. La procedencia deberá analizarse caso por caso y documentarse conforme a la ley.\n\nAntes de ejecutar una baja por esta causa, Recursos Humanos deberá preservar las evidencias disponibles, identificar la conducta y la disposición presuntamente infringida, recabar la manifestación de la persona involucrada cuando corresponda y verificar que los hechos acreditados actualicen una causa legal.\n\n### 7.3 Responsabilidades adicionales\n\nCuando la conducta pudiera constituir una infracción administrativa, responsabilidad civil, delito, vulneración de datos personales, apropiación indebida de secretos industriales u otra conducta jurídicamente sancionable, la empresa podrá ejercer las acciones que legalmente correspondan ante las autoridades competentes. Estas acciones serán independientes de las consecuencias laborales que, en su caso, procedan.\n\n### 7.4 Prohibición de sanciones económicas automáticas\n\nLa firma del presente Acuerdo no autoriza a la empresa a imponer multas económicas, retener salarios, descontar unilateralmente cantidades del finiquito o efectuar deducciones no permitidas por la Ley Federal del Trabajo. La existencia de daños o perjuicios deberá acreditarse y, cuando corresponda, reclamarse mediante los procedimientos legalmente aplicables.\n\n### 7.5 Procedimiento interno\n\nAnte un posible incumplimiento, Recursos Humanos deberá, según la naturaleza del caso:\n\n- Recibir, identificar y preservar la evidencia disponible.\n- Identificar la información presuntamente comprometida y las personas o sistemas involucrados.\n- Documentar objetivamente los hechos mediante reporte, acta administrativa u otro medio idóneo.\n- Recabar la manifestación de la persona involucrada cuando corresponda.\n- Evaluar gravedad, intencionalidad o negligencia, reincidencia, daño y riesgo generado.\n- Determinar la medida procedente conforme a la Ley Federal del Trabajo, al Reglamento Interior de Trabajo vigente y demás normativa aplicable.\n- Cuando pudiera existir responsabilidad distinta de la laboral, remitir el caso para valoración jurídica.\n\nNinguna medida disciplinaria o rescisión deberá sustentarse exclusivamente en presunciones; deberá existir documentación y elementos objetivos que permitan acreditar los hechos correspondientes.\n\n## 8. BASE LEGAL Y FINALIDAD\n\nEste acuerdo se apoya, entre otras disposiciones aplicables, en el artículo 134, fracción XIII, de la Ley Federal del Trabajo, relativo al deber de guardar secretos técnicos, comerciales, de fabricación y asuntos administrativos reservados; en el artículo 47, fracción IX, de la misma Ley, respecto de la revelación de secretos o asuntos reservados con perjuicio de la empresa como posible causa de rescisión; y en el artículo 423, fracción X, respecto de las disposiciones disciplinarias y su procedimiento dentro del Reglamento Interior de Trabajo.\n\nAsimismo, se apoya en la Ley Federal de Protección a la Propiedad Industrial, particularmente en las disposiciones relativas a secretos industriales, su confidencialidad y el deber de abstenerse de divulgarlos cuando se tenga acceso a ellos por motivo del trabajo, empleo, cargo o puesto; y en la legislación federal aplicable en materia de protección de datos personales en posesión de particulares.\n\nSu finalidad es delimitar y documentar el deber de reserva, establecer reglas claras para el manejo de información y definir un marco interno para valorar posibles incumplimientos, sin sustituir los procedimientos y requisitos exigidos por la legislación laboral aplicable.\n\n## 9. ACEPTACIÓN\n\nDeclaro haber leído y comprendido el presente acuerdo; conocer las obligaciones de confidencialidad relacionadas con la información a la que tenga acceso por razón de mis funciones; y haber sido informado de las posibles consecuencias laborales y legales derivadas de un incumplimiento, las cuales deberán determinarse conforme a los hechos acreditados y a la legislación aplicable.";
+
 // ── Plantillas (HTML carta) ──
 // Los textos fijos de cada formato son "bloques" editables en Plantillas (con campos como {nombre}); la estructura
 // (tablas, títulos de sección, firmas) está aquí. Cada documento guarda los bloques vigentes al emitirse (texto congelado).
@@ -1884,7 +1905,8 @@ function empSnapshot(e) {
 const CIUDAD = 'Ciudad de México';
 const TPL_VARS = {
   empresa: 'Nombre de la empresa', ciudad: 'Ciudad de México', nombre: 'Nombre completo', num: 'No. de empleado', puesto: 'Puesto', area: 'Área', grupo: 'Equipo', lider: 'Líder del equipo',
-  ingreso: 'Fecha de ingreso', fecha: 'Fecha del documento', fecha_efectiva: 'Fecha efectiva / último día', fecha_hechos: 'Fecha de los hechos', representante: 'Firma por la empresa', monto_letra: 'Monto con letra (convenio)', forma_pago: 'Forma de pago (convenio)'
+  ingreso: 'Fecha de ingreso', fecha: 'Fecha del documento', fecha_efectiva: 'Fecha efectiva / último día', fecha_hechos: 'Fecha de los hechos', representante: 'Firma por la empresa', monto_letra: 'Monto con letra (convenio)', forma_pago: 'Forma de pago (convenio)',
+  fecha_ingreso: 'Fecha de ingreso (contrato)', fecha_fin: 'Fin del periodo a prueba (contrato)', sueldo: 'Sueldo mensual (contrato)', horario: 'Horario (contrato)', supervisor: 'Supervisor asignado'
 };
 const DOC_BLOCKS = {
   general: [
@@ -1924,6 +1946,27 @@ const DOC_BLOCKS = {
     { k: 'segunda', label: 'Cláusula segunda (antes del desglose)', def: '**SEGUNDA.** La Empresa pagará a la Persona Trabajadora la cantidad total de **{monto_letra}**, mediante **{forma_pago}**, que comprende los siguientes conceptos:' },
     { k: 'resto', label: 'Cláusulas siguientes (después del desglose)', def: '**TERCERA.** Este convenio contiene una relación circunstanciada de los hechos que lo motivan y de los derechos comprendidos en él, conforme al artículo 33 de la Ley Federal del Trabajo, y no implica renuncia de la Persona Trabajadora a los salarios devengados, indemnizaciones y demás prestaciones que deriven de los servicios prestados.\n\n**CUARTA.** La Persona Trabajadora manifiesta que celebra el presente convenio de manera libre y voluntaria, sin coacción, error ni violencia. Las partes podrán ratificarlo ante el Centro de Conciliación o la autoridad laboral competente para su aprobación.\n\n**QUINTA.** Una vez cubierta la cantidad señalada, la Persona Trabajadora otorgará el recibo correspondiente.' }
   ],
+  contrato: [
+    { k: 'titulo_15', label: 'Título · 15 días', def: 'CONTRATO INDIVIDUAL DE TRABAJO CON PERIODO A PRUEBA DE 15 DÍAS' },
+    { k: 'titulo_30', label: 'Título · 30 días', def: 'CONTRATO INDIVIDUAL DE TRABAJO CON PERIODO A PRUEBA DE 30 DÍAS' },
+    { k: 'titulo_indet', label: 'Título · indeterminado', def: 'CONTRATO INDIVIDUAL DE TRABAJO POR TIEMPO INDETERMINADO' },
+    { k: 'proemio', label: 'Párrafo inicial', def: 'En {ciudad}, el {fecha}, celebran el presente contrato **{empresa}**, en lo sucesivo "EL PATRÓN", y **{nombre}**, en lo sucesivo "LA PERSONA TRABAJADORA", conforme a las siguientes declaraciones y cláusulas.' },
+    { k: 'declaraciones', label: 'Declaraciones', def: '**I.** EL PATRÓN declara ser una sociedad legalmente constituida conforme a las leyes mexicanas, con domicilio en {ciudad}, y que requiere los servicios de LA PERSONA TRABAJADORA para el puesto de {puesto}.\n\n**II.** LA PERSONA TRABAJADORA declara que los datos asentados en este contrato son correctos y que cuenta con capacidad para obligarse.\n\n**III.** Las partes reconocen una relación de trabajo personal, remunerada y subordinada para desempeñar las funciones correspondientes al puesto contratado.' },
+    { k: 'duracion_15', label: 'Cláusula primera · 15 días', def: '**PRIMERA. Relación de trabajo.** Las partes acuerdan sujetar la relación de trabajo a un periodo a prueba de quince días, del {fecha_ingreso} al {fecha_fin}, con el único fin de verificar que LA PERSONA TRABAJADORA cumple con los requisitos y conocimientos necesarios para desarrollar el trabajo solicitado. El periodo a prueba no será prorrogado, renovado ni aplicado sucesivamente.' },
+    { k: 'duracion_30', label: 'Cláusula primera · 30 días', def: '**PRIMERA. Relación de trabajo.** Las partes acuerdan sujetar la relación de trabajo a un periodo a prueba de treinta días, del {fecha_ingreso} al {fecha_fin}, con el único fin de verificar que LA PERSONA TRABAJADORA cumple con los requisitos y conocimientos necesarios para desarrollar el trabajo solicitado. El periodo a prueba no será prorrogado, renovado ni aplicado sucesivamente.' },
+    { k: 'duracion_indet', label: 'Cláusula primera · indeterminado', def: '**PRIMERA. Relación de trabajo.** LA PERSONA TRABAJADORA prestará servicios personales subordinados para EL PATRÓN por tiempo indeterminado, a partir del {fecha_ingreso}.' },
+    { k: 'funciones_marketing', label: 'Cláusula segunda · funciones (Marketing)', def: '**SEGUNDA. Puesto y funciones.** El puesto será {puesto}. Sus funciones incluyen contacto y prospección, llamadas y mensajes mediante canales autorizados, generación y seguimiento de registros, actualización de bases, participación en campañas, reportes de actividad y demás funciones compatibles con el puesto.' },
+    { k: 'funciones_cobranza', label: 'Cláusula segunda · funciones (Cobranza)', def: '**SEGUNDA. Puesto y funciones.** El puesto será {puesto}. Sus funciones incluyen gestión y seguimiento de cartera, contacto con clientes por canales autorizados, llamadas y mensajes, registro de gestiones, seguimiento de compromisos, actualización de bases, reportes de actividad y demás funciones compatibles con el puesto.' },
+    { k: 'funciones_general', label: 'Cláusula segunda · funciones (otras áreas)', def: '**SEGUNDA. Puesto y funciones.** El puesto será {puesto}. Las funciones, actividades y responsabilidades serán las especificadas en el perfil y descripción de puesto vigente, así como las actividades lícitas directamente relacionadas con la naturaleza de dicho puesto.' },
+    { k: 'clausulas', label: 'Cláusulas tercera en adelante', def: TXT_CLAUSULAS }
+  ],
+  reglamento: [
+    { k: 'cuerpo', label: 'Texto del reglamento (## para títulos, - para listas)', def: TXT_RIT },
+    { k: 'constancia', label: 'Constancia de recepción', def: 'Declaro que recibí y tuve acceso al presente Reglamento Interior de Trabajo de {empresa} para su conocimiento y observancia, sin que esta constancia implique renuncia a derechos laborales irrenunciables.' }
+  ],
+  confidencialidad: [
+    { k: 'cuerpo', label: 'Texto del acuerdo (## para títulos, - para listas)', def: TXT_CONF }
+  ],
   constancia_baja: [
     { k: 'titulo', label: 'Título', def: 'CONSTANCIA ADMINISTRATIVA DE BAJA DE PERSONAL' },
     { k: 'constancia', label: 'Texto de la constancia', def: 'En {ciudad}, a {fecha}, se hace constar que Recursos Humanos registró administrativamente la baja de la persona trabajadora identificada en este documento, con efectos a partir del {fecha_efectiva}.\n\nLa presente constancia tiene exclusivamente fines de control, trazabilidad y cierre administrativo del expediente laboral. No sustituye la renuncia voluntaria, aviso de rescisión, convenio, recibo de finiquito, comprobante de pago o cualquier otro documento que resulte aplicable conforme a la naturaleza de la terminación.' }
@@ -1944,13 +1987,22 @@ function tplVars(d, B) {
   const s = d.snapshot || {}, x = d.datos || {};
   return { empresa: B.empresa, ciudad: CIUDAD, nombre: s.nombre, num: s.num || 's/n', puesto: s.puesto, area: s.area, grupo: s.grupo, lider: s.lider, ingreso: fechaLarga(s.ingreso),
     fecha: fechaLarga(d.fecha), fecha_efectiva: fechaLarga(x.fecha_efectiva), fecha_hechos: fechaLarga(x.fecha_hechos), representante: x.representante || x.rh_nombre || 'Recursos Humanos',
-    monto_letra: x.monto != null ? montoLetras(x.monto) : '________', forma_pago: String(x.forma_pago || '________').toLowerCase() };
+    monto_letra: x.monto != null ? montoLetras(x.monto) : '________', forma_pago: String(x.forma_pago || '________').toLowerCase(),
+    fecha_ingreso: fechaLarga(x.fecha_ingreso || s.ingreso), fecha_fin: fechaLarga(x.fecha_fin), sueldo: x.sueldo != null ? money(x.sueldo) + ' mensuales' : '________', horario: x.horario || 'el asignado por EL PATRÓN', supervisor: s.supervisor || s.lider || '' };
 }
 // Texto de bloque → HTML seguro: {campo} se sustituye, **negritas**, renglón en blanco = párrafo
 function fillInline(text, vars) {
   return esc(text).replace(/\{(\w+)\}/g, (m, k) => (k in vars ? esc(vars[k] ?? '') : m)).replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
 }
-const paras = (text, vars) => String(text || '').split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean).map((p) => `<p>${fillInline(p, vars)}</p>`).join('');
+// "## " título · "### " subtítulo · renglones con "- " = lista
+const paras = (text, vars) => String(text || '').split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean).map((p) => {
+  if (/^### /.test(p)) return `<h3 style="font-size:10pt;margin:10px 0 4px">${fillInline(p.slice(4), vars)}</h3>`;
+  if (/^## /.test(p)) return h2(fillInline(p.slice(3), vars));
+  if (/^# /.test(p)) return `<h2 style="font-size:12pt;text-align:center;margin:14px 0 8px">${fillInline(p.slice(2), vars)}</h2>`;
+  const ls = p.split('\n');
+  if (ls.every((l) => /^- /.test(l.trim()))) return `<ul style="margin:4px 0 8px 18px;padding:0">${ls.map((l) => `<li>${fillInline(l.trim().slice(2), vars)}</li>`).join('')}</ul>`;
+  return `<p>${fillInline(p, vars)}</p>`;
+}).join('');
 
 const P_TD = 'border:1px solid #bbb;padding:6px 8px;vertical-align:top';
 const nl = (s) => esc(s || '').replace(/\n/g, '<br>');
@@ -2017,6 +2069,22 @@ function docHtml(d, extra = {}) {
       (conceptos.length ? `<table style="width:100%;border-collapse:collapse;margin:6px 0 10px;font-size:10pt">${conceptos.map((c) => { const m = c.match(/^(.*?)[:\t]\s*(.+)$/); return `<tr><td style="${P_TD}">${esc(m ? m[1] : c)}</td><td style="${P_TD};text-align:right;width:30%">${esc(m ? m[2] : '')}</td></tr>`; }).join('')}<tr><td style="${P_TD}"><b>Total</b></td><td style="${P_TD};text-align:right"><b>${money(x.monto)}</b></td></tr></table>` : '') +
       P('resto') +
       firmas([x.representante || 'Representante', 'Por ' + B.empresa], [s.nombre, 'Persona trabajadora']) + firmas(['Testigo', 'Nombre y firma'], ['Testigo', 'Nombre y firma']) + pie(d);
+  } else if (d.tipo === 'contrato') {
+    const k = { '15_dias': '15', '30_dias': '30' }[x.contrato_tipo] || 'indet';
+    const fun = /market/i.test(s.area || '') ? 'funciones_marketing' : /cobran/i.test(s.area || '') ? 'funciones_cobranza' : 'funciones_general';
+    b = docHead(d, B, B['titulo_' + k]) +
+      empTable(s, [['CURP / RFC', [s.curp, s.rfc].filter(Boolean).join(' / ') || '—', 'Fecha de ingreso', fmtDate(x.fecha_ingreso || s.ingreso)],
+        ['Sueldo mensual', x.sueldo != null ? money(x.sueldo) : '—', 'Horario', x.horario || '—'],
+        ['Tipo de contrato', CONTRATOS[x.contrato_tipo] || '—', x.fecha_fin ? 'Fin del periodo a prueba' : 'Supervisor', x.fecha_fin ? fmtDate(x.fecha_fin) : (s.supervisor || '—')]]) +
+      P('proemio') + h2('Declaraciones') + P('declaraciones') + h2('Cláusulas') + P('duracion_' + k) + P(fun) + P('clausulas') +
+      firmas([x.representante || 'Representante de la empresa', 'EL PATRÓN · ' + B.empresa], [s.nombre, 'LA PERSONA TRABAJADORA']) + firmas(['Testigo', 'Nombre y firma'], ['Testigo', 'Nombre y firma']) + pie(d);
+  } else if (d.tipo === 'reglamento') {
+    b = docHead(d, B, 'REGLAMENTO INTERIOR DE TRABAJO') + P('cuerpo') +
+      `<div style="page-break-before:always"></div>` + h2('Constancia de recepción y conocimiento') + empTable(s, [['Fecha', fechaLarga(d.fecha)]]) + P('constancia') +
+      `<div style="width:55%;margin:56px auto 0;border-top:1px solid #222;padding-top:6px;text-align:center;page-break-inside:avoid">${esc(s.nombre)}<br><span style="font-size:8.5pt">Nombre y firma de la persona trabajadora</span></div>` + pie(d);
+  } else if (d.tipo === 'confidencialidad') {
+    b = docHead(d, B, 'ACUERDO DE CONFIDENCIALIDAD') + empTable(s, [['Fecha', fechaLarga(d.fecha)]]) + P('cuerpo') +
+      firmas([s.nombre, 'Nombre y firma de la persona trabajadora'], [x.representante || 'Recursos Humanos', 'Por ' + B.empresa]) + pie(d);
   } else if (d.tipo === 'constancia_baja') {
     const o = extra.origen;
     b = docHead(d, B, B.titulo) + empTable(s, [['Fecha de ingreso', fmtDate(s.ingreso), 'Equipo', s.grupo || '—']]) +
@@ -2073,7 +2141,7 @@ async function viewDocumentos() {
     ${is('tl', 'supervisor') && DS.tab === 'pend' && pend.length ? '<div class="notice n-info" style="margin-bottom:10px">Imprime el documento, entrégalo a la persona y sube la foto o PDF de la hoja firmada. Si se niega a firmar, regístralo con los nombres de quienes estuvieron presentes.</div>' : ''}
     <div class="list">${rows.length ? rows.map((d) => `<button type="button" class="item" data-doc="${d.id}">
       <span class="mono small muted" style="width:72px">${esc(docFolio(d))}</span>
-      <span class="grow"><span class="nm">${esc(d.snapshot.nombre || '—')}</span> <span class="badge ${DOC_TIPOS[d.tipo].grupo === 'Bajas' ? 'b-bad' : 'b-acc'}">${esc(DOC_TIPOS[d.tipo].label)}</span><br><span class="small muted">${fmtDate(d.fecha)} · ${esc(areaName(d.area_id))}${d.group_id ? ' · ' + esc(groupName(d.group_id)) : ''}${d.baja_aplicada ? ' · baja aplicada' : ''}</span></span>
+      <span class="grow"><span class="nm">${esc(d.snapshot.nombre || '—')}</span> <span class="badge ${docTipoBadge(DOC_TIPOS[d.tipo])}">${esc(DOC_TIPOS[d.tipo].label)}</span><br><span class="small muted">${fmtDate(d.fecha)} · ${esc(areaName(d.area_id))}${d.group_id ? ' · ' + esc(groupName(d.group_id)) : ''}${d.baja_aplicada ? ' · baja aplicada' : ''}</span></span>
       ${docBadge(d.estado)}</button>`).join('') : `<div class="card empty">${DS.tab === 'pend' ? 'Nada pendiente.' : 'Sin documentos.'}</div>`}</div>`;
   $$('[data-dt]').forEach((b) => b.onclick = () => { DS.tab = b.dataset.dt; viewDocumentos(); });
   $('#dtipo').onchange = (e) => { DS.tipo = e.target.value; viewDocumentos(); };
@@ -2107,7 +2175,7 @@ function newDocPicker({ emps, employee, caseRow, tipo } = {}) {
 async function pickEmployee({ tipo, emps, employee, caseRow }) {
   if (employee) return docForm({ tipo, employee, caseRow });
   emps = emps || await db('employees').select('id,nombre,apellido_paterno,apellido_materno,num_empleado,puesto,area_id,group_id,status,fecha_ingreso').get();
-  const pool = emps.filter((e) => tipo === 'constancia_baja' ? e.status === 'baja' : e.status === 'activo').sort(sortName);
+  const pool = emps.filter((e) => tipo === 'constancia_baja' ? e.status === 'baja' : DOC_CONTRATA.includes(tipo) ? ['activo', 'alta_pendiente'].includes(e.status) : e.status === 'activo').sort(sortName);
   const m = modal({ title: DOC_TIPOS[tipo].label + ' · ¿para quién?',
     body: `<input class="inp" id="pq" type="search" placeholder="Escribe nombre o número" aria-label="Buscar trabajador"><div class="list pick-list" id="pl" style="margin-top:8px;max-height:52vh;overflow:auto"></div>` });
   const draw = () => {
@@ -2166,6 +2234,7 @@ async function docForm({ tipo, employee, caseRow, existing }) {
     const v = readFields(el, [fechaF, ...fields]);
     const datos = Object.fromEntries(Object.entries(v).filter(([k, x]) => k !== '_fecha' && x != null));
     if ('recontratable' in datos) datos.recontratable = datos.recontratable === 'true';
+    if (tipo === 'contrato') { const n = { '15_dias': 14, '30_dias': 29 }[datos.contrato_tipo]; if (n) datos.fecha_fin = addDays(datos.fecha_ingreso, n); else delete datos.fecha_fin; }
     if (tipo === 'rescision') datos.antecedentes_ids = $$('[data-ant]', el).filter((c) => c.checked).map((c) => c.dataset.ant);
     if (tipo === 'constancia_baja' && datos.ultimo_dia && datos.fecha_efectiva && datos.fecha_efectiva < datos.ultimo_dia) throw new Error('La fecha efectiva no puede ser antes del último día laborado.');
     if (datos.fecha_efectiva && DOC_BAJA.includes(tipo)) datos.motivo_baja = tipo === 'rescision' ? datos.causal : tipo === 'convenio' ? 'Mutuo consentimiento' : '';
@@ -2185,7 +2254,8 @@ async function openDocument(id) {
   const s = d.snapshot || {}, t = DOC_TIPOS[d.tipo];
   const g = S.groups.find((x) => x.id === d.group_id) || {};
   const responsable = g.tipo === 'lideres' || !g.tl_id ? 'Supervisión del área' : profName(g.tl_id);
-  const canDeliver = d.estado === 'con_lider' && (is('developer') || (is('tl') && g.tl_id === S.me.id) || (is('supervisor') && S.myAreas.includes(d.area_id)));
+  const canDeliver = (d.estado === 'con_lider' && (is('developer') || (is('tl') && g.tl_id === S.me.id) || (is('supervisor') && S.myAreas.includes(d.area_id))))
+    || (d.estado === 'emitido' && DOC_CONTRATA.includes(d.tipo) && is('rh_general', 'rh_area') && S.myAreas.includes(d.area_id));
   const kv = [['Persona', `${s.nombre || '—'} · ${s.num || 's/n'}`], ['Área / equipo', `${areaName(d.area_id)}${d.group_id ? ' · ' + groupName(d.group_id) : ''}`], ['Fecha', fmtDate(d.fecha)],
     d.enviado_at ? ['Enviado al líder', `${fmtDateTime(d.enviado_at)} · entrega: ${responsable}`] : null,
     d.entregado_at ? [d.estado === 'negativa' ? 'Negativa registrada' : 'Firmado', `${fmtDateTime(d.entregado_at)} · ${profName(d.entregado_by)}`] : null,
@@ -2193,7 +2263,7 @@ async function openDocument(id) {
     d.baja_aplicada ? ['Baja', 'Aplicada automáticamente en Personal'] : null,
     d.anulado_motivo ? ['Motivo de anulación', d.anulado_motivo] : null,
     d.case_id ? ['Caso', 'Ligado a un caso'] : null, ['Texto', `Plantilla v${d.plantilla_version || 0} (congelado al emitir)`]].filter(Boolean);
-  const body = `<div class="row">${docBadge(d.estado)}<span class="badge ${t.grupo === 'Bajas' ? 'b-bad' : 'b-acc'}">${esc(t.label)}</span><span class="mono small muted">${esc(docFolio(d))}</span></div>
+  const body = `<div class="row">${docBadge(d.estado)}<span class="badge ${docTipoBadge(t)}">${esc(t.label)}</span><span class="mono small muted">${esc(docFolio(d))}</span></div>
     <div class="kv">${kv.map(([k, v]) => `<span>${esc(k)}</span><span>${esc(v)}</span>`).join('')}</div>
     ${d.firmado_path ? `<a class="evid-item" id="docfile" target="_blank" rel="noopener" aria-disabled="true"><span class="fic">${fileIcon(d.firmado_tipo)}</span><span class="grow"><b>Copia firmada</b><span class="small muted">${esc(d.firmado_nombre || '')}</span></span><span class="go" aria-hidden="true">↗</span></a>` : ''}
     ${d.estado === 'emitido' && DOC_BAJA.includes(d.tipo) && is('developer') ? `<div class="notice n-warn">Al registrar ${d.tipo === 'rescision' ? 'la firma o la negativa de firma' : 'la firma'}, la persona pasa a <b>Baja</b> en Personal con fecha ${fmtDate(d.datos.fecha_efectiva)} y sale del pase de lista.</div>` : ''}
@@ -2222,7 +2292,7 @@ async function openDocument(id) {
 
 // Registrar entrega: copia firmada (foto o PDF) o negativa de firma
 function deliveryForm(d) {
-  const canRefuse = DOC_LIDER.includes(d.tipo) || d.tipo === 'rescision';
+  const canRefuse = DOC_LIDER.includes(d.tipo) || d.tipo === 'rescision';   // contratación y bajas firmadas: sin negativa
   const needsFile = d.tipo !== 'constancia_baja';
   const fb = fileBox('docsign', { title: 'Copia firmada', label: 'Tomar foto o elegir archivo', hint: 'Foto clara de la hoja firmada o PDF escaneado · hasta 10 MB', accept: 'image/*,application/pdf', ok: (f) => /^image\/|^application\/pdf$/.test(mimeOf(f)), max: 1 });
   const m = modal({ title: `${d.estado === 'con_lider' ? 'Entrega' : 'Firma'} · ${docFolio(d)} · ${(d.snapshot || {}).nombre || ''}`,
@@ -2375,6 +2445,393 @@ async function exportDocsZip({ employeeId, titulo }, btn) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = safeName(titulo) + '_' + todayMX() + '.zip';
   document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
   toast(faltan.length ? `ZIP listo; no se pudieron bajar: ${faltan.join(', ')}` : `ZIP listo · ${docs.length} documentos`, !!faltan.length);
+}
+
+
+// ───────────────────────── Reclutamiento y selección ─────────────────────────
+// Vacante (Supervisión/RH la piden, Daniel aprueba) → candidatos (RH del área) → 1er filtro → 2º filtro → seleccionado →
+// hoja de datos → contratar y asignar a supervisor (tipo de contrato) → alta pendiente + contrato, reglamento y
+// confidencialidad para firmar. Sin hoja de datos o si no pasa un filtro, queda en "No pasaron".
+const CV_BUCKET = 'cvs';
+const ETAPAS = { registrado: ['Por entrevistar', 'b-acc'], segundo_filtro: ['2º filtro', 'b-warn'], seleccionado: ['Seleccionado', 'b-ok'], asignado: ['Contratado', 'b-ok'], descartado: ['No pasó', 'b-mut'] };
+const RESULT = { paso: 'Pasó', no_paso: 'No pasó', no_se_presento: 'No se presentó' };
+const VAC_ST = { solicitada: ['Por aprobar', 'b-warn'], abierta: ['Abierta', 'b-acc'], rechazada: ['Rechazada', 'b-bad'], cubierta: ['Cubierta', 'b-ok'], cancelada: ['Cancelada', 'b-mut'] };
+const FUENTES = ['Indeed', 'Facebook', 'Computrabajo', 'OCC', 'LinkedIn', 'Referido', 'Bolsa de trabajo', 'Volante / visita', 'Otro'];
+const DESCARTES = ['No entregó hoja de datos', 'Desistió / no le interesó', 'No cumple el perfil', 'No localizable', 'Otro'];
+const RS = { tab: null, etapa: 'registrado', q: '', vac: '', lote: '', sel: new Set() };
+const candName = (c) => [c.nombre, c.apellido_paterno, c.apellido_materno].filter(Boolean).join(' ');
+const canRecruit = () => is('developer', 'rh_general', 'rh_area');
+const etapaBadge = (e) => `<span class="badge ${ETAPAS[e][1]}">${ETAPAS[e][0]}</span>`;
+const vacLabel = (v) => v ? `#${v.folio} ${v.puesto} · ${areaName(v.area_id)}` : 'Sin vacante';
+
+async function viewReclutamiento() {
+  const v = $('#view');
+  const [vacs, cands] = await Promise.all([
+    db('vacantes').order('created_at', false).get(),
+    db('candidatos').order('created_at', false).limit(2000).get()
+  ]);
+  const vacById = Object.fromEntries(vacs.map((x) => [x.id, x]));
+  if (!RS.tab) RS.tab = is('supervisor') ? 'asignados' : is('developer') && vacs.some((x) => x.estado === 'solicitada') ? 'vacantes' : 'candidatos';
+  const tabs = is('supervisor') ? [['asignados', 'Asignados a mí'], ['vacantes', 'Vacantes']] : [['candidatos', 'Candidatos'], ['nopasaron', 'No pasaron'], ['vacantes', 'Vacantes']];
+  const head = `<div class="pagehead"><div><h1>Reclutamiento</h1><div class="muted small">${vacs.filter((x) => x.estado === 'abierta').length} vacantes abiertas · ${cands.filter((c) => ['registrado', 'segundo_filtro', 'seleccionado'].includes(c.etapa)).length} candidatos en proceso</div></div>
+    <div class="row" style="gap:8px">${canRecruit() && RS.tab === 'candidatos' ? '<button class="btn" id="cbulk">+ Varios</button><button class="btn primary" id="cnew">+ Candidato</button>' : ''}${RS.tab === 'vacantes' && is('developer', 'rh_general', 'rh_area', 'supervisor') ? '<button class="btn primary" id="vnew">+ Solicitar vacante</button>' : ''}</div></div>
+    <div class="seg" role="group" aria-label="Sección" style="margin-bottom:12px">${tabs.map(([k, l]) => `<button type="button" data-rt="${k}" class="${RS.tab === k ? 'on' : ''}">${l}${k === 'vacantes' && is('developer') && vacs.some((x) => x.estado === 'solicitada') ? ` (${vacs.filter((x) => x.estado === 'solicitada').length} por aprobar)` : ''}</button>`).join('')}</div>`;
+  let body = '';
+  if (RS.tab === 'vacantes') body = vacantesHtml(vacs, cands);
+  else if (RS.tab === 'asignados') body = await asignadosHtml(cands);
+  else body = candidatosHtml(cands, vacs, vacById);
+  v.innerHTML = head + body;
+  $$('[data-rt]').forEach((b) => b.onclick = () => { RS.tab = b.dataset.rt; RS.sel.clear(); viewReclutamiento(); });
+  const cn = $('#cnew'); if (cn) cn.onclick = () => candidatoForm({ vacs });
+  const cb = $('#cbulk'); if (cb) cb.onclick = () => bulkCandidatos(vacs);
+  const vn = $('#vnew'); if (vn) vn.onclick = () => vacanteForm();
+  $$('[data-vac]').forEach((b) => b.onclick = () => openVacante(vacById[b.dataset.vac], cands));
+  $$('[data-cand]').forEach((b) => b.onclick = (e) => { if (e.target.closest('input')) return; openCandidato(b.dataset.cand); });
+  $$('[data-ret]').forEach((b) => b.onclick = () => { RS.etapa = b.dataset.ret; RS.sel.clear(); viewReclutamiento(); });
+  const q = $('#rq'); if (q) q.oninput = (e) => { RS.q = e.target.value; clearTimeout(viewReclutamiento._t); viewReclutamiento._t = setTimeout(() => viewReclutamiento().then(() => { const i = $('#rq'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }), 300); };
+  const fv = $('#rvac'); if (fv) fv.onchange = (e) => { RS.vac = e.target.value; RS.sel.clear(); viewReclutamiento(); };
+  const fl = $('#rlote'); if (fl) fl.onchange = (e) => { RS.lote = e.target.value; RS.sel.clear(); viewReclutamiento(); };
+  // Selección para acciones en bloque
+  const sync = () => { const n = RS.sel.size; const bar = $('#rbulk'); if (bar) { bar.hidden = !n; $('#rbn').textContent = n + (n === 1 ? ' seleccionado' : ' seleccionados'); } };
+  $$('[data-csel]').forEach((c) => c.onchange = () => { c.checked ? RS.sel.add(c.dataset.csel) : RS.sel.delete(c.dataset.csel); sync(); });
+  const all = $('#rall'); if (all) all.onchange = () => { $$('[data-csel]').forEach((c) => { c.checked = all.checked; c.checked ? RS.sel.add(c.dataset.csel) : RS.sel.delete(c.dataset.csel); }); sync(); };
+  sync();
+  const pick = () => cands.filter((c) => RS.sel.has(c.id));
+  $$('[data-bulk]').forEach((b) => b.onclick = () => {
+    const xs = pick(); if (!xs.length) return toast('Selecciona al menos un candidato', true);
+    const [act, val] = b.dataset.bulk.split(':');
+    if (act === 'f1' || act === 'f2') resultadoForm(xs, act, val);
+    else if (act === 'asignar') asignarForm(xs);
+    else if (act === 'descartar') descartarForm(xs);
+  });
+  const pg = $('#purge'); if (pg) pg.onclick = () => purgeCandidatos(cands);
+  updateReclBadge(vacs, cands);
+}
+
+function candidatosHtml(cands, vacs, vacById) {
+  const nopas = RS.tab === 'nopasaron';
+  const q = norm(RS.q);
+  const base = cands.filter((c) => (!RS.vac || c.vacante_id === RS.vac) && (!RS.lote || c.lote === RS.lote) && (!q || norm(candName(c) + ' ' + (c.telefono || '') + ' ' + c.folio).includes(q)));
+  const counts = Object.fromEntries(Object.keys(ETAPAS).map((k) => [k, base.filter((c) => c.etapa === k).length]));
+  const rows = base.filter((c) => nopas ? c.etapa === 'descartado' : c.etapa === RS.etapa);
+  const lotes = [...new Set(cands.map((c) => c.lote).filter(Boolean))].sort();
+  const selectable = canRecruit() && !nopas && RS.etapa !== 'asignado';
+  const bulk = {
+    registrado: [['f1:paso', 'Pasó 1er filtro', 'primary'], ['f1:no_paso', 'No pasó', ''], ['f1:no_se_presento', 'No se presentó', '']],
+    segundo_filtro: [['f2:paso', 'Pasó 2º filtro', 'primary'], ['f2:no_paso', 'No pasó', ''], ['f2:no_se_presento', 'No se presentó', '']],
+    seleccionado: [['asignar', 'Contratar y asignar', 'primary'], ['descartar', 'Sin hoja de datos / descartar', '']]
+  }[RS.etapa] || [];
+  return `<div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
+      ${nopas ? '' : `<div class="seg" role="group" aria-label="Etapa">${['registrado', 'segundo_filtro', 'seleccionado', 'asignado'].map((k) => `<button type="button" data-ret="${k}" class="${RS.etapa === k ? 'on' : ''}">${ETAPAS[k][0]} (${counts[k]})</button>`).join('')}</div>`}
+      <div class="row" style="gap:8px;flex-wrap:wrap"><input class="inp grow" id="rq" type="search" placeholder="Buscar por nombre, teléfono o folio" value="${esc(RS.q)}" aria-label="Buscar candidatos" style="min-width:180px">
+        <select class="inp" id="rvac" aria-label="Vacante" style="max-width:260px"><option value="">Todas las vacantes</option>${vacs.filter((x) => ['abierta', 'cubierta'].includes(x.estado)).map((x) => `<option value="${x.id}"${RS.vac === x.id ? ' selected' : ''}>${esc(vacLabel(x))}</option>`).join('')}</select>
+        ${lotes.length ? `<select class="inp" id="rlote" aria-label="Grupo de reclutamiento" style="max-width:200px"><option value="">Todos los grupos</option>${lotes.map((l) => `<option${RS.lote === l ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>` : ''}</div>
+    </div>
+    ${nopas ? `<div class="notice n-info" style="margin-bottom:10px">Entrevistados que no pasaron un filtro, no se presentaron, no entregaron hoja de datos o desistieron. Se pueden reactivar desde su ficha.${is('developer') ? ' <button type="button" class="btn sm" id="purge" style="margin-left:8px;min-height:32px">Depurar mayores a 6 meses</button>' : ''}</div>` : ''}
+    ${!nopas && RS.etapa === 'seleccionado' && rows.length ? '<div class="notice n-info" style="margin-bottom:10px">Abre a cada seleccionado y llena su <b>hoja de datos</b>. Sin ella no se puede contratar; si no la entrega, márcalo como "Sin hoja de datos" y pasa a No pasaron.</div>' : ''}
+    ${selectable && bulk.length && rows.length ? `<div class="card pad bulkbar" id="rbulk" hidden><b id="rbn"></b><span class="grow"></span>${bulk.map(([k, l, c]) => `<button type="button" class="btn ${c}" data-bulk="${k}">${l}</button>`).join('')}</div>` : ''}
+    <div class="list">${selectable && rows.length && bulk.length ? `<label class="item chk" style="padding:8px 12px"><input type="checkbox" id="rall"> <span class="small muted">Seleccionar todos (${rows.length})</span></label>` : ''}
+    ${rows.length ? rows.map((c) => `<div role="button" tabindex="0" class="item" data-cand="${c.id}">
+      ${selectable && bulk.length ? `<input type="checkbox" data-csel="${c.id}" ${RS.sel.has(c.id) ? 'checked' : ''} aria-label="Seleccionar ${esc(candName(c))}" style="width:20px;height:20px">` : ''}
+      <span class="mono small muted" style="width:44px">#${c.folio}</span>
+      <span class="grow"><span class="nm">${esc(candName(c))}</span>${c.alerta ? ' <span class="badge b-bad">No recontratable</span>' : ''}${c.etapa === 'seleccionado' ? (c.hoja_at ? ' <span class="badge b-ok">Hoja de datos ✓</span>' : ' <span class="badge b-warn">Falta hoja de datos</span>') : ''}
+        <br><span class="small muted">${esc(c.telefono || 's/tel')} · ${esc(c.fuente || '—')}${c.lote ? ' · ' + esc(c.lote) : ''} · ${esc(vacById[c.vacante_id] ? vacById[c.vacante_id].puesto : areaName(c.area_id))}${c.etapa === 'descartado' ? ' · ' + esc(c.descarte_motivo || (c.f2_resultado && c.f2_resultado !== 'paso' ? '2º filtro: ' + RESULT[c.f2_resultado] : c.f1_resultado ? '1er filtro: ' + RESULT[c.f1_resultado] : '')) : ''}${c.etapa === 'asignado' ? ` · ingreso ${fmtDate(c.fecha_ingreso)} · ${esc(profName(c.supervisor_id))}` : ''}</span></span>
+      ${etapaBadge(c.etapa)}</div>`).join('') : `<div class="card empty">${nopas ? 'Nadie en esta lista.' : 'Sin candidatos en esta etapa.'}</div>`}</div>`;
+}
+
+function vacantesHtml(vacs, cands) {
+  return `<div class="list">${vacs.length ? vacs.map((x) => { const n = cands.filter((c) => c.vacante_id === x.id && c.etapa === 'asignado').length, p = cands.filter((c) => c.vacante_id === x.id && ['registrado', 'segundo_filtro', 'seleccionado'].includes(c.etapa)).length; return `<button type="button" class="item" data-vac="${x.id}">
+    <span class="mono small muted" style="width:44px">#${x.folio}</span>
+    <span class="grow"><span class="nm">${esc(x.puesto)}</span> <span class="small muted">× ${x.cantidad}</span><br><span class="small muted">${esc(areaName(x.area_id))} · ${x.motivo === 'reemplazo' ? 'Reemplazo de ' + esc(x.reemplazo_de || '') : 'Crecimiento'} · ${n}/${x.cantidad} contratados · ${p} en proceso · pidió ${esc(profName(x.solicitada_by))}</span></span>
+    <span class="badge ${VAC_ST[x.estado][1]}">${VAC_ST[x.estado][0]}</span></button>`; }).join('') : '<div class="card empty">Sin vacantes.</div>'}</div>`;
+}
+
+async function asignadosHtml(cands) {
+  const mine = cands.filter((c) => c.etapa === 'asignado');
+  const emps = mine.length ? await db('employees').select('id,nombre,apellido_paterno,apellido_materno,area_id,group_id,status,puesto').in('id', mine.map((c) => c.employee_id).filter(Boolean)).get() : [];
+  const byId = Object.fromEntries(emps.map((e) => [e.id, e]));
+  setTimeout(() => $$('[data-ubicar]').forEach((b) => b.onclick = () => { const e = byId[b.dataset.ubicar]; if (e) moveGroup(e, () => viewReclutamiento()); }), 0);
+  return `<div class="notice n-info" style="margin-bottom:10px">Personas contratadas que RH te asignó. Ubícalas en un grupo para que aparezcan en el pase de lista cuando Daniel acepte su alta.</div>
+    <div class="list">${mine.length ? mine.map((c) => { const e = byId[c.employee_id]; return `<div class="item">
+      <span class="grow"><span class="nm">${esc(candName(c))}</span><br><span class="small muted">Ingreso ${fmtDate(c.fecha_ingreso)} · ${esc(CONTRATOS[c.contrato_tipo] || '')} · ${e ? esc(groupName(e.group_id)) : '—'}</span></span>
+      ${e ? statusBadge(e.status) : ''}${e && ['activo', 'alta_pendiente'].includes(e.status) ? `<button type="button" class="btn sm" data-ubicar="${e.id}" style="min-height:36px">${e.group_id ? 'Cambiar grupo' : 'Ubicar en grupo'}</button>` : ''}</div>`; }).join('') : '<div class="card empty">Aún no te han asignado personal.</div>'}</div>`;
+}
+
+function updateReclBadge(vacs, cands) {
+  const n = is('developer') ? vacs.filter((x) => x.estado === 'solicitada').length : 0;
+  $$('[data-v="reclutamiento"]').forEach((a) => {
+    let b = a.querySelector('.cnt'); if (!b) { b = document.createElement('span'); b.className = 'cnt badge b-bad'; b.style.marginLeft = 'auto'; a.appendChild(b); }
+    b.textContent = n; b.style.display = n ? '' : 'none';
+  });
+  refreshMoreBadge();
+}
+
+// ── Vacantes ──
+function vacanteForm(x) {
+  const areas = S.areas.filter((a) => a.active && (seesAllAreas() || S.myAreas.includes(a.id)));
+  const f = [
+    { k: 'area_id', label: 'Área', type: 'select', req: true, val: x ? x.area_id : areas.length === 1 ? areas[0].id : '', options: [['', 'Elegir…'], ...areas.map((a) => [a.id, a.name])] },
+    { k: 'puesto', label: 'Puesto', req: true, val: x ? x.puesto : '' },
+    { k: 'cantidad', label: 'Cuántas personas', type: 'number', req: true, val: x ? x.cantidad : 1 },
+    { k: 'motivo', label: 'Motivo', type: 'select', req: true, val: x ? x.motivo : '', options: [['', 'Elegir…'], ['reemplazo', 'Reemplazo de una baja'], ['crecimiento', 'Crecimiento / nueva posición']] },
+    { k: 'reemplazo_de', label: 'Reemplaza a (si es reemplazo)', val: x ? x.reemplazo_de || '' : '', full: true },
+    { k: 'horario', label: 'Horario', val: x ? x.horario || '' : '', hint: 'Ej. L-V 08:00 a 17:00' },
+    { k: 'sueldo', label: 'Sueldo mensual ofrecido', type: 'number', val: x ? x.sueldo ?? '' : '' },
+    { k: 'perfil', label: 'Perfil requerido', type: 'textarea', full: true, val: x ? x.perfil || '' : '', hint: 'Escolaridad, experiencia, habilidades, disponibilidad.' }
+  ];
+  modal({ title: x ? `Editar vacante #${x.folio}` : 'Solicitar vacante', wide: true,
+    body: (is('developer') || x ? '' : '<div class="notice n-info">La solicitud queda "Por aprobar" hasta que Daniel la autorice.</div>') + fieldsHtml(f),
+    actions: [{ label: 'Cancelar' }, { label: x ? 'Guardar' : is('developer') ? 'Abrir vacante' : 'Enviar solicitud', cls: 'primary', run: async ({ el }) => {
+      const v = readFields(el, f);
+      if (!(v.cantidad >= 1 && Number.isInteger(v.cantidad))) throw new Error('La cantidad debe ser un número entero de 1 o más.');
+      if (x) { delete v.area_id; await mustUpdate(db('vacantes').eq('id', x.id).update(v), 'la vacante'); } else await db('vacantes').insert([v]);
+      toast(x ? 'Vacante actualizada' : is('developer') ? 'Vacante abierta' : 'Solicitud enviada'); RS.tab = 'vacantes'; viewReclutamiento();
+    } }] });
+}
+function openVacante(x, cands) {
+  const mine = cands.filter((c) => c.vacante_id === x.id);
+  const kv = [['Área', areaName(x.area_id)], ['Puesto', `${x.puesto} × ${x.cantidad}`], ['Motivo', x.motivo === 'reemplazo' ? 'Reemplazo de ' + (x.reemplazo_de || '') : 'Crecimiento'], ['Horario', x.horario], ['Sueldo', x.sueldo != null ? money(x.sueldo) + ' mensuales' : null], ['Perfil', x.perfil],
+    ['Solicitó', `${profName(x.solicitada_by)} · ${fmtDateTime(x.created_at)}`], x.decidida_at ? [x.estado === 'rechazada' ? 'Rechazó' : 'Aprobó', `${profName(x.decidida_by)} · ${fmtDateTime(x.decidida_at)}`] : null, ['Nota', x.nota_decision]].filter((r) => r && r[1]);
+  const body = `<div class="row"><span class="badge ${VAC_ST[x.estado][1]}">${VAC_ST[x.estado][0]}</span></div>
+    <div class="kv">${kv.map(([k, v]) => `<span>${esc(k)}</span><span>${esc(v)}</span>`).join('')}</div>
+    <div class="row small">${Object.keys(ETAPAS).map((k) => `<span class="badge ${ETAPAS[k][1]}">${ETAPAS[k][0]}: ${mine.filter((c) => c.etapa === k).length}</span>`).join('')}</div>`;
+  const reload = () => viewReclutamiento().catch(() => {});
+  const actions = [];
+  if (x.estado === 'solicitada' && is('developer')) {
+    actions.push({ label: 'Rechazar', cls: 'danger', run: () => { setTimeout(() => simpleCaseAction('Rechazar vacante #' + x.folio, [{ k: 'n', label: 'Motivo', type: 'textarea', req: true, full: true }], (v) => mustUpdate(db('vacantes').eq('id', x.id).update({ estado: 'rechazada', nota_decision: v.n }), 'la vacante'), reload), 0); } });
+    actions.push({ label: 'Aprobar', cls: 'primary', run: async () => { await mustUpdate(db('vacantes').eq('id', x.id).update({ estado: 'abierta' }), 'la vacante'); toast('Vacante abierta'); reload(); } });
+  }
+  if (['solicitada', 'abierta'].includes(x.estado) && (is('developer', 'rh_general', 'rh_area') || (is('supervisor') && x.estado === 'solicitada' && x.solicitada_by === S.me.id))) {
+    actions.push({ label: 'Editar', run: () => { setTimeout(() => vacanteForm(x), 0); } });
+    actions.push({ label: 'Cancelar vacante', cls: 'danger', run: async () => { if (!(await confirmBox('Cancelar vacante', `¿Cancelar la vacante <b>#${x.folio} ${esc(x.puesto)}</b>?`, { danger: true, okLabel: 'Cancelar vacante' }))) return false; await mustUpdate(db('vacantes').eq('id', x.id).update({ estado: 'cancelada' }), 'la vacante'); toast('Vacante cancelada'); reload(); } });
+  }
+  if (x.estado === 'abierta' && is('developer', 'rh_general', 'rh_area')) {
+    actions.push({ label: 'Marcar cubierta', run: async () => { await mustUpdate(db('vacantes').eq('id', x.id).update({ estado: 'cubierta' }), 'la vacante'); toast('Vacante cubierta'); reload(); } });
+    actions.push({ label: 'Ver candidatos', cls: 'primary', run: () => { RS.tab = 'candidatos'; RS.vac = x.id; viewReclutamiento(); } });
+  }
+  modal({ title: `Vacante #${x.folio} · ${x.puesto}`, body, actions, wide: true });
+}
+
+// ── Candidatos ──
+function candFields(c = {}, vacs = []) {
+  const areas = S.areas.filter((a) => a.active && (seesAllAreas() || S.myAreas.includes(a.id)));
+  const open = vacs.filter((v) => v.estado === 'abierta' && (seesAllAreas() || S.myAreas.includes(v.area_id)));
+  return [
+    { k: 'vacante_id', label: 'Vacante', type: 'select', val: c.vacante_id || (RS.vac && open.some((v) => v.id === RS.vac) ? RS.vac : open.length === 1 ? open[0].id : ''), options: [['', 'Sin vacante (solo área)'], ...open.map((v) => [v.id, vacLabel(v)])], full: true },
+    { k: 'area_id', label: 'Área (si no hay vacante)', type: 'select', val: c.area_id || (areas.length === 1 ? areas[0].id : ''), options: [['', 'Elegir…'], ...areas.map((a) => [a.id, a.name])] },
+    { k: 'fuente', label: 'Fuente', type: 'select', val: c.fuente || '', options: [['', 'Elegir…'], ...FUENTES.map((x) => [x, x])] },
+    { k: 'nombre', label: 'Nombre(s)', req: true, val: c.nombre || '' },
+    { k: 'apellido_paterno', label: 'Apellido paterno', req: true, val: c.apellido_paterno || '' },
+    { k: 'apellido_materno', label: 'Apellido materno', val: c.apellido_materno || '' },
+    { k: 'telefono', label: 'Teléfono', type: 'tel', val: c.telefono || '' },
+    { k: 'correo', label: 'Correo', type: 'email', val: c.correo || '' },
+    { k: 'curp', label: 'CURP (si la tienes)', val: c.curp || '', upper: true },
+    { k: 'lote', label: 'Grupo de reclutamiento (opcional)', val: c.lote || RS.lote || '', hint: 'Ej. "Entrevista grupal 14/10" para mover a todos juntos.' }
+  ];
+}
+function resolveArea(v, vacs) {
+  const vac = vacs.find((x) => x.id === v.vacante_id);
+  if (vac) return vac.area_id;
+  if (!v.area_id) throw new Error('Elige la vacante o el área.');
+  return v.area_id;
+}
+async function candidatoForm({ vacs, existing }) {
+  vacs = vacs || await db('vacantes').get();
+  const f = candFields(existing || {}, vacs);
+  const fb = fileBox('cvbox', { title: 'CV o solicitud', label: 'Subir CV (PDF, Word o foto)', hint: 'Hasta 10 MB', accept: 'image/*,application/pdf,.doc,.docx', ok: (x) => /^image\/|^application\/pdf$|wordprocessingml|msword/.test(mimeOf(x) || (/\.doc$/i.test(x.name) ? 'application/msword' : '')), max: 1 });
+  const m = modal({ title: existing ? `Editar candidato #${existing.folio}` : 'Nuevo candidato', wide: true,
+    body: `<div id="calert"></div>${fieldsHtml(f)}${existing && existing.cv_path ? '' : fb.html}`,
+    actions: [{ label: 'Cancelar' }, { label: existing ? 'Guardar' : 'Registrar', cls: 'primary', run: async ({ el, btn }) => {
+      const v = readFields(el, f); v.area_id = resolveArea(v, vacs);
+      if (v.curp && !/^[A-Z]{4}\d{6}[HM][A-Z]{5}[0-9A-Z]\d$/.test(v.curp)) throw new Error('CURP inválida.');
+      let row;
+      if (existing) { delete v.area_id; [row] = await mustUpdate(db('candidatos').eq('id', existing.id).update(v), 'el candidato'); }
+      else [row] = await db('candidatos').insert([v]);
+      if (fb.files.length) { btn.textContent = 'Subiendo CV…'; await uploadCv(row, fb.files[0]).catch((e) => toast('Se registró, pero el CV no se subió: ' + e.message, true)); }
+      toast(existing ? 'Candidato actualizado' : row.alerta ? 'Registrado · ATENCIÓN: coincide con una baja no recontratable' : 'Candidato registrado', !!row.alerta);
+      viewReclutamiento().catch(() => {});
+    } }] });
+  if (!existing || !existing.cv_path) fb.wire(m.el);
+  // Aviso inmediato de no recontratable
+  const check = async () => {
+    const g = (k) => ($('#f_' + k, m.el) || {}).value || '';
+    if (!g('nombre') || !g('apellido_paterno')) return;
+    try {
+      const a = await rpc('cand_alerta', { p_curp: g('curp').toUpperCase(), p_nombre: g('nombre'), p_paterno: g('apellido_paterno'), p_materno: g('apellido_materno') });
+      $('#calert', m.el).innerHTML = a ? `<div class="notice n-bad"><b>No recontratable:</b> ${esc(a)}. Solo Daniel puede contratarlo.</div>` : '';
+    } catch { /* sin conexión */ }
+  };
+  ['nombre', 'apellido_paterno', 'apellido_materno', 'curp'].forEach((k) => { const i = $('#f_' + k, m.el); if (i) i.addEventListener('change', check); });
+}
+async function uploadCv(c, f) {
+  const ext = (f.name.match(/\.([a-z0-9]{1,6})$/i) || [])[1];
+  const key = `${c.id}/${newId()}${ext ? '.' + ext.toLowerCase() : ''}`;
+  await storageUpload(CV_BUCKET, key, f);
+  await mustUpdate(db('candidatos').eq('id', c.id).update({ cv_path: key, cv_nombre: f.name.slice(0, 200) }), 'el candidato');
+}
+// Varios a la vez (entrevista grupal): un renglón por persona "Nombre Apellido Apellido, teléfono"
+function splitName(full) {
+  const t = full.trim().split(/\s+/).filter(Boolean);
+  if (t.length <= 1) return null;
+  if (t.length === 2) return { nombre: t[0], apellido_paterno: t[1], apellido_materno: null };
+  if (t.length === 3) return { nombre: t[0], apellido_paterno: t[1], apellido_materno: t[2] };
+  return { nombre: t.slice(0, -2).join(' '), apellido_paterno: t[t.length - 2], apellido_materno: t[t.length - 1] };
+}
+function bulkCandidatos(vacs) {
+  const f = candFields({}, vacs).filter((x) => ['vacante_id', 'area_id', 'fuente', 'lote'].includes(x.k));
+  f.find((x) => x.k === 'lote').val = RS.lote || `Entrevista ${fmtDate(todayMX())}`;
+  const m = modal({ title: 'Registrar varios candidatos', wide: true,
+    body: `${fieldsHtml(f)}<label class="field" style="margin-top:10px">Un renglón por persona: nombre y apellidos, coma, teléfono<textarea id="blines" rows="8" placeholder="María Fernanda López Ruiz, 55 1234 5678&#10;Juan Pérez Gómez, 5598765432"></textarea></label><div id="bprev" class="small"></div>`,
+    actions: [{ label: 'Cancelar' }, { label: 'Registrar', cls: 'primary', run: async ({ el, btn }) => {
+      const v = readFields(el, f); const area = resolveArea(v, vacs);
+      const rows = parse(); if (!rows.length) throw new Error('Escribe al menos un renglón.');
+      const bad = rows.filter((r) => !r.n); if (bad.length) throw new Error('Revisa los renglones: ' + bad.map((r) => r.line).join(' | '));
+      const fails = []; let ok = 0;
+      for (let i = 0; i < rows.length; i++) {
+        btn.textContent = `Registrando ${i + 1}/${rows.length}…`;
+        try { await db('candidatos').insert([{ ...rows[i].n, telefono: rows[i].tel, vacante_id: v.vacante_id, area_id: area, fuente: v.fuente, lote: v.lote }]); ok++; }
+        catch (e) { fails.push(`${rows[i].line} (${e.message})`); }
+      }
+      btn.textContent = 'Registrar';
+      RS.lote = v.lote || ''; viewReclutamiento().catch(() => {});
+      if (fails.length) { toast(`${ok} registrados; con error: ${fails.length}`, true); $('#bprev', el).innerHTML = `<div class="notice n-bad">${fails.map(esc).join('<br>')}</div>`; return false; }
+      toast(`${ok} candidatos registrados`);
+    } }] });
+  const parse = () => $('#blines', m.el).value.split('\n').map((l) => l.trim()).filter(Boolean).map((line) => { const [nm, ...rest] = line.split(','); return { line, n: splitName(nm || ''), tel: rest.join(',').trim() || null }; });
+  $('#blines', m.el).oninput = () => { const rs = parse(); $('#bprev', m.el).innerHTML = rs.length ? `<div class="scrollx"><table class="tbl"><thead><tr><th>Nombre(s)</th><th>Paterno</th><th>Materno</th><th>Teléfono</th></tr></thead><tbody>${rs.map((r) => r.n ? `<tr><td>${esc(r.n.nombre)}</td><td>${esc(r.n.apellido_paterno)}</td><td>${esc(r.n.apellido_materno || '')}</td><td>${esc(r.tel || '')}</td></tr>` : `<tr><td colspan="4" style="color:var(--bad)">Falta apellido: ${esc(r.line)}</td></tr>`).join('')}</tbody></table></div>` : ''; };
+}
+
+async function openCandidato(id) {
+  const [c] = await db('candidatos').eq('id', id).get();
+  if (!c) return toast('Candidato no encontrado o sin permiso', true);
+  const [vac] = c.vacante_id ? await db('vacantes').eq('id', c.vacante_id).get().catch(() => []) : [];
+  const docs = c.employee_id ? await db('documents').select('id,folio,tipo,fecha,estado').eq('employee_id', c.employee_id).order('folio').get().catch(() => []) : [];
+  const [emp] = c.employee_id ? await db('employees').select('id,status,group_id,num_empleado').eq('id', c.employee_id).get().catch(() => []) : [];
+  const filtro = (n) => { const r = c[`f${n}_resultado`]; return r ? `${RESULT[r]} · ${fmtDate(c[`f${n}_fecha`])} · ${profName(c[`f${n}_por`])}${c[`f${n}_comentarios`] ? ' — ' + c[`f${n}_comentarios`] : ''}` : null; };
+  const kv = [['Teléfono', c.telefono], ['Correo', c.correo], ['CURP', c.curp], ['Fuente', c.fuente], ['Grupo de reclutamiento', c.lote], ['Vacante', vac ? vacLabel(vac) : areaName(c.area_id)],
+    ['1er filtro', filtro(1)], ['2º filtro', filtro(2)], ['No pasó', c.etapa === 'descartado' ? c.descarte_motivo || 'Por resultado de filtro' : null],
+    ['Registró', `${profName(c.created_by)} · ${fmtDateTime(c.created_at)}`]].filter((r) => r[1]);
+  const hoja = c.hoja_at ? [['RFC', c.rfc], ['NSS', c.nss], ['Nacimiento', fmtDate(c.fecha_nacimiento)], ['Domicilio', c.domicilio], ['Contacto de emergencia', c.contacto_emergencia], ['Llenó', `${profName(c.hoja_por)} · ${fmtDateTime(c.hoja_at)}`]].filter((r) => r[1]) : null;
+  const contratados = docs.filter((d) => DOC_CONTRATA.includes(d.tipo));
+  const firm = contratados.filter((d) => d.estado === 'firmado').length;
+  const body = `<div class="row">${etapaBadge(c.etapa)}${c.alerta ? '<span class="badge b-bad">No recontratable</span>' : ''}<span class="mono small muted">#${c.folio}</span></div>
+    ${c.alerta ? `<div class="notice n-bad"><b>Coincide con una baja no recontratable:</b> ${esc(c.alerta)}. Solo Daniel puede contratarlo.</div>` : ''}
+    <div class="kv">${kv.map(([k, v]) => `<span>${esc(k)}</span><span>${esc(v)}</span>`).join('')}</div>
+    ${c.cv_path ? `<a class="evid-item" id="cvlink" target="_blank" rel="noopener" aria-disabled="true"><span class="fic">CV</span><span class="grow"><b>CV / solicitud</b><span class="small muted">${esc(c.cv_nombre || '')}</span></span><span class="go" aria-hidden="true">↗</span></a>` : ''}
+    ${['seleccionado', 'asignado'].includes(c.etapa) ? `<section class="fbox"><header>Hoja de datos para el alta ${c.hoja_at ? '<span class="badge b-ok">Completa</span>' : '<span class="badge b-warn">Pendiente</span>'}</header>
+      <div class="fbody">${hoja ? `<div class="kv">${hoja.map(([k, v]) => `<span>${esc(k)}</span><span>${esc(v)}</span>`).join('')}</div>` : '<span class="small muted">Sin hoja de datos no se puede contratar. Si no la entrega, márcalo como "Sin hoja de datos".</span>'}</div></section>` : ''}
+    ${c.etapa === 'asignado' ? `<section class="fbox"><header>Contratación · ${esc(CONTRATOS[c.contrato_tipo] || '')} · ${firm}/3 firmados</header><div class="fbody">
+      <div class="small muted" style="margin-bottom:8px">Ingreso ${fmtDate(c.fecha_ingreso)} · asignado a ${esc(profName(c.supervisor_id))} · alta en Personal: ${emp ? STATUS[emp.status][0] : '—'}${firm < 3 ? '. Imprime los 3 documentos, recaba firmas y sube cada uno firmado; Daniel acepta el alta cuando estén los 3.' : ''}</div>
+      ${docListHtml(contratados)}</div></section>` : ''}`;
+  const reload = () => { viewReclutamiento().catch(() => {}); };
+  const again = () => { reload(); setTimeout(() => openCandidato(id), 0); };
+  const actions = [];
+  if (canRecruit()) {
+    if (c.etapa === 'registrado') actions.push({ label: 'Resultado 1er filtro', cls: 'primary', run: () => { setTimeout(() => resultadoForm([c], 'f1', null, again), 0); } });
+    if (c.etapa === 'segundo_filtro') actions.push({ label: 'Resultado 2º filtro', cls: 'primary', run: () => { setTimeout(() => resultadoForm([c], 'f2', null, again), 0); } });
+    if (c.etapa === 'seleccionado') {
+      actions.push({ label: c.hoja_at ? 'Editar hoja de datos' : 'Llenar hoja de datos', cls: c.hoja_at ? '' : 'primary', run: () => { setTimeout(() => hojaForm(c, again), 0); } });
+      if (c.hoja_at) actions.push({ label: 'Contratar y asignar', cls: 'primary', run: () => { setTimeout(() => asignarForm([c], again), 0); } });
+    }
+    if (['registrado', 'segundo_filtro', 'seleccionado'].includes(c.etapa)) actions.push({ label: c.etapa === 'seleccionado' ? 'Sin hoja de datos / descartar' : 'Descartar', cls: 'danger', run: () => { setTimeout(() => descartarForm([c], again), 0); } });
+    if (c.etapa === 'descartado') actions.push({ label: 'Reactivar', run: async () => { await mustUpdate(db('candidatos').eq('id', c.id).update({ etapa: 'registrado' }), 'el candidato'); toast('Reactivado: vuelve a Por entrevistar'); again(); } });
+    if (c.etapa !== 'asignado') actions.push({ label: 'Editar datos', run: async () => { setTimeout(() => candidatoForm({ existing: c }), 0); } });
+    if (!c.cv_path && c.etapa !== 'asignado') actions.push({ label: 'Subir CV', run: () => { setTimeout(() => cvForm(c, again), 0); } });
+  }
+  if (c.employee_id && is('developer')) actions.push({ label: 'Ver ficha', run: () => { setTimeout(() => openEmployee(c.employee_id), 0); } });
+  const m = modal({ title: candName(c), body, actions, wide: true });
+  const a = $('#cvlink', m.el);
+  if (a) storageUrl(CV_BUCKET, c.cv_path).then((u) => { a.href = u; a.removeAttribute('aria-disabled'); }).catch((e) => { a.classList.add('err'); a.title = e.message; });
+  $$('[data-opendoc]', m.el).forEach((b) => b.onclick = () => { m.close(); openDocument(b.dataset.opendoc); });
+}
+function cvForm(c, done) {
+  const fb = fileBox('cvbox2', { title: 'CV o solicitud', label: 'Subir CV (PDF, Word o foto)', hint: 'Hasta 10 MB', accept: 'image/*,application/pdf,.doc,.docx', ok: (x) => /^image\/|^application\/pdf$|wordprocessingml|msword/.test(mimeOf(x)), max: 1 });
+  const m = modal({ title: 'CV · ' + candName(c), body: fb.html, actions: [{ label: 'Cancelar' }, { label: 'Subir', cls: 'primary', run: async () => { if (!fb.files.length) throw new Error('Elige el archivo.'); await uploadCv(c, fb.files[0]); toast('CV guardado'); done && done(); } }] });
+  fb.wire(m.el);
+}
+// Resultado de filtro (uno o varios). res = null → elegir en el formulario
+function resultadoForm(cs, filtro, res, done) {
+  const f = [
+    ...(res ? [] : [{ k: 'r', label: 'Resultado', type: 'select', req: true, options: [['', 'Elegir…'], ...Object.entries(RESULT)] }]),
+    { k: 'fecha', label: 'Fecha de la entrevista', type: 'date', req: true, val: todayMX(), max: todayMX() },
+    { k: 'com', label: 'Comentarios (opcional)', type: 'textarea', full: true }];
+  const n = filtro === 'f1' ? '1er' : '2º';
+  modal({ title: `${n} filtro · ${cs.length === 1 ? candName(cs[0]) : cs.length + ' candidatos'}${res ? ' · ' + RESULT[res] : ''}`,
+    body: (cs.length > 1 ? `<div class="notice n-info">${cs.map((c) => esc(candName(c))).join(', ')}</div>` : '') + fieldsHtml(f),
+    actions: [{ label: 'Cancelar' }, { label: 'Guardar', cls: 'primary', run: async ({ el }) => {
+      const v = readFields(el, f); const r = res || v.r; const fails = [];
+      for (const c of cs) {
+        try { await mustUpdate(db('candidatos').eq('id', c.id).update({ [filtro + '_resultado']: r, [filtro + '_fecha']: v.fecha, [filtro + '_comentarios']: v.com }), 'el candidato'); }
+        catch (e) { fails.push(`${candName(c)} (${e.message})`); }
+      }
+      RS.sel.clear();
+      if (fails.length) toast('No se guardaron: ' + fails.join('; '), true); else toast(r === 'paso' ? (filtro === 'f1' ? 'Pasan al 2º filtro' : 'Seleccionados') : 'Pasan a No pasaron');
+      (done || (() => viewReclutamiento()))();
+    } }] });
+}
+function descartarForm(cs, done) {
+  const f = [{ k: 'm', label: 'Motivo', type: 'select', req: true, val: cs.every((c) => c.etapa === 'seleccionado') ? DESCARTES[0] : '', options: [['', 'Elegir…'], ...DESCARTES.map((x) => [x, x])] }, { k: 'o', label: 'Detalle (opcional)', full: true }];
+  modal({ title: `No pasó · ${cs.length === 1 ? candName(cs[0]) : cs.length + ' candidatos'}`, body: fieldsHtml(f),
+    actions: [{ label: 'Cancelar' }, { label: 'Mover a No pasaron', cls: 'danger solid', run: async ({ el }) => {
+      const v = readFields(el, f); const motivo = v.o ? `${v.m}: ${v.o}` : v.m; const fails = [];
+      for (const c of cs) { try { await mustUpdate(db('candidatos').eq('id', c.id).update({ etapa: 'descartado', descarte_motivo: motivo }), 'el candidato'); } catch (e) { fails.push(`${candName(c)} (${e.message})`); } }
+      RS.sel.clear(); if (fails.length) toast('No se movieron: ' + fails.join('; '), true); else toast('Movidos a No pasaron');
+      (done || (() => viewReclutamiento()))();
+    } }] });
+}
+function hojaForm(c, done) {
+  const f = [
+    { k: 'curp', label: 'CURP', req: true, val: c.curp || '', upper: true },
+    { k: 'rfc', label: 'RFC (con homoclave)', req: true, val: c.rfc || '', upper: true },
+    { k: 'nss', label: 'NSS (11 dígitos)', req: true, val: c.nss || '' },
+    { k: 'fecha_nacimiento', label: 'Fecha de nacimiento', type: 'date', req: true, val: c.fecha_nacimiento || '' },
+    { k: 'telefono', label: 'Teléfono', type: 'tel', req: true, val: c.telefono || '' },
+    { k: 'correo', label: 'Correo', type: 'email', val: c.correo || '' },
+    { k: 'domicilio', label: 'Domicilio completo', type: 'textarea', req: true, full: true, val: c.domicilio || '' },
+    { k: 'contacto_emergencia', label: 'Contacto de emergencia (nombre y teléfono)', full: true, val: c.contacto_emergencia || '' }];
+  modal({ title: 'Hoja de datos · ' + candName(c), wide: true,
+    body: '<div class="notice n-info">Con estos datos se hace el alta en Personal al contratar. Son datos sensibles: solo los ve RH.</div>' + fieldsHtml(f),
+    actions: [{ label: 'Cancelar' }, { label: 'Guardar hoja de datos', cls: 'primary', run: async ({ el }) => {
+      const v = readFields(el, f);
+      if (!/^[A-Z]{4}\d{6}[HM][A-Z]{5}[0-9A-Z]\d$/.test(v.curp)) throw new Error('CURP inválida.');
+      if (!/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(v.rfc)) throw new Error('RFC inválido (incluye homoclave).');
+      if (!/^\d{11}$/.test(String(v.nss).replace(/\D/g, ''))) throw new Error('El NSS debe tener 11 dígitos.');
+      await mustUpdate(db('candidatos').eq('id', c.id).update({ ...v, hoja_at: new Date().toISOString() }), 'el candidato');
+      toast('Hoja de datos guardada'); (done || (() => viewReclutamiento()))();
+    } }] });
+}
+async function asignarForm(cs, done) {
+  const sin = cs.filter((c) => !c.hoja_at);
+  if (sin.length) return toast('Falta la hoja de datos de: ' + sin.map(candName).join(', '), true);
+  const areas = [...new Set(cs.map((c) => c.area_id))];
+  if (areas.length > 1) return toast('Asigna por separado a candidatos de áreas distintas', true);
+  const sups = await rpc('supervisores_de', { p_area: areas[0] }).catch(() => []);
+  if (!sups.length) return toast('No hay supervisores activos en ' + areaName(areas[0]), true);
+  const alert = cs.filter((c) => c.alerta);
+  const f = [
+    { k: 'sup', label: 'Supervisor que lo recibe', type: 'select', req: true, val: sups.length === 1 ? sups[0].id : '', options: [['', 'Elegir…'], ...sups.map((s) => [s.id, s.full_name])] },
+    { k: 'ing', label: 'Fecha de ingreso', type: 'date', req: true, val: todayMX() },
+    { k: 'ct', label: 'Tipo de contrato', type: 'select', req: true, options: [['', 'Elegir…'], ...Object.entries(CONTRATOS)], full: true }];
+  modal({ title: `Contratar · ${cs.length === 1 ? candName(cs[0]) : cs.length + ' candidatos'}`, wide: true,
+    body: `${alert.length ? `<div class="notice n-bad">${alert.map((c) => `<b>${esc(candName(c))}</b>: ${esc(c.alerta)}`).join('<br>')}${is('developer') ? '<br>Puedes continuar bajo tu responsabilidad.' : '<br>Solo Daniel puede contratarlo.'}</div>` : ''}
+      <div class="notice n-info">Se hará el alta pendiente en Personal con la hoja de datos y se generarán <b>contrato, reglamento interior y acuerdo de confidencialidad</b> para imprimir y firmar. Daniel acepta el alta cuando los 3 estén firmados y subidos.</div>${fieldsHtml(f)}`,
+    actions: [{ label: 'Cancelar' }, { label: 'Contratar', cls: 'primary', run: async ({ el }) => {
+      const v = readFields(el, f);
+      const n = await rpc('cand_asignar', { p_ids: cs.map((c) => c.id), p_supervisor: v.sup, p_fecha_ingreso: v.ing, p_contrato: v.ct });
+      RS.sel.clear(); RS.etapa = 'asignado';
+      toast(`${Array.isArray(n) ? n[0] : n} contratado(s) · imprime y sube los documentos firmados`);
+      (done || (() => viewReclutamiento()))();
+    } }] });
+}
+async function purgeCandidatos(cands) {
+  const lim = addDays(todayMX(), -183);
+  const old = cands.filter((c) => c.etapa === 'descartado' && String(c.updated_at).slice(0, 10) < lim);
+  if (!old.length) return toast('No hay registros de más de 6 meses');
+  if (!(await confirmBox('Depurar candidatos', `Se borrarán definitivamente <b>${old.length}</b> candidatos que no pasaron hace más de 6 meses, con sus CV. Esto cumple con no conservar datos personales más tiempo del necesario.`, { danger: true, okLabel: 'Borrar' }))) return;
+  const paths = old.map((c) => c.cv_path).filter(Boolean);
+  if (paths.length) await storageRemove(CV_BUCKET, paths).catch(() => {});
+  await db('candidatos').in('id', old.map((c) => c.id)).remove();
+  toast(`${old.length} candidatos depurados`); viewReclutamiento();
 }
 
 // ───────────────────────── PWA ─────────────────────────
