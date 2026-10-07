@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.8.1';
+const APP_VERSION = '0.8.2';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -641,6 +641,33 @@ const PRIV_FIELDS = [
   { k: 'salario_diario', label: 'Salario diario', type: 'number' }, { k: 'salario_mensual', label: 'Salario mensual', type: 'number' }
 ];
 
+// Eliminar a una persona y todo su historial (solo Daniel). Para quien dejó de trabajar se usa Baja.
+async function storageRemove(bucket, paths) {
+  if (!paths.length) return;
+  await http(`/storage/v1/object/${bucket}`, { method: 'DELETE', body: { prefixes: paths } });
+}
+async function deleteEmployeeForm(e) {
+  const [att, cases, acts, corrs] = await Promise.all([
+    db('attendance').select('id').eq('employee_id', e.id).get(), db('cases').select('id').eq('employee_id', e.id).get(),
+    db('activity_daily').select('id').eq('employee_id', e.id).get().catch(() => []), db('corrections').select('id').eq('employee_id', e.id).get().catch(() => [])]);
+  const files = cases.length ? await db('case_files').select('path').in('case_id', cases.map((c) => c.id)).get() : [];
+  const items = [[att.length, 'registros de asistencia'], [cases.length, 'casos (con su seguimiento)'], [files.length, 'archivos de evidencia'], [acts.length + corrs.length, 'registros de actividad y correcciones']].filter((x) => x[0]);
+  const f = [{ k: 'conf', label: 'Escribe ELIMINAR para confirmar', req: true, full: true }];
+  modal({ title: 'Eliminar a ' + fullName(e), body: `
+    ${e.status === 'activo' || e.status === 'alta_pendiente' ? `<div class="notice n-warn"><b>¿Dejó de trabajar?</b> Usa <b>Dar de baja</b>: conserva su historial y el control de reingreso. Eliminar es solo para registros de prueba, duplicados o capturados por error.</div>` : ''}
+    <div class="notice n-bad">Se borrará para siempre <b>${esc(fullName(e))}</b>${e.num_empleado ? ` (${esc(e.num_empleado)})` : ''}, sus datos personales${items.length ? ' y también:<ul style="margin:6px 0 0 18px">' + items.map(([n, t]) => `<li><b>${n}</b> ${t}</li>`).join('') + '</ul>' : ', sin historial.'}
+    <div class="small" style="margin-top:6px">No se puede deshacer. La bitácora guarda quién lo eliminó y cuándo.</div></div>
+    ${fieldsHtml(f)}`,
+    actions: [{ label: 'Cancelar' }, { label: 'Eliminar para siempre', cls: 'danger solid', run: async ({ el }) => {
+      const v = readFields(el, f);
+      if (v.conf.trim().toUpperCase() !== 'ELIMINAR') throw new Error('Escribe ELIMINAR para confirmar.');
+      try { await storageRemove('evidencias', files.map((x) => x.path)); } catch { /* si falla, los archivos quedan huérfanos pero inaccesibles */ }
+      const r = await db('employees').eq('id', e.id).remove();
+      if (!r || !r.length) throw new Error('No se pudo eliminar.');
+      $$('.modal-bg').forEach((x) => x.remove());
+      toast('Eliminado'); viewPersonal();
+    } }] });
+}
 async function openEmployee(id, fx = {}) {
   const [e] = await db('employees').eq('id', id).get();
   if (!e) return toast('No encontrado o sin permiso', true);
@@ -694,10 +721,7 @@ async function openEmployee(id, fx = {}) {
   if (is('developer')) {
     if (e.status === 'activo') actions.push({ label: 'Cambiar área', run: () => { setTimeout(() => moveArea(e), 0); } });
     if (e.status === 'activo') actions.push({ label: 'Dar de baja', cls: 'danger', run: () => { setTimeout(() => bajaForm(e, p), 0); } });
-    if (e.status === 'baja' || e.status === 'rechazado') actions.push({ label: 'Eliminar', cls: 'danger', run: async () => {
-      if (!(await confirmBox('Eliminar registro', `Se eliminará <b>${esc(fullName(e))}</b> con sus datos y su asistencia. No se puede deshacer. La bitácora conserva el registro de quién lo eliminó.`, { danger: true, okLabel: 'Eliminar' }))) return false;
-      const r = await db('employees').eq('id', id).remove(); if (!r.length) throw new Error('No se pudo eliminar'); toast('Eliminado'); viewPersonal();
-    } });
+    actions.push({ label: 'Eliminar', cls: 'danger', run: () => { setTimeout(() => deleteEmployeeForm(e), 0); } });
   }
   const m = modal({ title: fullName(e), body, actions, wide: true });
   $$('[data-opencase]', m.el).forEach((b) => b.onclick = () => { m.close(); openCase(b.dataset.opencase); });
