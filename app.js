@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.8.2';
+const APP_VERSION = '0.8.4';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -503,8 +503,9 @@ function personCard(e, r, faltas, locked, morning) {
     <button type="button" class="ph" aria-expanded="${open}">
       <span class="dot" style="${col ? `background:${col};border-color:${col}` : ''}"></span>
       <span class="grow"><span style="display:block;font-weight:600">${esc(fullName(e))}</span><span class="small muted">${esc(summary.length > 90 ? summary.slice(0, 90) + '…' : summary)}</span></span>
-      ${pendBadge(e)}${diff ? '<span class="badge b-warn">No coincide</span>' : ''}${faltasBadge(faltas)}<span class="muted" aria-hidden="true">${open ? '▴' : '▾'}</span>
+      ${pendBadge(e)}${diff ? '<span class="badge b-warn">No coincide</span>' : ''}${faltasBadge(faltas)}<span class="more" aria-hidden="true">${open ? 'Cerrar ▴' : 'Más ▾'}</span>
     </button>
+    ${open ? '' : `<div class="quick" role="group" aria-label="Asistencia rápida de ${esc(fullName(e))}">${Object.keys(ST).map((k) => `<button type="button" class="${k}${r && r.status === k ? ' on' : ''}" data-att="${k}" aria-pressed="${!!(r && r.status === k)}"${dis}>${k === 'salida' ? 'Salida' : ST[k]}</button>`).join('')}</div>`}
     ${open ? `<div class="body">
       ${tarde ? `<div class="morning-ref${diff ? ' diff' : ''}"><span class="small muted">En la mañana</span><span>${morning ? attBadges(morning) : '<span class="badge b-mut">Sin registro</span>'}</span>${diff ? `<span class="small" style="color:var(--warn);font-weight:600">${esc(diff)}</span>` : ''}</div>` : ''}
       <section class="fbox">
@@ -1033,7 +1034,7 @@ async function viewCatalogos() {
   const tls = S.profiles.filter((p) => p.role === 'tl' && p.active);
   v.innerHTML = `<div class="pagehead"><h1>Áreas y grupos</h1><div class="row"><button class="btn" id="na">+ Área</button><button class="btn primary" id="ng">+ Grupo</button></div></div>
   ${S.areas.map((a) => `<div class="card" style="margin-bottom:12px"><div class="pad row" style="border-bottom:1px solid var(--line)"><b class="grow">${esc(a.name)}</b><span class="small muted">Cierre desde ${String(a.hora_cierre || '16:00').slice(0, 5)}</span>${a.active ? '' : '<span class="badge b-mut">Inactiva</span>'}<button class="btn sm" data-ea="${a.id}">Editar</button></div>
-    <table class="tbl"><tbody>${S.groups.filter((g) => g.area_id === a.id).map((g) => `<tr><td><b>${esc(g.name)}</b>${g.tipo === 'lideres' ? ' <span class="badge b-acc">Líderes</span>' : ''}${g.active ? '' : ' <span class="badge b-mut">Inactivo</span>'}</td><td>${g.tipo === 'lideres' ? '<span class="small muted">Pasa lista: Supervisión</span>' : g.tl_id ? esc(profName(g.tl_id)) : '<span class="badge b-warn">Sin TL</span>'}</td><td class="small muted">${perG[g.id] ? perG[g.id] + (perG[g.id] === 1 ? ' persona' : ' personas') : 'Vacío'}</td><td style="text-align:right;white-space:nowrap"><button class="btn sm" data-eg="${g.id}">Editar</button> <button class="btn sm danger" data-dg="${g.id}" aria-label="Eliminar ${esc(g.name)}">Eliminar</button></td></tr>`).join('') || '<tr><td class="muted">Sin grupos</td></tr>'}</tbody></table></div>`).join('')}
+    <table class="tbl"><tbody>${S.groups.filter((g) => g.area_id === a.id).map((g) => `<tr><td><b>${esc(g.name)}</b>${g.tipo === 'lideres' ? ' <span class="badge b-acc">Líderes</span>' : ''}${g.active ? '' : ' <span class="badge b-mut">Inactivo</span>'}</td><td>${g.tipo === 'lideres' ? '<span class="small muted">Pasa lista: Supervisión</span>' : g.tl_id ? esc(profName(g.tl_id)) : '<span class="badge b-warn">Sin TL</span>'}</td><td class="small muted">${perG[g.id] ? perG[g.id] + (perG[g.id] === 1 ? ' persona' : ' personas') : 'Vacío'}</td><td style="text-align:right;white-space:nowrap"><button class="btn sm primary" data-ag="${g.id}">+ Agregar personal</button> <button class="btn sm" data-eg="${g.id}">Editar</button> <button class="btn sm danger" data-dg="${g.id}" aria-label="Eliminar ${esc(g.name)}">Eliminar</button></td></tr>`).join('') || '<tr><td class="muted">Sin grupos</td></tr>'}</tbody></table></div>`).join('')}
   <div class="card pad"><div class="eyebrow" style="margin-bottom:8px">Cambios de área no permitidos</div>
     ${S.blocks.map((b) => `<div class="row" style="padding:4px 0"><span class="grow">${esc(areaName(b.from_area))} → ${esc(areaName(b.to_area))}</span><button class="btn sm danger" data-db="${b.from_area}|${b.to_area}">Quitar</button></div>`).join('') || '<span class="muted small">Ninguno</span>'}
     <button class="btn sm" id="nb" style="margin-top:8px">+ Bloquear cambio</button></div>`;
@@ -1048,6 +1049,7 @@ async function viewCatalogos() {
     ...(g ? [{ k: 'active', label: 'Estado', type: 'select', val: g.active ? '1' : '0', options: [['1', 'Activo'], ['0', 'Inactivo']] }] : [])
   ];
   $('#ng').onclick = () => simpleForm('Nuevo grupo', gFields(null), (x) => db('groups').insert([{ ...x, tl_id: x.tipo === 'lideres' ? null : x.tl_id || null }]), 'Solo aparecen como TL los usuarios con rol Team Leader. Un grupo de Líderes no lleva TL.');
+  $$('[data-ag]').forEach((b) => b.onclick = () => addToGroupForm(S.groups.find((x) => x.id === b.dataset.ag)));
   $$('[data-dg]').forEach((b) => b.onclick = async () => {
     const g = S.groups.find((x) => x.id === b.dataset.dg);
     const n = perG[g.id] || 0;
@@ -1062,6 +1064,38 @@ async function viewCatalogos() {
   $$('[data-eg]').forEach((b) => b.onclick = () => { const g = S.groups.find((x) => x.id === b.dataset.eg); simpleForm('Editar grupo', gFields(g), (x) => mustUpdate(db('groups').eq('id', g.id).update({ area_id: x.area_id, name: x.name, tipo: x.tipo, tl_id: x.tipo === 'lideres' ? null : x.tl_id || null, active: x.active === '1' }))); });
   $('#nb').onclick = () => simpleForm('Bloquear cambio de área', [{ k: 'from_area', label: 'De', type: 'select', options: areaOpts }, { k: 'to_area', label: 'A', type: 'select', options: areaOpts }], (x) => { if (x.from_area === x.to_area) throw new Error('Elige áreas distintas'); return db('area_transfer_blocks').insert([x]); }, 'Se bloquea solo en esa dirección. Agrega también la inversa si aplica.');
   $$('[data-db]').forEach((b) => b.onclick = async () => { const [fa, ta] = b.dataset.db.split('|'); try { await db('area_transfer_blocks').eq('from_area', fa).eq('to_area', ta).remove(); viewCatalogos(); } catch (e) { toast(e.message, true); } });
+}
+// Agregar varias personas a un grupo (misma área). Por defecto muestra a quienes no tienen grupo.
+async function addToGroupForm(g) {
+  const emps = (await db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,puesto,group_id,status').eq('area_id', g.area_id).in('status', ['activo', 'alta_pendiente']).get()).sort(sortName);
+  const sel = new Set(); let q = '', todos = false;
+  const list = () => emps.filter((e) => e.group_id !== g.id && (todos || !e.group_id) && (!q || norm(fullName(e) + ' ' + (e.num_empleado || '')).includes(q)));
+  const draw = (el) => {
+    const rows = list();
+    $('#ag_list', el).innerHTML = rows.length ? rows.map((e) => `<label class="pick${sel.has(e.id) ? ' on' : ''}"><input type="checkbox" data-pk="${e.id}"${sel.has(e.id) ? ' checked' : ''}>
+      <span class="grow"><b>${esc(fullName(e))}</b><span class="small muted">${e.num_empleado ? esc(e.num_empleado) + ' · ' : ''}${e.group_id ? 'ahora en ' + esc(groupName(e.group_id)) : 'sin grupo'}${e.status === 'alta_pendiente' ? ' · alta pendiente' : ''}</span></span></label>`).join('')
+      : `<div class="empty">${todos ? 'No hay más personas activas en esta área.' : 'No hay personas sin grupo en esta área.'}</div>`;
+    $('#ag_n', el).textContent = sel.size ? `${sel.size} seleccionada(s)` : 'Ninguna seleccionada';
+    $('#ag_all', el).textContent = rows.length && rows.every((e) => sel.has(e.id)) ? 'Quitar selección' : `Seleccionar ${rows.length}`;
+    $$('[data-pk]', el).forEach((c) => c.onchange = () => { c.checked ? sel.add(c.dataset.pk) : sel.delete(c.dataset.pk); draw(el); });
+  };
+  const m = modal({ title: `Agregar personal a ${groupLabel(g)} · ${areaName(g.area_id)}`, wide: true, body: `
+    <div class="row" style="gap:8px;flex-wrap:wrap"><input class="inp grow" id="ag_q" placeholder="Buscar por nombre o número" aria-label="Buscar">
+      <label class="row small" style="gap:6px"><input type="checkbox" id="ag_todos"> Mostrar también personas de otros grupos</label></div>
+    <div class="row small"><span class="grow muted" id="ag_n"></span><button type="button" class="btn sm ghost" id="ag_all"></button></div>
+    <div class="pick-list" id="ag_list"></div>`,
+    actions: [{ label: 'Cancelar' }, { label: 'Agregar al grupo', cls: 'primary', run: async () => {
+      if (!sel.size) throw new Error('Selecciona al menos una persona.');
+      const ids = [...sel];
+      const moved = emps.filter((e) => sel.has(e.id) && e.group_id).length;
+      if (moved && !(await confirmBox('Cambiar de grupo', `${moved} de las personas seleccionadas ya están en otro grupo y se moverán a <b>${esc(groupLabel(g))}</b>.`, { okLabel: 'Mover' }))) return false;
+      const done = await db('employees').in('id', ids).update({ group_id: g.id });
+      toast(`${done.length} persona(s) agregada(s) a ${groupLabel(g)}`); viewCatalogos();
+    } }] });
+  $('#ag_q', m.el).oninput = (e) => { q = norm(e.target.value); draw(m.el); };
+  $('#ag_todos', m.el).onchange = (e) => { todos = e.target.checked; draw(m.el); };
+  $('#ag_all', m.el).onclick = () => { const rows = list(); const all = rows.length && rows.every((e) => sel.has(e.id)); rows.forEach((e) => all ? sel.delete(e.id) : sel.add(e.id)); draw(m.el); };
+  draw(m.el);
 }
 function simpleForm(title, fields, save, note) {
   modal({ title, body: fieldsHtml(fields) + (note ? `<div class="small muted">${esc(note)}</div>` : ''), actions: [{ label: 'Cancelar' }, { label: 'Guardar', cls: 'primary', run: async ({ el }) => { await save(readFields(el, fields)); toast('Guardado'); viewCatalogos(); } }] });
