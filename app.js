@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.10.0';
+const APP_VERSION = '0.10.1';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -115,7 +115,11 @@ async function ensureFresh() {
   if (!refreshing) {
     refreshing = (async () => {
       try { setSession(await http('/auth/v1/token?grant_type=refresh_token', { method: 'POST', body: { refresh_token: s.refresh_token }, auth: false })); }
-      catch (e) { setSession(null); throw new Error('Tu sesión expiró. Vuelve a entrar.'); }
+      catch (e) {
+        // Solo si el servidor rechaza el token se cierra la sesión; sin internet se conserva para reintentar
+        if (e.status === 400 || e.status === 401 || e.status === 403) { setSession(null); throw new Error('Tu sesión expiró. Vuelve a entrar.'); }
+        throw new Error('Sin conexión. Revisa tu internet e intenta de nuevo.');
+      }
       finally { refreshing = null; }
     })();
   }
@@ -135,11 +139,15 @@ class Q {
   in(c, arr) { this.f.push([c, 'in.(' + arr.map((v) => '"' + String(v).replace(/"/g, '\\"') + '"').join(',') + ')']); return this; }
   order(c, asc = true) { this.ord.push(c + '.' + (asc ? 'asc' : 'desc')); return this; }
   limit(n) { this.lim = n; return this; }
+  offset(n) { this.off = n; return this; }
+  // Todas las filas en páginas de 1000 (límite del servidor)
+  async getAll(page = 1000) { const out = []; for (let o = 0; ; o += page) { this.lim = page; this.off = o; const r = await this.get(); out.push(...r); if (r.length < page) return out; } }
   qs() {
     const u = new URLSearchParams(); u.set('select', this.sel);
     for (const [c, v] of this.f) u.append(c, v);
     if (this.ord.length) u.set('order', this.ord.join(','));
     if (this.lim) u.set('limit', String(this.lim));
+    if (this.off) u.set('offset', String(this.off));
     return u.toString();
   }
   get() { return http(`/rest/v1/${this.t}?${this.qs()}`); }
@@ -179,7 +187,7 @@ function modal({ title, body, actions = [], wide = false, onClose, sheet = false
     <div class="mb"></div><footer></footer></div>`;
   const mb = $('.mb', bg); if (typeof body === 'string') mb.innerHTML = body; else if (body) mb.appendChild(body);
   const close = () => { bg.remove(); document.removeEventListener('keydown', onKey); onClose && onClose(); };
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  const onKey = (e) => { if (e.key === 'Escape' && bg === [...document.querySelectorAll('.modal-bg')].pop()) { e.stopImmediatePropagation(); close(); } };
   document.addEventListener('keydown', onKey);
   $('.x', bg).onclick = close;
   bg.addEventListener('mousedown', (e) => { if (e.target === bg) close(); });
@@ -220,6 +228,7 @@ function fieldsHtml(fields) {
     const id = 'f_' + f.k; const v = f.val ?? '';
     const req = f.req ? ' required' : '';
     let ctl;
+    if (f.type === 'select' && v !== '' && v != null && !(f.options || []).some((o) => String(o[0]) === String(v))) f = { ...f, options: [...(f.options || []), [v, (f.missing || 'Valor actual') + ' (no disponible)']] };
     if (f.type === 'select') ctl = `<select id="${id}" name="${f.k}"${req}>${(f.options || []).map((o) => `<option value="${esc(o[0])}"${String(o[0]) === String(v) ? ' selected' : ''}>${esc(o[1])}</option>`).join('')}</select>`;
     else if (f.type === 'textarea') ctl = `<textarea id="${id}" name="${f.k}"${req}>${esc(v)}</textarea>`;
     else ctl = `<input id="${id}" name="${f.k}" type="${f.type || 'text'}" value="${esc(v)}"${req}${f.type === 'number' ? ' step="0.01" inputmode="decimal"' : ''}${f.max ? ` max="${f.max}"` : ''}${f.upper ? ' style="text-transform:uppercase"' : ''} autocomplete="${f.ac || 'off'}">`;
@@ -309,7 +318,8 @@ async function logout() {
   setSession(null); S.me = null; location.hash = '';
   // La siguiente persona en este dispositivo empieza limpia
   Object.assign(LS, { group: null, fecha: null, open: null, turno: null }); store.del('hr.lista.group');
-  renderLogin();
+  // Filtros y memoria de la sesión anterior: se recarga la página para empezar de cero
+  location.reload();
 }
 
 // ───────────────────────── shell y rutas ─────────────────────────
@@ -409,7 +419,7 @@ function route() {
   const ttl = $('#ttl'); if (ttl) ttl.textContent = VIEWS[k].label;
   const v = $('#view'); v.innerHTML = '<div class="empty">Cargando…</div>';
   Promise.resolve(VIEWS[k].render()).catch((e) => { v.innerHTML = `<div class="notice n-bad">${esc(e.message)}</div>`; });
-  S.view = k;
+  S.view = k; rollWorkday();
   if (k !== 'casos') refreshCaseBadge();
   if (k !== 'documentos') refreshDocBadge();
   if (k !== 'buzon') refreshBuzonBadge();
@@ -433,6 +443,14 @@ function changePassword() {
 
 // ───────────────────────── Pase de lista ─────────────────────────
 const LS = { group: null, fecha: null, open: null, turno: null };
+// Si la app quedó abierta de un día para otro, las fechas de trabajo vuelven a "hoy"
+let WORKDAY = todayMX();
+function rollWorkday() {
+  const t = todayMX(); if (t === WORKDAY) return;
+  WORKDAY = t; LS.fecha = null; LS.turno = null;
+  if (typeof AS !== 'undefined') AS.fecha = null; if (typeof OP !== 'undefined') OP.fecha = null; if (typeof BS !== 'undefined') BS.fecha = null;
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.me && todayMX() !== WORKDAY) { rollWorkday(); route(); } });
 const sortGroups = (gs) => gs.sort((a, b) => ((is('supervisor') && a.tipo === 'lideres' ? '0' : '1') + areaName(a.area_id) + (a.tipo === 'lideres' ? '0' : '1') + a.name)
   .localeCompare((is('supervisor') && b.tipo === 'lideres' ? '0' : '1') + areaName(b.area_id) + (b.tipo === 'lideres' ? '0' : '1') + b.name, 'es'));
 async function viewLista() {
@@ -702,11 +720,12 @@ async function storageRemove(bucket, paths) {
   await http(`/storage/v1/object/${bucket}`, { method: 'DELETE', body: { prefixes: paths } });
 }
 async function deleteEmployeeForm(e) {
-  const [att, cases, acts, corrs] = await Promise.all([
+  const [att, cases, acts, corrs, docs] = await Promise.all([
     db('attendance').select('id').eq('employee_id', e.id).get(), db('cases').select('id').eq('employee_id', e.id).get(),
-    db('activity_daily').select('id').eq('employee_id', e.id).get().catch(() => []), db('corrections').select('id').eq('employee_id', e.id).get().catch(() => [])]);
+    db('activity_daily').select('id').eq('employee_id', e.id).get().catch(() => []), db('corrections').select('id').eq('employee_id', e.id).get().catch(() => []),
+    db('documents').select('id,firmado_path').eq('employee_id', e.id).get().catch(() => [])]);
   const files = cases.length ? await db('case_files').select('path').in('case_id', cases.map((c) => c.id)).get() : [];
-  const items = [[att.length, 'registros de asistencia'], [cases.length, 'casos (con su seguimiento)'], [files.length, 'archivos de evidencia'], [acts.length + corrs.length, 'registros de actividad y correcciones']].filter((x) => x[0]);
+  const items = [[att.length, 'registros de asistencia'], [cases.length, 'casos (con su seguimiento)'], [files.length, 'archivos de evidencia'], [acts.length + corrs.length, 'registros de actividad y correcciones'], [docs.length, 'documentos laborales (y sus copias firmadas)']].filter((x) => x[0]);
   const f = [{ k: 'conf', label: 'Escribe ELIMINAR para confirmar', req: true, full: true }];
   modal({ title: 'Eliminar a ' + fullName(e), body: `
     ${e.status === 'activo' || e.status === 'alta_pendiente' ? `<div class="notice n-warn"><b>¿Dejó de trabajar?</b> Usa <b>Dar de baja</b>: conserva su historial y el control de reingreso. Eliminar es solo para registros de prueba, duplicados o capturados por error.</div>` : ''}
@@ -717,6 +736,7 @@ async function deleteEmployeeForm(e) {
       const v = readFields(el, f);
       if (v.conf.trim().toUpperCase() !== 'ELIMINAR') throw new Error('Escribe ELIMINAR para confirmar.');
       try { await storageRemove('evidencias', files.map((x) => x.path)); } catch { /* si falla, los archivos quedan huérfanos pero inaccesibles */ }
+      try { await storageRemove('documentos', docs.map((x) => x.firmado_path).filter(Boolean)); } catch { /* idem */ }
       const r = await db('employees').eq('id', e.id).remove();
       if (!r || !r.length) throw new Error('No se pudo eliminar.');
       $$('.modal-bg').forEach((x) => x.remove());
@@ -777,7 +797,7 @@ async function openEmployee(id, fx = {}) {
   if (canMove) actions.push({ label: 'Cambiar grupo', run: () => { setTimeout(() => moveGroup(e), 0); } });
   if (is('developer')) {
     if (e.status === 'activo') actions.push({ label: 'Cambiar área', run: () => { setTimeout(() => moveArea(e), 0); } });
-    if (['activo', 'baja'].includes(e.status)) actions.push({ label: 'Generar documento', run: () => { setTimeout(() => e.status === 'baja' ? docForm({ tipo: 'constancia_baja', employee: e }) : newDocPicker({ employee: e }), 0); } });
+    if (['activo', 'baja', 'alta_pendiente'].includes(e.status)) actions.push({ label: 'Generar documento', run: () => { setTimeout(() => e.status === 'baja' ? docForm({ tipo: 'constancia_baja', employee: e }) : newDocPicker({ employee: e }), 0); } });
     if (e.status === 'activo') actions.push({ label: 'Dar de baja', cls: 'danger', run: () => { setTimeout(() => bajaForm(e, p), 0); } });
     actions.push({ label: 'Eliminar', cls: 'danger', run: () => { setTimeout(() => deleteEmployeeForm(e), 0); } });
   }
@@ -999,11 +1019,11 @@ function exportPeriod() {
       const days = []; for (let x = v.from; x <= v.to; x = addDays(x, 1)) { days.push(x); if (days.length > 62) throw new Error('Máximo 62 días por exportación.'); }
       let qa = db('attendance').select('employee_id,fecha,turno,status,aviso,incidencia,incidencias,comentario,area_id').gte('fecha', v.from).lte('fecha', v.to);
       if (AS.area) qa = qa.eq('area_id', AS.area);
-      const [att, emps] = await Promise.all([qa.get(), db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,area_id,group_id,status').get()]);
+      const [att, emps] = await Promise.all([qa.order('fecha').order('employee_id').getAll(), db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,area_id,group_id,status').get()]);
       const empById = Object.fromEntries(emps.map((e) => [e.id, e]));
       const per = {}, perT = {}; att.forEach((a) => { const m = a.turno === 'tarde' ? perT : per; (m[a.employee_id] = m[a.employee_id] || {})[a.fecha] = a; if (!per[a.employee_id]) per[a.employee_id] = {}; });
       const ids = Object.keys(per).sort((a, b) => sortName(empById[a] || { apellido_paterno: '', nombre: '' }, empById[b] || { apellido_paterno: '', nombre: '' }));
-      const q = (s) => '"' + String(s ?? '').replace(/"/g, '""') + '"';
+      const q = (s) => { let t = String(s ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
       const lines = [['No.', 'Nombre', 'Área', 'Grupo', ...days.map(fmtDate), 'Asistencias', 'Faltas', 'Retardos', 'Salidas anticipadas', 'Permisos', 'Descansos', 'Inactividad', 'Diferencias mañana/tarde', 'Avisos', 'Comentarios'].map(q).join(',')];
       for (const id of ids) {
         const e = empById[id] || { nombre: '(sin acceso)', apellido_paterno: '' }; const r = per[id]; const rt = perT[id] || {}; let dif = 0;
@@ -1089,7 +1109,7 @@ async function viewCatalogos() {
   await loadCatalogs();
   const v = $('#view');
   const empsG = await db('employees').select('group_id,status').get().catch(() => []);
-  const perG = {}; empsG.forEach((e) => { if (e.group_id && e.status !== 'baja' && e.status !== 'rechazado') perG[e.group_id] = (perG[e.group_id] || 0) + 1; });
+  const perG = {}, allG = {}; empsG.forEach((e) => { if (!e.group_id) return; allG[e.group_id] = (allG[e.group_id] || 0) + 1; if (e.status !== 'baja' && e.status !== 'rechazado') perG[e.group_id] = (perG[e.group_id] || 0) + 1; });
   const tls = S.profiles.filter((p) => p.role === 'tl' && p.active);
   v.innerHTML = `<div class="pagehead"><h1>Áreas y grupos</h1><div class="row"><button class="btn" id="na">+ Área</button><button class="btn primary" id="ng">+ Grupo</button></div></div>
   ${S.areas.map((a) => `<div class="card" style="margin-bottom:12px"><div class="pad row" style="border-bottom:1px solid var(--line)"><b class="grow">${esc(a.name)}</b><span class="small muted">Cierre desde ${String(a.hora_cierre || '16:00').slice(0, 5)}</span>${a.active ? '' : '<span class="badge b-mut">Inactiva</span>'}<button class="btn sm" data-ea="${a.id}">Editar</button></div>
@@ -1111,8 +1131,9 @@ async function viewCatalogos() {
   $$('[data-ag]').forEach((b) => b.onclick = () => addToGroupForm(S.groups.find((x) => x.id === b.dataset.ag)));
   $$('[data-dg]').forEach((b) => b.onclick = async () => {
     const g = S.groups.find((x) => x.id === b.dataset.dg);
-    const n = perG[g.id] || 0;
+    const n = perG[g.id] || 0, nb = (allG[g.id] || 0) - n;
     if (n) return toast(`“${g.name}” tiene ${n} persona(s). Muévelas a otro grupo antes de eliminarlo.`, true);
+    if (nb) return toast(`“${g.name}” conserva ${nb} baja(s) o rechazo(s) en su historial: desactívalo desde Editar en lugar de eliminarlo.`, true);
     if (!(await confirmBox('Eliminar grupo', `Se eliminará <b>${esc(g.name)}</b> de ${esc(areaName(g.area_id))}. Solo se puede si no tiene historial; si lo tiene, desactívalo desde Editar.`, { okLabel: 'Eliminar', danger: true }))) return;
     try {
       const rows = await db('groups').eq('id', g.id).remove();
@@ -1981,6 +2002,18 @@ async function loadTemplates(force) {
   return TPL.rows;
 }
 const latestTpl = (tipo) => (TPL.rows || []).find((t) => t.tipo === tipo) || null;
+// Daniel: si un formato aún no tiene versión, se guarda su texto base como versión 1 (así todo documento queda con su texto)
+async function ensureBaseTemplates() {
+  if (!is('developer')) return;
+  await loadTemplates(true);
+  const faltan = Object.keys(DOC_BLOCKS).filter((t) => !latestTpl(t));
+  if (!faltan.length) return;
+  for (const t of faltan) {
+    const bloques = Object.fromEntries(DOC_BLOCKS[t].map((b) => [b.k, b.def]));
+    try { await db('doc_templates').insert([{ tipo: t, bloques, nota: 'Texto base' }]); } catch { /* sin conexión: se intenta la próxima vez */ }
+  }
+  await loadTemplates(true);
+}
 // Texto que llevaría un documento nuevo hoy (igual que lo congela la base de datos al emitir)
 const currentPlantilla = (tipo) => { const g = latestTpl('general'), t = latestTpl(tipo); return g || t ? { ...(g ? g.bloques : {}), ...(t ? t.bloques : {}) } : null; };
 function tplVars(d, B) {
@@ -2123,7 +2156,7 @@ const docPending = (d) => is('developer') ? d.estado === 'emitido' : is('tl', 's
 async function viewDocumentos() {
   const v = $('#view');
   const [docs, emps] = await Promise.all([
-    db('documents').select('id,folio,tipo,employee_id,area_id,group_id,case_id,fecha,estado,snapshot,enviado_at,entregado_at,baja_aplicada').order('created_at', false).limit(1000).get(),
+    db('documents').select('id,folio,tipo,employee_id,area_id,group_id,case_id,fecha,estado,snapshot,enviado_at,entregado_at,baja_aplicada').order('created_at', false).getAll(),
     db('employees').select('id,nombre,apellido_paterno,apellido_materno,num_empleado,puesto,area_id,group_id,status,fecha_ingreso').get()
   ]);
   const pend = docs.filter(docPending);
@@ -2167,7 +2200,8 @@ async function refreshDocBadge() {
 function newDocPicker({ emps, employee, caseRow, tipo } = {}) {
   if (tipo) return pickEmployee({ tipo, emps, employee, caseRow });
   const groups = {};
-  Object.entries(DOC_TIPOS).forEach(([k, t]) => { (groups[t.grupo] = groups[t.grupo] || []).push([k, t]); });
+  const okFor = (k) => !employee || (employee.status === 'alta_pendiente' ? DOC_CONTRATA.includes(k) : employee.status === 'baja' ? k === 'constancia_baja' : k !== 'constancia_baja');
+  Object.entries(DOC_TIPOS).filter(([k]) => okFor(k)).forEach(([k, t]) => { (groups[t.grupo] = groups[t.grupo] || []).push([k, t]); });
   const m = modal({ title: employee ? 'Nuevo documento · ' + fullName(employee) : 'Nuevo documento', wide: true,
     body: Object.entries(groups).map(([g, items]) => `<div class="eyebrow" style="margin:4px 0 8px">${esc(g)}</div><div class="doc-tiles">${items.map(([k, t]) => `<button type="button" class="doc-tile" data-nt="${k}"><span class="dt-code">${t.code}</span><b>${esc(t.label)}</b><span class="small muted">${esc(t.desc)}</span></button>`).join('')}</div>`).join('') });
   $$('[data-nt]', m.el).forEach((b) => b.onclick = () => { m.close(); pickEmployee({ tipo: b.dataset.nt, emps, employee, caseRow }); });
@@ -2222,7 +2256,7 @@ async function docForm({ tipo, employee, caseRow, existing }) {
         const row = { fecha: doc.fecha, datos: doc.datos, snapshot: doc.snapshot, origen_id: doc.origen_id || null };
         let id;
         if (existing) { await mustUpdate(db('documents').eq('id', existing.id).update(row), 'el documento'); id = existing.id; }
-        else { const [r] = await db('documents').insert([{ ...row, tipo, employee_id: e.id, case_id: caseRow ? caseRow.id : null }]); id = Array.isArray(r) ? r[0].id : r.id; }
+        else { const [r] = await db('documents').insert([{ ...row, plantilla: blockDefaults(tipo), tipo, employee_id: e.id, case_id: caseRow ? caseRow.id : null }]); id = Array.isArray(r) ? r[0].id : r.id; }
         toast(existing ? 'Documento actualizado' : 'Documento generado');
         if (S.view === 'documentos') viewDocumentos().catch(() => {});
         setTimeout(() => openDocument(id), 0);
@@ -2293,11 +2327,11 @@ async function openDocument(id) {
 // Registrar entrega: copia firmada (foto o PDF) o negativa de firma
 function deliveryForm(d) {
   const canRefuse = DOC_LIDER.includes(d.tipo) || d.tipo === 'rescision';   // contratación y bajas firmadas: sin negativa
-  const needsFile = d.tipo !== 'constancia_baja';
+  const needsFile = d.tipo !== 'constancia_baja';   // en la constancia el archivo es opcional
   const fb = fileBox('docsign', { title: 'Copia firmada', label: 'Tomar foto o elegir archivo', hint: 'Foto clara de la hoja firmada o PDF escaneado · hasta 10 MB', accept: 'image/*,application/pdf', ok: (f) => /^image\/|^application\/pdf$/.test(mimeOf(f)), max: 1 });
   const m = modal({ title: `${d.estado === 'con_lider' ? 'Entrega' : 'Firma'} · ${docFolio(d)} · ${(d.snapshot || {}).nombre || ''}`,
     body: `${canRefuse ? `<div class="seg" role="group" aria-label="Resultado" style="margin-bottom:10px"><button type="button" data-res="firmado" class="on">Firmó</button><button type="button" data-res="negativa">Se negó a firmar</button></div>` : ''}
-      <div id="r_firmado">${needsFile ? fb.html : '<div class="notice n-info">La constancia es un documento interno; puedes subir la copia firmada después desde aquí si la necesitas.</div>'}</div>
+      <div id="r_firmado">${needsFile ? fb.html : '<div class="notice n-info">La constancia es un documento interno: puedes marcarla como firmada sin archivo, o subir aquí la copia firmada si la tienes.</div>' + fb.html}</div>
       <div id="r_negativa" hidden>${fieldsHtml([{ k: 'nota', label: 'Cómo ocurrió y quiénes estuvieron presentes', type: 'textarea', req: true, full: true, hint: 'Ej. "Se le leyó el acta el 06/10 a las 10:30; se negó a firmar. Presentes: TL Juan Pérez y Sup. Ana Ruiz."' }])}</div>
       ${DOC_BAJA.includes(d.tipo) ? `<div class="notice n-warn" style="margin-top:10px">Al confirmar, la persona pasa a Baja con fecha ${fmtDate(d.datos.fecha_efectiva)}.</div>` : ''}`,
     actions: [{ label: 'Cancelar' }, { label: 'Confirmar', cls: 'primary', run: async ({ el, btn }) => {
@@ -2320,7 +2354,7 @@ function deliveryForm(d) {
       refreshDocBadge();
       setTimeout(() => openDocument(d.id), 0);
     } }] });
-  if (needsFile) fb.wire(m.el);
+  fb.wire(m.el);
   $$('[data-res]', m.el).forEach((b) => b.onclick = () => {
     $$('[data-res]', m.el).forEach((x) => x.classList.toggle('on', x === b));
     $('#r_firmado', m.el).hidden = b.dataset.res !== 'firmado'; $('#r_negativa', m.el).hidden = b.dataset.res !== 'negativa';
@@ -2348,7 +2382,7 @@ function tplSampleDoc(tipo, bloques, version) {
 }
 async function viewPlantillas() {
   const v = $('#view');
-  await loadTemplates(true);
+  await ensureBaseTemplates();
   v.innerHTML = `<div class="pagehead"><div><h1>Plantillas</h1><div class="muted small">Textos de los documentos · cada cambio crea una versión nueva; los documentos ya emitidos conservan su texto</div></div></div>
     <div class="notice n-info" style="margin-bottom:12px">Todos los documentos se emiten en <b>${esc(CIUDAD)}</b>. Los datos de cada caso (hechos, fechas, montos) se capturan al generar el documento; aquí cambias los párrafos fijos.</div>
     <div class="list">${Object.entries(TPL_TIPOS).map(([k, t]) => { const l = latestTpl(k); const n = (TPL.rows || []).filter((r) => r.tipo === k).length; return `<button type="button" class="item" data-tpl="${k}">
@@ -2375,7 +2409,7 @@ function openTemplate(tipo, from) {
     actions: [{ label: 'Cancelar' }, { label: 'Guardar versión ' + ((hist[0] ? hist[0].version : 0) + 1), cls: 'primary', run: async ({ el }) => {
       const v = readFields(el, [{ k: 'nota', label: '¿Qué cambiaste?', req: true }]);
       const bloques = read(el);
-      if (cur && JSON.stringify(bloques) === JSON.stringify(cur.bloques)) throw new Error('No hay cambios respecto a la versión vigente.');
+      if (cur && Object.keys(bloques).every((k) => bloques[k] === cur.bloques[k] || (cur.bloques[k] == null && bloques[k] === (blocks.find((b) => b.k === k) || {}).def))) throw new Error('No hay cambios respecto a la versión vigente.');
       for (const [k, t] of Object.entries(bloques)) if (!t.trim()) throw new Error(`El texto "${blocks.find((b) => b.k === k).label}" está vacío.`);
       await db('doc_templates').insert([{ tipo, bloques, nota: v.nota }]);
       toast('Versión guardada · los documentos nuevos usarán este texto');
@@ -2424,7 +2458,7 @@ function docExtraFrom(all, d) {
 async function exportDocsZip({ employeeId, titulo }, btn) {
   let q = db('documents').order('fecha').order('folio');
   if (employeeId) q = q.eq('employee_id', employeeId);
-  const docs = await q.get();
+  const docs = await q.order('id').getAll();
   if (!docs.length) throw new Error('No hay documentos para descargar.');
   const files = [], faltan = [];
   for (let i = 0; i < docs.length; i++) {
@@ -2466,9 +2500,10 @@ const vacLabel = (v) => v ? `#${v.folio} ${v.puesto} · ${areaName(v.area_id)}` 
 
 async function viewReclutamiento() {
   const v = $('#view');
+  if (is('developer') && !viewReclutamiento._tpl) { viewReclutamiento._tpl = true; ensureBaseTemplates().catch(() => {}); }
   const [vacs, cands] = await Promise.all([
     db('vacantes').order('created_at', false).get(),
-    db('candidatos').order('created_at', false).limit(2000).get()
+    db('candidatos').order('created_at', false).order('id').getAll()
   ]);
   const vacById = Object.fromEntries(vacs.map((x) => [x.id, x]));
   if (!RS.tab) RS.tab = is('supervisor') ? 'asignados' : is('developer') && vacs.some((x) => x.estado === 'solicitada') ? 'vacantes' : 'candidatos';
@@ -2478,7 +2513,7 @@ async function viewReclutamiento() {
     <div class="seg" role="group" aria-label="Sección" style="margin-bottom:12px">${tabs.map(([k, l]) => `<button type="button" data-rt="${k}" class="${RS.tab === k ? 'on' : ''}">${l}${k === 'vacantes' && is('developer') && vacs.some((x) => x.estado === 'solicitada') ? ` (${vacs.filter((x) => x.estado === 'solicitada').length} por aprobar)` : ''}</button>`).join('')}</div>`;
   let body = '';
   if (RS.tab === 'vacantes') body = vacantesHtml(vacs, cands);
-  else if (RS.tab === 'asignados') body = await asignadosHtml(cands);
+  else if (RS.tab === 'asignados') body = await asignadosHtml();
   else body = candidatosHtml(cands, vacs, vacById);
   v.innerHTML = head + body;
   $$('[data-rt]').forEach((b) => b.onclick = () => { RS.tab = b.dataset.rt; RS.sel.clear(); viewReclutamiento(); });
@@ -2546,8 +2581,8 @@ function vacantesHtml(vacs, cands) {
     <span class="badge ${VAC_ST[x.estado][1]}">${VAC_ST[x.estado][0]}</span></button>`; }).join('') : '<div class="card empty">Sin vacantes.</div>'}</div>`;
 }
 
-async function asignadosHtml(cands) {
-  const mine = cands.filter((c) => c.etapa === 'asignado');
+async function asignadosHtml() {
+  const mine = await rpc('mis_asignados').catch(() => []);
   const emps = mine.length ? await db('employees').select('id,nombre,apellido_paterno,apellido_materno,area_id,group_id,status,puesto').in('id', mine.map((c) => c.employee_id).filter(Boolean)).get() : [];
   const byId = Object.fromEntries(emps.map((e) => [e.id, e]));
   setTimeout(() => $$('[data-ubicar]').forEach((b) => b.onclick = () => { const e = byId[b.dataset.ubicar]; if (e) moveGroup(e, () => viewReclutamiento()); }), 0);
@@ -2615,7 +2650,7 @@ function openVacante(x, cands) {
 // ── Candidatos ──
 function candFields(c = {}, vacs = []) {
   const areas = S.areas.filter((a) => a.active && (seesAllAreas() || S.myAreas.includes(a.id)));
-  const open = vacs.filter((v) => v.estado === 'abierta' && (seesAllAreas() || S.myAreas.includes(v.area_id)));
+  const open = vacs.filter((v) => (v.estado === 'abierta' || v.id === c.vacante_id) && (seesAllAreas() || S.myAreas.includes(v.area_id)));
   return [
     { k: 'vacante_id', label: 'Vacante', type: 'select', val: c.vacante_id || (RS.vac && open.some((v) => v.id === RS.vac) ? RS.vac : open.length === 1 ? open[0].id : ''), options: [['', 'Sin vacante (solo área)'], ...open.map((v) => [v.id, vacLabel(v)])], full: true },
     { k: 'area_id', label: 'Área (si no hay vacante)', type: 'select', val: c.area_id || (areas.length === 1 ? areas[0].id : ''), options: [['', 'Elegir…'], ...areas.map((a) => [a.id, a.name])] },
@@ -2645,7 +2680,7 @@ async function candidatoForm({ vacs, existing }) {
       const v = readFields(el, f); v.area_id = resolveArea(v, vacs);
       if (v.curp && !/^[A-Z]{4}\d{6}[HM][A-Z]{5}[0-9A-Z]\d$/.test(v.curp)) throw new Error('CURP inválida.');
       let row;
-      if (existing) { delete v.area_id; [row] = await mustUpdate(db('candidatos').eq('id', existing.id).update(v), 'el candidato'); }
+      if (existing) { delete v.area_id; if (v.vacante_id === existing.vacante_id) delete v.vacante_id; [row] = await mustUpdate(db('candidatos').eq('id', existing.id).update(v), 'el candidato'); }
       else [row] = await db('candidatos').insert([v]);
       if (fb.files.length) { btn.textContent = 'Subiendo CV…'; await uploadCv(row, fb.files[0]).catch((e) => toast('Se registró, pero el CV no se subió: ' + e.message, true)); }
       toast(existing ? 'Candidato actualizado' : row.alerta ? 'Registrado · ATENCIÓN: coincide con una baja no recontratable' : 'Candidato registrado', !!row.alerta);
@@ -2690,14 +2725,20 @@ function bulkCandidatos(vacs) {
       for (let i = 0; i < rows.length; i++) {
         btn.textContent = `Registrando ${i + 1}/${rows.length}…`;
         try { await db('candidatos').insert([{ ...rows[i].n, telefono: rows[i].tel, vacante_id: v.vacante_id, area_id: area, fuente: v.fuente, lote: v.lote }]); ok++; }
-        catch (e) { fails.push(`${rows[i].line} (${e.message})`); }
+        catch (e) { fails.push(`${rows[i].line} (${e.message})`); rows[i].fail = true; }
       }
       btn.textContent = 'Registrar';
       RS.lote = v.lote || ''; viewReclutamiento().catch(() => {});
-      if (fails.length) { toast(`${ok} registrados; con error: ${fails.length}`, true); $('#bprev', el).innerHTML = `<div class="notice n-bad">${fails.map(esc).join('<br>')}</div>`; return false; }
+      if (fails.length) { $('#blines', el).value = rows.filter((r) => r.fail).map((r) => r.line).join('\n'); toast(`${ok} registrados; quedan en el cuadro los ${fails.length} con error`, true); $('#bprev', el).innerHTML = `<div class="notice n-bad">${fails.map(esc).join('<br>')}</div>`; return false; }
       toast(`${ok} candidatos registrados`);
     } }] });
-  const parse = () => $('#blines', m.el).value.split('\n').map((l) => l.trim()).filter(Boolean).map((line) => { const [nm, ...rest] = line.split(','); return { line, n: splitName(nm || ''), tel: rest.join(',').trim() || null }; });
+  // "Nombre Apellidos, teléfono" o "Nombre Apellidos 55 1234 5678" (el teléfono al final, con o sin coma)
+  const parse = () => $('#blines', m.el).value.split('\n').map((l) => l.trim()).filter(Boolean).map((line) => {
+    let nm = line, tel = null; const c = line.indexOf(',');
+    if (c >= 0) { nm = line.slice(0, c); tel = line.slice(c + 1).trim() || null; }
+    else { const mm = line.match(/^(.*?)[\s:]+((?:\+?\d[\d\s-]{8,}\d))$/); if (mm) { nm = mm[1]; tel = mm[2]; } }
+    return { line, n: splitName(nm || ''), tel };
+  });
   $('#blines', m.el).oninput = () => { const rs = parse(); $('#bprev', m.el).innerHTML = rs.length ? `<div class="scrollx"><table class="tbl"><thead><tr><th>Nombre(s)</th><th>Paterno</th><th>Materno</th><th>Teléfono</th></tr></thead><tbody>${rs.map((r) => r.n ? `<tr><td>${esc(r.n.nombre)}</td><td>${esc(r.n.apellido_paterno)}</td><td>${esc(r.n.apellido_materno || '')}</td><td>${esc(r.tel || '')}</td></tr>` : `<tr><td colspan="4" style="color:var(--bad)">Falta apellido: ${esc(r.line)}</td></tr>`).join('')}</tbody></table></div>` : ''; };
 }
 
