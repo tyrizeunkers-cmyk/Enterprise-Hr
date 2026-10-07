@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.8.6';
+const APP_VERSION = '0.9.1';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -317,10 +317,12 @@ const VIEWS = {
   lista: { label: 'Pase de lista', short: 'Lista', ic: '✓', grupo: 'Operación', roles: ['developer', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewLista() },
   personal: { label: 'Personal', ic: '👥', grupo: 'Personal', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewPersonal() },
   casos: { label: 'Casos', ic: '⚑', grupo: 'Operación', roles: ['developer', 'director', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewCasos() },
+  documentos: { label: 'Documentos', short: 'Docs', ic: '📄', grupo: 'Personal', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewDocumentos() },
   operacion: { label: 'Actividad', ic: '◔', grupo: 'Operación', roles: ['developer', 'supervisor'], render: () => viewOperacion() },
   asistencia: { label: 'Asistencia', ic: '▦', grupo: 'Operación', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor'], render: () => viewAsistencia() },
   usuarios: { label: 'Usuarios', ic: '🔑', grupo: 'Administración', roles: ['developer'], render: () => viewUsuarios() },
   catalogos: { label: 'Áreas y grupos', ic: '⌂', grupo: 'Administración', roles: ['developer'], render: () => viewCatalogos() },
+  plantillas: { label: 'Plantillas', ic: '✎', grupo: 'Administración', roles: ['developer'], render: () => viewPlantillas() },
   buzon: { label: 'Buzón', ic: '✉', grupo: 'Administración', roles: ['developer'], render: () => viewBuzon() },
   bitacora: { label: 'Bitácora', ic: '🕘', grupo: 'Administración', roles: ['developer', 'director'], render: () => viewBitacora() }
 };
@@ -330,10 +332,12 @@ const ICONS = {
   lista: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/>',
   personal: '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3 3-4.8 5.5-4.8s4.9 1.8 5.5 4.8"/><circle cx="16.5" cy="9" r="2.6"/><path d="M15.5 14.4c2.3-.3 4.4 1.2 5 4.6"/>',
   casos: '<path d="M6 21V4"/><path d="M6 4h11l-2.5 4 2.5 4H6"/>',
+  documentos: '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M10 12h5M10 15.5h5"/>',
   operacion: '<path d="M3 12h4l2.5-6 4 12 2.5-6H21"/>',
   asistencia: '<rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
   usuarios: '<circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2 2M14 9l2 2"/>',
   catalogos: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
+  plantillas: '<path d="M6 3h8l4 4v6"/><path d="M6 3v18h6"/><path d="M14 3v4h4"/><path d="M14.5 21l1-3.5 5-5 2.5 2.5-5 5z"/>',
   buzon: '<path d="M3 13l2.5-7h13L21 13v6H3z"/><path d="M3 13h5l1.5 2.5h5L16 13h5"/>',
   bitacora: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
   mas: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
@@ -342,7 +346,9 @@ const ICONS = {
 };
 const icon = (k, sz = 22) => `<svg viewBox="0 0 24 24" width="${sz}" height="${sz}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[k] || ''}</svg>`;
 // En el celular: máximo 4 secciones abajo + "Más" (el resto en un panel agrupado)
-const TAB_PRIO = ['lista', 'personal', 'casos', 'asistencia', 'operacion', 'buzon', 'usuarios', 'catalogos', 'bitacora'];
+const TAB_PRIO = ['lista', 'personal', 'casos', 'documentos', 'asistencia', 'operacion', 'buzon', 'usuarios', 'catalogos', 'plantillas', 'bitacora'];
+// Supervisión: su trabajo diario es la lista y la actividad; documentos va en "Más"
+const TAB_PRIO_SUP = ['lista', 'personal', 'casos', 'operacion', 'asistencia', 'documentos'];
 const navCount = (k) => Number(($(`.nav a[data-v="${k}"] .cnt`) || {}).textContent || 0);
 function refreshMoreBadge() {
   const t = $('#tabMore'); if (!t) return;
@@ -364,7 +370,8 @@ function openMore() {
 }
 function renderShell() {
   const nav = myViews().map(([k, v]) => `<a href="#/${k}" data-v="${k}">${icon(k, 20)}${esc(v.label)}</a>`).join('');
-  const byPrio = myViews().sort((a, b) => TAB_PRIO.indexOf(a[0]) - TAB_PRIO.indexOf(b[0]));
+  const prio = is('supervisor') ? TAB_PRIO_SUP : TAB_PRIO;
+  const byPrio = myViews().sort((a, b) => prio.indexOf(a[0]) - prio.indexOf(b[0]));
   const primary = byPrio.length <= 5 ? byPrio : byPrio.slice(0, 4);
   S.moreKeys = byPrio.length <= 5 ? [] : byPrio.slice(4).map(([k]) => k);
   const tabs = primary.map(([k, v]) => `<a href="#/${k}" data-v="${k}"><span class="ic">${icon(k)}</span><span class="lb">${esc(v.short || v.label)}</span></a>`).join('')
@@ -400,7 +407,9 @@ function route() {
   const ttl = $('#ttl'); if (ttl) ttl.textContent = VIEWS[k].label;
   const v = $('#view'); v.innerHTML = '<div class="empty">Cargando…</div>';
   Promise.resolve(VIEWS[k].render()).catch((e) => { v.innerHTML = `<div class="notice n-bad">${esc(e.message)}</div>`; });
+  S.view = k;
   if (k !== 'casos') refreshCaseBadge();
+  if (k !== 'documentos') refreshDocBadge();
   if (k !== 'buzon') refreshBuzonBadge();
 }
 window.addEventListener('hashchange', () => { if (S.me) route(); });
@@ -718,12 +727,13 @@ async function openEmployee(id, fx = {}) {
   const since = addDays(todayMX(), -29);
   const metrics = metricsOf(e.area_id);
   const seesCases = is('developer', 'director', 'rh_general', 'rh_area', 'supervisor');
-  const [priv, att, acts, corrs, cases] = await Promise.all([
+  const [priv, att, acts, corrs, cases, edocs] = await Promise.all([
     canSeePrivate(e) ? db('employee_private').eq('employee_id', id).get() : Promise.resolve([]),
     db('attendance').eq('employee_id', id).gte('fecha', since).order('fecha', false).get(),
     metrics.length ? db('activity_daily').eq('employee_id', id).gte('fecha', since).get() : Promise.resolve([]),
     is('nomina') ? Promise.resolve([]) : db('corrections').eq('employee_id', id).gte('fecha', since).get(),
-    seesCases ? db('cases').select('id,folio,status,fecha_hechos,decision,kind,hechos').eq('employee_id', id).order('created_at', false).get() : Promise.resolve([])
+    seesCases ? db('cases').select('id,folio,status,fecha_hechos,decision,kind,hechos').eq('employee_id', id).order('created_at', false).get() : Promise.resolve([]),
+    db('documents').select('id,folio,tipo,fecha,estado').eq('employee_id', id).order('created_at', false).get().catch(() => [])
   ]);
   const p = priv[0] || null;
   const c = attCounts(); att.forEach((a) => countAtt(c, a));
@@ -751,10 +761,11 @@ async function openEmployee(id, fx = {}) {
     <div><div class="eyebrow" style="margin-bottom:6px">Asistencia · últimos 30 días</div>
       <div class="row small"><span class="badge b-ok">${c.asistio} asistencias</span><span class="badge b-bad">${c.falta} faltas</span><span class="badge b-warn">${c.retardo} retardos</span></div>
       ${att.length ? `<div class="scrollx" style="margin-top:8px"><table class="tbl"><tbody>${att.slice(0, 12).map((a) => `<tr><td class="mono">${fmtDate(a.fecha)}${a.turno === 'tarde' ? ' <span class="small muted">tarde</span>' : ''}</td><td>${esc(attLabel(a))}</td><td class="small muted">${esc([...(a.incidencias || []), a.comentario].filter(Boolean).join(' · '))}</td></tr>`).join('')}</tbody></table></div>` : ''}
-    <
+    </div>
     ${metrics.length ? `<div><div class="eyebrow" style="margin-bottom:6px">Métricas · últimos 30 días (${acts.length} días capturados)</div>${acts.length ? `<div class="scrollx"><table class="tbl"><thead><tr><th>Métrica</th><th>Promedio diario</th><th>Meta</th><th>Días bajo meta</th></tr></thead><tbody>${metrics.map((m) => { const xs = acts.map((x) => (x.valores || {})[m.key]).filter((x) => x != null); const avg = xs.length ? Math.round(xs.reduce((s2, x) => s2 + x, 0) / xs.length) : null; const under = xs.filter((x) => x < Number(m.daily_goal)).length; return `<tr><td>${esc(m.label)}</td><td class="mono" style="color:${avg == null ? 'inherit' : avg >= Number(m.daily_goal) ? 'var(--ok)' : 'var(--bad)'}">${avg ?? '—'}</td><td class="mono">${Number(m.daily_goal)}</td><td class="mono">${under}</td></tr>`; }).join('')}</tbody></table></div>` : '<span class="small muted">Sin actividad capturada.</span>'}</div>` : ''}
     ${!is('nomina') && corrs.length ? `<div><div class="eyebrow" style="margin-bottom:6px">Correcciones operativas · últimos 30 días</div><div class="row small"><span class="badge b-mut">${corrs.length} correcciones</span><span class="badge b-ok">${corrs.filter((x) => x.resultado === 'corrigio').length} corrigió</span><span class="badge b-bad">${corrs.filter((x) => x.resultado === 'no_corrigio').length} no corrigió</span></div></div>` : ''}
-    ${seesCases ? `<div><div class="eyebrow" style="margin-bottom:6px">Casos</div>${cases.length ? `<div class="list">${cases.map((k) => `<button type="button" class="item" data-opencase="${k.id}" style="padding:8px 12px"><span class="mono small muted">#${k.folio}</span><span class="grow small">${fmtDate(k.fecha_hechos)} · ${esc(k.hechos.slice(0, 60))}${k.decision ? ' · ' + esc(MEDIDAS[k.decision]) : ''}</span>${caseBadge(k.status)}</button>`).join('')}</div>` : '<span class="small muted">Sin casos.</span>'}</div>` : ''}`;
+    ${seesCases ? `<div><div class="eyebrow" style="margin-bottom:6px">Casos</div>${cases.length ? `<div class="list">${cases.map((k) => `<button type="button" class="item" data-opencase="${k.id}" style="padding:8px 12px"><span class="mono small muted">#${k.folio}</span><span class="grow small">${fmtDate(k.fecha_hechos)} · ${esc(k.hechos.slice(0, 60))}${k.decision ? ' · ' + esc(MEDIDAS[k.decision]) : ''}</span>${caseBadge(k.status)}</button>`).join('')}</div>` : '<span class="small muted">Sin casos.</span>'}</div>` : ''}
+    ${edocs.length || is('developer') ? `<div><div class="eyebrow" style="margin-bottom:6px;display:flex;align-items:center;gap:8px">Documentos${edocs.length && is('developer', 'director', 'rh_general', 'rh_area') ? '<button type="button" class="btn sm" id="expzip" style="margin-left:auto;min-height:32px">Descargar expediente (ZIP)</button>' : ''}</div>${docListHtml(edocs)}</div>` : ''}`;
   const actions = [];
   if (is('developer') && e.status === 'alta_pendiente') {
     actions.push({ label: 'Rechazar alta', cls: 'danger', run: async () => { if (!(await confirmBox('Rechazar alta', `¿Rechazar la solicitud de <b>${esc(fullName(e))}</b>?`, { danger: true, okLabel: 'Rechazar' }))) return false; await mustUpdate(db('employees').eq('id', id).update({ status: 'rechazado' })); toast('Alta rechazada'); viewPersonal(); } });
@@ -764,11 +775,14 @@ async function openEmployee(id, fx = {}) {
   if (canMove) actions.push({ label: 'Cambiar grupo', run: () => { setTimeout(() => moveGroup(e), 0); } });
   if (is('developer')) {
     if (e.status === 'activo') actions.push({ label: 'Cambiar área', run: () => { setTimeout(() => moveArea(e), 0); } });
+    if (['activo', 'baja'].includes(e.status)) actions.push({ label: 'Generar documento', run: () => { setTimeout(() => e.status === 'baja' ? docForm({ tipo: 'constancia_baja', employee: e }) : newDocPicker({ employee: e }), 0); } });
     if (e.status === 'activo') actions.push({ label: 'Dar de baja', cls: 'danger', run: () => { setTimeout(() => bajaForm(e, p), 0); } });
     actions.push({ label: 'Eliminar', cls: 'danger', run: () => { setTimeout(() => deleteEmployeeForm(e), 0); } });
   }
   const m = modal({ title: fullName(e), body, actions, wide: true });
   $$('[data-opencase]', m.el).forEach((b) => b.onclick = () => { m.close(); openCase(b.dataset.opencase); });
+  $$('[data-opendoc]', m.el).forEach((b) => b.onclick = () => { m.close(); openDocument(b.dataset.opendoc); });
+  const xz = $('#expzip', m.el); if (xz) xz.onclick = async () => { xz.disabled = true; try { await exportDocsZip({ employeeId: e.id, titulo: 'Expediente ' + fullName(e) }, xz); } catch (er) { toast(er.message, true); } finally { xz.disabled = false; xz.textContent = 'Descargar expediente (ZIP)'; } };
 }
 
 async function aceptarAlta(e) {
@@ -1638,13 +1652,14 @@ async function openCase(id) {
   const [c] = await db('cases').eq('id', id).get();
   if (!c) return toast('Caso no encontrado o sin permiso', true);
   const since = addDays(c.fecha_hechos, -29);
-  const [events, [emp], att, corr, prev, files] = await Promise.all([
+  const [events, [emp], att, corr, prev, files, cdocs] = await Promise.all([
     db('case_events').eq('case_id', id).order('at').get(),
-    db('employees').select('id,nombre,apellido_paterno,apellido_materno,area_id,group_id,status,puesto').eq('id', c.employee_id).get(),
+    db('employees').select('id,nombre,apellido_paterno,apellido_materno,num_empleado,area_id,group_id,status,puesto,fecha_ingreso').eq('id', c.employee_id).get(),
     db('attendance').select('fecha,status,turno').eq('employee_id', c.employee_id).eq('turno', 'manana').gte('fecha', since).lte('fecha', c.fecha_hechos).get(),
     is('nomina') ? Promise.resolve([]) : db('corrections').select('fecha,resultado').eq('employee_id', c.employee_id).gte('fecha', since).lte('fecha', c.fecha_hechos).get().catch(() => []),
     db('cases').select('id,folio,status,fecha_hechos,decision,kind').eq('employee_id', c.employee_id).neq('id', id).get(),
-    db('case_files').eq('case_id', id).order('created_at').get().catch(() => [])
+    db('case_files').eq('case_id', id).order('created_at').get().catch(() => []),
+    db('documents').select('id,folio,tipo,fecha,estado').eq('case_id', id).order('created_at').get().catch(() => [])
   ]);
   const faltas = att.filter((a) => a.status === 'falta').length, retardos = att.filter((a) => a.status === 'retardo').length;
   const noCorr = corr.filter((x) => x.resultado === 'no_corrigio').length;
@@ -1668,6 +1683,7 @@ async function openCase(id) {
     ${c.validacion ? `<div class="card pad"><div class="eyebrow" style="margin-bottom:8px">Validación de Supervisión · solicita: ${esc(SOLICITUDES[c.solicitud_tipo] || '')}</div>${kv(PREGUNTAS.map((p, i) => [p, val['q' + (i + 1)]]))}</div>` : ''}
     ${c.analisis ? `<div class="card pad"><div class="eyebrow" style="margin-bottom:8px">Análisis de RH</div>${kv([['Clasificación', CLASIF[c.clasificacion]], ['Análisis', c.analisis], ['Propone', MEDIDAS[c.propuesta]]])}</div>` : ''}
     ${c.decision ? `<div class="card pad"><div class="eyebrow" style="margin-bottom:8px">Decisión</div>${kv([['Medida', MEDIDAS[c.decision]], ['Nota', c.decision_nota], ['Resultado', c.resultado]])}</div>` : ''}
+    ${cdocs.length ? `<div><div class="eyebrow" style="margin-bottom:6px">Documentos del caso</div>${docListHtml(cdocs)}</div>` : ''}
     <div><div class="eyebrow" style="margin-bottom:6px">Seguimiento</div>${events.map((ev) => `<div class="log"><span class="tm" style="width:auto">${fmtDateTime(ev.at)}</span><span class="grow"><b>${esc(ev.user_name || '—')}</b> <span class="small muted">${esc(ROLES[ev.user_role] || '')}</span><br>${esc(ev.accion)}${ev.comentario ? `<br><span class="small muted">“${esc(ev.comentario)}”</span>` : ''}</span></div>`).join('')}</div>`;
   const reload = () => { viewCasos().catch(() => {}); };
   const actions = [];
@@ -1686,11 +1702,13 @@ async function openCase(id) {
     { k: 'd', label: 'Medida', type: 'select', req: true, val: c.propuesta, options: Object.entries(MEDIDAS) },
     { k: 'n', label: 'Nota', type: 'textarea', full: true }], (v) => rpc('case_decide', { p_id: c.id, p_decision: v.d, p_nota: v.n }), reload), 0); } });
   if (c.status === 'decidido' && is('developer')) actions.push({ label: 'Cerrar caso', cls: 'primary', run: () => { setTimeout(() => simpleCaseAction('Cerrar caso', [{ k: 'r', label: 'Resultado que se comunica a Marketing', type: 'textarea', req: true, full: true, hint: 'Solo lo necesario para operar: cambio de equipo, periodo de seguimiento o baja.' }], (v) => rpc('case_close', { p_id: c.id, p_resultado: v.r }), reload,
-    c.decision === 'terminacion' ? 'Recuerda aplicar la baja en Personal con su motivo.' : null), 0); } });
+    c.decision === 'terminacion' ? 'Genera el aviso de rescisión desde este caso: al registrarse firmado o con negativa, la baja se aplica sola.' : null), 0); } });
+  if (is('developer') && ['decidido', 'cerrado'].includes(c.status) && CASE_DOC[c.decision] && emp && emp.status === 'activo') actions.push({ label: 'Generar ' + DOC_TIPOS[CASE_DOC[c.decision]].label.toLowerCase(), cls: 'primary', run: () => { setTimeout(() => docForm({ tipo: CASE_DOC[c.decision], employee: emp, caseRow: c }), 0); } });
   if (is('developer')) actions.push({ label: 'Ver ficha laboral', run: () => { setTimeout(() => openEmployee(c.employee_id), 0); } });
   const cm = modal({ title: `Caso #${c.folio} · ${fullName(emp)}`, body, actions, wide: true });
   const add = $('#evid_add', cm.el);
   if (add) add.onclick = () => evidenceAddForm(c, () => { cm.close(); openCase(c.id); });
+  $$('[data-opendoc]', cm.el).forEach((b) => b.onclick = () => { cm.close(); openDocument(b.dataset.opendoc); });
   // Enlaces firmados (15 min) para ver/descargar cada archivo privado
   $$('.evid-item', cm.el).forEach(async (a) => {
     try {
@@ -1714,6 +1732,649 @@ function validateForm(c, done) {
       await rpc('case_validate', { p_id: c.id, p_respuestas: respuestas, p_solicitud: v.sol, p_comentario: v.com });
       toast('Escalado a RH'); done();
     } }] });
+}
+
+// ───────────────────────── Documentos laborales ─────────────────────────
+// Actas, cartas de advertencia, renuncias, avisos de rescisión (despido), convenios de terminación y constancias de baja.
+// Solo Daniel genera. Actas y cartas se envían al líder para entregar; el líder sube la copia firmada o registra la negativa.
+// Renuncia, convenio y rescisión firmados (o rescisión con negativa) → la base de datos da de baja al trabajador.
+const EMPRESA = CFG.empresa || 'CRP COMUNICACIONES S.A. DE C.V.';
+const DOC_BUCKET = 'documentos';
+const DOC_TIPOS = {
+  acta: { label: 'Acta administrativa', code: 'ACT', grupo: 'Disciplinarios', desc: 'Hechos, manifestación del trabajador y firmas. La entrega el líder.' },
+  advertencia: { label: 'Carta de advertencia', code: 'ADV', grupo: 'Disciplinarios', desc: 'Advertencia formal con acción correctiva y seguimiento. La entrega el líder.' },
+  renuncia: { label: 'Renuncia voluntaria', code: 'REN', grupo: 'Bajas', desc: 'Manifestación libre de separación. Firmada, da de baja al trabajador.' },
+  rescision: { label: 'Aviso de rescisión', code: 'RES', grupo: 'Bajas', desc: 'Despido con causal del art. 47 LFT, hechos, fechas y antecedentes.' },
+  convenio: { label: 'Convenio de terminación', code: 'CNV', grupo: 'Bajas', desc: 'Acuerdo de terminación por mutuo consentimiento (art. 53-I LFT).' },
+  constancia_baja: { label: 'Constancia de baja', code: 'BAJ', grupo: 'Bajas', desc: 'Cierre administrativo de la baja, ligado al documento que la origina.' }
+};
+const DOC_BAJA = ['renuncia', 'rescision', 'convenio'];
+const DOC_LIDER = ['acta', 'advertencia'];
+const DOC_ST = { emitido: ['Emitido', 'b-acc'], con_lider: ['Con el líder', 'b-warn'], firmado: ['Firmado', 'b-ok'], negativa: ['Negativa de firma', 'b-bad'], anulado: ['Anulado', 'b-mut'] };
+const docBadge = (s) => `<span class="badge ${DOC_ST[s][1]}">${DOC_ST[s][0]}</span>`;
+const docFolio = (d) => d.folio ? `${DOC_TIPOS[d.tipo].code}-${String(d.folio).padStart(4, '0')}` : 'BORRADOR';
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const fechaLarga = (iso) => { if (!iso) return '________________'; const [y, m, d] = String(iso).slice(0, 10).split('-'); return `${Number(d)} de ${MESES[Number(m) - 1]} de ${y}`; };
+
+// Número a letras (pesos mexicanos)
+function numLetras(n) {
+  const U = ['', 'un', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete', 'ocho', 'nueve', 'diez', 'once', 'doce', 'trece', 'catorce', 'quince', 'dieciséis', 'diecisiete', 'dieciocho', 'diecinueve', 'veinte', 'veintiún', 'veintidós', 'veintitrés', 'veinticuatro', 'veinticinco', 'veintiséis', 'veintisiete', 'veintiocho', 'veintinueve'];
+  const D = ['', '', '', 'treinta', 'cuarenta', 'cincuenta', 'sesenta', 'setenta', 'ochenta', 'noventa'];
+  const C = ['', 'ciento', 'doscientos', 'trescientos', 'cuatrocientos', 'quinientos', 'seiscientos', 'setecientos', 'ochocientos', 'novecientos'];
+  const cien = (x) => { if (x === 100) return 'cien'; const c = Math.floor(x / 100), r = x % 100; let s = C[c]; if (r) s += (s ? ' ' : '') + (r < 30 ? U[r] : D[Math.floor(r / 10)] + (r % 10 ? ' y ' + U[r % 10] : '')); return s; };
+  const mil = (x) => { const m = Math.floor(x / 1000), r = x % 1000; return [m ? (m === 1 ? 'mil' : cien(m) + ' mil') : '', r ? cien(r) : ''].filter(Boolean).join(' '); };
+  if (n === 0) return 'cero';
+  const mill = Math.floor(n / 1e6), r = n % 1e6;
+  return [mill ? (mill === 1 ? 'un millón' : mil(mill) + ' millones') : '', r ? mil(r) : ''].filter(Boolean).join(' ');
+}
+const montoLetras = (v) => { const n = Math.round(Number(v || 0) * 100) / 100, ent = Math.floor(n), c = Math.round((n - ent) * 100); return `${money(n)} (${numLetras(ent).toUpperCase()} PESOS ${String(c).padStart(2, '0')}/100 M.N.)`; };
+
+const ACT_REASONS = {
+  'Incumplimiento de métricas': 'Se hace constar que, conforme a los registros disponibles, se detectó un incumplimiento de los indicadores o métricas de trabajo aplicables al periodo señalado. Deberán asentarse los resultados concretos y la evidencia que los sustenta.',
+  'Falta injustificada sin previo aviso': 'Se hace constar la inasistencia del trabajador en la fecha indicada, sin aviso previo ni justificación acreditada al momento de elaborar el acta.',
+  'Incumplimiento en envío de evidencias': 'Se hace constar que no fueron remitidas las evidencias de trabajo requeridas para el periodo señalado. Deberá precisarse cuáles evidencias faltaron y el medio por el que fueron solicitadas.',
+  'Desconexión durante jornada': 'Se hace constar una interrupción o ausencia de actividad durante la jornada. Deberán registrarse el horario, duración y evidencia disponible, evitando conclusiones no acreditadas.',
+  'Incumplimiento de horario': 'Se hace constar el incumplimiento del horario asignado en la fecha indicada, conforme a los registros de asistencia disponibles.',
+  'Incumplimiento de instrucciones de trabajo': 'Se hace constar el presunto incumplimiento de una instrucción de trabajo previamente comunicada. Deberá identificarse la instrucción, cuándo fue comunicada y la evidencia correspondiente.',
+  'Ausencia prolongada de actividad': 'Se hace constar que los registros disponibles muestran un periodo prolongado sin actividad laboral. Deberán precisarse horarios y evidencia.',
+  'Incumplimiento de políticas internas': 'Se hace constar un posible incumplimiento de una política interna aplicable. Deberá identificarse la política concreta y describirse objetivamente la conducta observada.',
+  'Otro / Personalizado': ''
+};
+const WARNING_FORMATS = {
+  'Bajo desempeño / incumplimiento de métricas': ['CARTA DE ADVERTENCIA POR BAJO DESEMPEÑO', 'Durante el periodo evaluado se identificaron resultados inferiores a los indicadores, metas o niveles de cumplimiento comunicados para las funciones asignadas. La valoración deberá sustentarse en métricas y evidencia objetiva disponibles.'],
+  'Incumplimiento de horario': ['CARTA DE ADVERTENCIA POR INCUMPLIMIENTO DE HORARIO', 'Se identificó un incumplimiento del horario de trabajo asignado. La situación deberá documentarse con los registros de asistencia o conexión correspondientes y considerando cualquier justificación presentada.'],
+  'Retardos recurrentes': ['CARTA DE ADVERTENCIA POR RETARDOS RECURRENTES', 'Se identificaron retardos recurrentes respecto del horario de entrada asignado. Deberán precisarse las fechas y registros que sustenten la advertencia, así como las justificaciones que, en su caso, se hubieran presentado.'],
+  'Falta injustificada': ['CARTA DE ADVERTENCIA POR FALTA INJUSTIFICADA', 'Se registró una inasistencia respecto de la cual, al momento de emitir la presente carta, no obra justificación acreditada. Deberá identificarse la fecha correspondiente y conservarse el registro de asistencia aplicable.'],
+  'Incumplimiento en envío de evidencias': ['CARTA DE ADVERTENCIA POR INCUMPLIMIENTO EN ENVÍO DE EVIDENCIAS', 'No fueron remitidas en la forma o periodo requerido las evidencias de trabajo previamente solicitadas. Deberá precisarse qué evidencia faltó, cuándo fue requerida y el medio utilizado para comunicar la instrucción.'],
+  'Desconexiones o ausencia de actividad durante la jornada': ['CARTA DE ADVERTENCIA POR DESCONEXIÓN O AUSENCIA DE ACTIVIDAD', 'Se identificaron periodos de desconexión o ausencia de actividad dentro de la jornada asignada. Deberán asentarse horarios, duración y registros objetivos, sin considerar periodos fuera de jornada ni descansos autorizados.'],
+  'Incumplimiento de instrucciones de trabajo': ['CARTA DE ADVERTENCIA POR INCUMPLIMIENTO DE INSTRUCCIONES DE TRABAJO', 'Se identificó el incumplimiento de una instrucción de trabajo previamente comunicada. La carta deberá identificar la instrucción, quién la comunicó, cuándo se comunicó y la evidencia relacionada.'],
+  'Incumplimiento de funciones o responsabilidades del puesto': ['CARTA DE ADVERTENCIA POR INCUMPLIMIENTO DE FUNCIONES', 'Se identificaron incumplimientos concretos respecto de funciones o responsabilidades asignadas al puesto. Deberán describirse las actividades involucradas, el resultado esperado y los hechos objetivamente acreditados.'],
+  'Incumplimiento de políticas o Reglamento Interior de Trabajo': ['CARTA DE ADVERTENCIA POR INCUMPLIMIENTO DE DISPOSICIONES INTERNAS', 'Se identificó una conducta posiblemente contraria a disposiciones internas aplicables. Deberá señalarse la disposición concreta, los hechos y la evidencia, evitando atribuir automáticamente una sanción distinta de la que corresponda conforme al procedimiento aplicable.'],
+  'Conducta o comportamiento inadecuado en el entorno laboral': ['CARTA DE ADVERTENCIA POR CONDUCTA INADECUADA EN EL ENTORNO LABORAL', 'Se documenta una situación de conducta o comportamiento ocurrida en el entorno laboral que requiere corrección. La descripción deberá limitarse a hechos observables y evitar calificativos o conclusiones no acreditadas.'],
+  'Uso inadecuado de herramientas, sistemas o recursos de trabajo': ['CARTA DE ADVERTENCIA POR USO INADECUADO DE RECURSOS DE TRABAJO', 'Se identificó un uso inadecuado de herramientas, sistemas o recursos destinados al trabajo. Deberá precisarse el recurso, la conducta observada y la evidencia disponible.'],
+  'Falta de seguimiento a indicaciones previamente comunicadas': ['CARTA DE ADVERTENCIA POR FALTA DE SEGUIMIENTO', 'Se identificó falta de seguimiento a indicaciones previamente comunicadas. Deberán asentarse las indicaciones, fechas, medios de comunicación y resultado esperado.'],
+  'Reincidencia de una conducta previamente advertida': ['CARTA DE ADVERTENCIA POR REINCIDENCIA', 'Se documenta la repetición de una conducta que había sido previamente comunicada al trabajador. Deberá identificarse el antecedente documental y describirse el nuevo hecho de manera independiente.'],
+  'Otro / Personalizado': ['CARTA DE ADVERTENCIA', 'Se documenta formalmente una situación laboral que requiere ser comunicada a la persona trabajadora. El motivo y los hechos deberán describirse de manera objetiva y sustentarse en la evidencia disponible.']
+};
+const RESCISSION_CAUSES = {
+  'Fracción I — Engaño con certificados o referencias falsas': 'Engaño mediante certificados falsos o referencias que atribuyan capacidades, aptitudes o facultades de las que carezca; esta causa deja de surtir efecto después de treinta días de prestar servicios.',
+  'Fracción II — Falta de probidad/honradez, violencia, amenazas, injurias o malos tratamientos': 'Conductas durante las labores contra el patrón, sus familiares, personal directivo o administrativo, clientes o proveedores, salvo provocación o defensa propia.',
+  'Fracción III — Conductas graves contra compañeros que alteren la disciplina': 'Actos contra compañeros de trabajo de la naturaleza prevista legalmente, cuando alteren la disciplina del lugar de trabajo.',
+  'Fracción IV — Conductas graves fuera del servicio contra patrón/directivos': 'Actos fuera del servicio contra el patrón, familiares o personal directivo/administrativo, cuando sean de tal gravedad que hagan imposible continuar la relación.',
+  'Fracción V — Daños materiales intencionales': 'Perjuicios materiales ocasionados intencionalmente durante las labores o con motivo de ellas a bienes relacionados con el trabajo.',
+  'Fracción VI — Daños graves por negligencia': 'Perjuicios materiales graves ocasionados sin dolo, pero con negligencia de tal gravedad que sea causa única del perjuicio.',
+  'Fracción VII — Comprometer la seguridad por imprudencia o descuido inexcusable': 'Comprometer, por imprudencia o descuido inexcusable, la seguridad del establecimiento o de las personas que se encuentren en él.',
+  'Fracción VIII — Actos inmorales, hostigamiento o acoso sexual': 'Actos inmorales o de hostigamiento y/o acoso sexual contra cualquier persona en el establecimiento o lugar de trabajo.',
+  'Fracción IX — Revelación de secretos o asuntos reservados': 'Revelar secretos de fabricación o dar a conocer asuntos de carácter reservado, con perjuicio de la empresa.',
+  'Fracción X — Más de tres faltas de asistencia en 30 días': 'Más de tres faltas de asistencia en un periodo de treinta días, sin permiso del patrón o sin causa justificada.',
+  'Fracción XI — Desobediencia relacionada con el trabajo contratado': 'Desobedecer al patrón o a sus representantes, sin causa justificada, siempre que se trate del trabajo contratado.',
+  'Fracción XII — Negativa a adoptar medidas preventivas o procedimientos de seguridad': 'Negarse a adoptar medidas preventivas o seguir procedimientos indicados para evitar accidentes o enfermedades.',
+  'Fracción XIII — Presentarse en estado de embriaguez o bajo narcóticos/drogas': 'Concurrir a las labores en estado de embriaguez o bajo influencia de narcótico o droga enervante, salvo prescripción médica y cumplimiento de los avisos legalmente exigibles.',
+  'Fracción XIV — Sentencia ejecutoriada que impida cumplir la relación': 'Sentencia ejecutoriada que imponga una pena de prisión que impida el cumplimiento de la relación de trabajo.',
+  'Fracción XIV Bis — Falta imputable de documentos legalmente necesarios': 'Falta de documentos exigidos por leyes y reglamentos, necesarios para prestar el servicio, cuando sea imputable al trabajador y exceda el periodo legal aplicable.',
+  'Fracción XV — Causas análogas igualmente graves': 'Causas análogas a las anteriores, de igual manera graves y de consecuencias semejantes en lo que al trabajo se refiere.'
+};
+const SALIDAS = ['Renuncia voluntaria', 'Rescisión (despido justificado)', 'Terminación por mutuo consentimiento', 'Abandono de empleo', 'Término de contrato', 'Otro'];
+const yesNo = [['', 'Elegir…'], ['true', 'Sí'], ['false', 'No']];
+const opts = (arr) => arr.map((x) => [x, x]);
+
+// Campos de cada formato. d = datos guardados (al editar) o sugeridos (desde un caso)
+function docFields(tipo, d = {}) {
+  const t = todayMX();
+  switch (tipo) {
+    case 'acta': return [
+      { k: 'fecha_hechos', label: 'Fecha de los hechos', type: 'date', req: true, val: d.fecha_hechos || t, max: t },
+      { k: 'motivo', label: 'Motivo', type: 'select', req: true, full: true, val: d.motivo || '', options: [['', 'Elegir…'], ...opts(Object.keys(ACT_REASONS))] },
+      { k: 'motivo_texto', label: 'Descripción del motivo', type: 'textarea', full: true, val: d.motivo_texto || '', hint: 'Se llena con el texto base del motivo; ajústalo.' },
+      { k: 'hechos', label: 'Relación circunstanciada de hechos', type: 'textarea', req: true, full: true, val: d.hechos || '', hint: 'Qué pasó, cuándo, cómo; solo hechos comprobables.' },
+      { k: 'evidencia', label: 'Evidencia o referencia', type: 'textarea', full: true, val: d.evidencia || '' },
+      { k: 'manifestacion', label: 'Manifestación del trabajador (si ya la dio)', type: 'textarea', full: true, val: d.manifestacion || '', hint: 'Si la deja en blanco, el formato trae renglones para escribirla a mano.' }];
+    case 'advertencia': return [
+      { k: 'motivo', label: 'Motivo', type: 'select', req: true, full: true, val: d.motivo || '', options: [['', 'Elegir…'], ...opts(Object.keys(WARNING_FORMATS))] },
+      { k: 'motivo_otro', label: 'Motivo personalizado', full: true, val: d.motivo_otro || '', hint: 'Solo si elegiste "Otro / Personalizado".' },
+      { k: 'fecha_hechos', label: 'Fecha del hecho', type: 'date', req: true, val: d.fecha_hechos || t, max: t },
+      { k: 'rh_nombre', label: 'Firma por la empresa', val: d.rh_nombre || S.me.full_name || '' },
+      { k: 'periodo_inicio', label: 'Periodo evaluado · desde', type: 'date', val: d.periodo_inicio || '' },
+      { k: 'periodo_fin', label: 'Periodo evaluado · hasta', type: 'date', val: d.periodo_fin || '' },
+      { k: 'hechos', label: 'Hechos concretos', type: 'textarea', req: true, full: true, val: d.hechos || '' },
+      { k: 'evidencia', label: 'Evidencia y antecedentes', type: 'textarea', full: true, val: d.evidencia || '' },
+      { k: 'accion', label: 'Acción correctiva esperada', type: 'textarea', full: true, val: d.accion || '' },
+      { k: 'seguimiento', label: 'Seguimiento', type: 'textarea', full: true, val: d.seguimiento || '', hint: 'Ej. revisión semanal de métricas durante 30 días.' }];
+    case 'renuncia': return [
+      { k: 'fecha_entrega', label: 'Fecha de entrega', type: 'date', req: true, val: d.fecha_entrega || t },
+      { k: 'fecha_efectiva', label: 'Último día de trabajo', type: 'date', req: true, val: d.fecha_efectiva || t },
+      { k: 'rh_nombre', label: 'Recibe por RH', val: d.rh_nombre || S.me.full_name || '' },
+      { k: 'recontratable', label: '¿Recontratable?', type: 'select', req: true, val: d.recontratable == null ? '' : String(d.recontratable), options: yesNo }];
+    case 'rescision': return [
+      { k: 'causal', label: 'Causal (art. 47 LFT)', type: 'select', req: true, full: true, val: d.causal || '', options: [['', 'Elegir…'], ...opts(Object.keys(RESCISSION_CAUSES))] },
+      { k: 'fecha_efectiva', label: 'Fecha efectiva', type: 'date', req: true, val: d.fecha_efectiva || t },
+      { k: 'hechos', label: 'Conducta o conductas que motivan la rescisión', type: 'textarea', req: true, full: true, val: d.hechos || '' },
+      { k: 'fechas_hechos', label: 'Fecha o fechas de los hechos', type: 'textarea', req: true, full: true, val: d.fechas_hechos || '' },
+      { k: 'evidencia', label: 'Elementos y evidencia', type: 'textarea', req: true, full: true, val: d.evidencia || '' },
+      { k: 'antecedentes_texto', label: 'Otros antecedentes (opcional)', type: 'textarea', full: true, val: d.antecedentes_texto || '', hint: 'Las actas y cartas registradas en la app se eligen abajo.' },
+      { k: 'rh_nombre', label: 'Firma por la empresa', val: d.rh_nombre || S.me.full_name || '' },
+      { k: 'recontratable', label: '¿Recontratable?', type: 'select', req: true, val: d.recontratable == null ? 'false' : String(d.recontratable), options: yesNo }];
+    case 'convenio': return [
+      { k: 'fecha_efectiva', label: 'Fecha de terminación', type: 'date', req: true, val: d.fecha_efectiva || t },
+      { k: 'representante', label: 'Representante de la empresa', req: true, val: d.representante || S.me.full_name || '' },
+      { k: 'monto', label: 'Cantidad total a pagar (MXN)', type: 'number', req: true, val: d.monto ?? '' },
+      { k: 'forma_pago', label: 'Forma de pago', type: 'select', req: true, val: d.forma_pago || 'Transferencia', options: opts(['Transferencia', 'Efectivo', 'Cheque']) },
+      { k: 'recontratable', label: '¿Recontratable?', type: 'select', req: true, val: d.recontratable == null ? '' : String(d.recontratable), options: yesNo },
+      { k: 'conceptos', label: 'Desglose de conceptos', type: 'textarea', req: true, full: true, val: d.conceptos || '', hint: 'Un concepto por renglón. Ej. "Aguinaldo proporcional: $1,250.00". Usa el cálculo del finiquito.' },
+      { k: 'antecedentes', label: 'Antecedentes (opcional)', type: 'textarea', full: true, val: d.antecedentes || '', hint: 'Breve relación de por qué las partes acuerdan terminar.' }];
+    case 'constancia_baja': return [
+      { k: 'tipo_salida', label: 'Tipo de salida', type: 'select', req: true, val: d.tipo_salida || '', options: [['', 'Elegir…'], ...opts(SALIDAS)] },
+      { k: 'rh_nombre', label: 'Firma por RH', val: d.rh_nombre || S.me.full_name || '' },
+      { k: 'ultimo_dia', label: 'Último día laborado', type: 'date', req: true, val: d.ultimo_dia || t },
+      { k: 'fecha_efectiva', label: 'Fecha efectiva de baja', type: 'date', req: true, val: d.fecha_efectiva || t },
+      { k: 'observaciones', label: 'Observaciones', type: 'textarea', full: true, val: d.observaciones || '' }];
+  }
+  return [];
+}
+
+function empSnapshot(e) {
+  const g = S.groups.find((x) => x.id === e.group_id) || {};
+  return { nombre: fullName(e), num: e.num_empleado || '', puesto: e.puesto || '', area: areaName(e.area_id), grupo: e.group_id ? g.name || '' : '', lider: g.tl_id ? profName(g.tl_id) : '', ingreso: e.fecha_ingreso || '' };
+}
+
+// ── Plantillas (HTML carta) ──
+// Los textos fijos de cada formato son "bloques" editables en Plantillas (con campos como {nombre}); la estructura
+// (tablas, títulos de sección, firmas) está aquí. Cada documento guarda los bloques vigentes al emitirse (texto congelado).
+// Sin versión guardada se usa el texto base de abajo (versión 0). **texto** = negritas; renglón en blanco = párrafo nuevo.
+const CIUDAD = 'Ciudad de México';
+const TPL_VARS = {
+  empresa: 'Nombre de la empresa', ciudad: 'Ciudad de México', nombre: 'Nombre completo', num: 'No. de empleado', puesto: 'Puesto', area: 'Área', grupo: 'Equipo', lider: 'Líder del equipo',
+  ingreso: 'Fecha de ingreso', fecha: 'Fecha del documento', fecha_efectiva: 'Fecha efectiva / último día', fecha_hechos: 'Fecha de los hechos', representante: 'Firma por la empresa', monto_letra: 'Monto con letra (convenio)', forma_pago: 'Forma de pago (convenio)'
+};
+const DOC_BLOCKS = {
+  general: [
+    { k: 'empresa', label: 'Nombre de la empresa (encabezado y textos)', def: EMPRESA }
+  ],
+  acta: [
+    { k: 'titulo', label: 'Título', def: 'ACTA ADMINISTRATIVA' },
+    { k: 'intro', label: 'Párrafo inicial', def: 'En {ciudad}, el {fecha}, el área de Recursos Humanos hace constar los hechos que se describen en el presente documento respecto de la persona trabajadora identificada a continuación, con el propósito de documentarlos objetivamente, recibir su manifestación y conservar los elementos correspondientes en su expediente laboral.' },
+    { k: 'fundamento', label: 'IV. Fundamento y alcance', def: 'La presente acta tiene naturaleza documental y no implica por sí misma la imposición automática de una sanción ni la actualización de una causa de rescisión. Conforme al artículo 423, fracción X, de la Ley Federal del Trabajo, las disposiciones disciplinarias y su procedimiento forman parte del Reglamento Interior de Trabajo, y la persona trabajadora tiene derecho a ser oída antes de que se aplique una medida disciplinaria. Cualquier análisis de rescisión se realizará por separado, conforme a los hechos acreditados y al artículo 47 de la Ley Federal del Trabajo.' },
+    { k: 'cierre', label: 'V. Cierre', def: 'Leído el presente documento, se deja constancia de la oportunidad otorgada a la persona trabajadora para manifestar lo que a su derecho convenga. La firma acredita recepción y participación en el levantamiento del acta, sin que por sí sola implique conformidad con los hechos asentados. En caso de negativa a firmar, se asentará ante testigos y no equivaldrá por sí misma a aceptación de los hechos.' }
+  ],
+  advertencia: [
+    { k: 'intro', label: 'Párrafo inicial', def: 'En {ciudad}, el {fecha}, por medio de la presente se comunica formalmente a **{nombre}** la situación que se describe a continuación, con el objeto de dejar constancia de su comunicación y establecer las acciones de corrección y seguimiento correspondientes.' },
+    { k: 'alcance', label: 'Alcance de la carta', def: 'La presente carta tiene carácter preventivo y documental. No determina por sí misma una causa de rescisión ni sustituye el procedimiento que resulte aplicable conforme a la Ley Federal del Trabajo y al Reglamento Interior de Trabajo.' }
+  ],
+  renuncia: [
+    { k: 'titulo', label: 'Título', def: 'RENUNCIA VOLUNTARIA' },
+    { k: 'subtitulo', label: 'Subtítulo', def: 'Manifestación personal de terminación de la relación de trabajo' },
+    { k: 'destinatario', label: 'Destinatario', def: '**{ciudad}, a {fecha}**\n\n**A QUIEN CORRESPONDA\n{empresa}\nPRESENTE**' },
+    { k: 'cuerpo', label: 'Manifestación', def: 'Por medio de la presente, yo, **{nombre}**, manifiesto de forma libre, personal, expresa y voluntaria, sin presión, coacción, engaño ni violencia, mi decisión de dar por terminada la relación de trabajo que mantengo con {empresa}, por así convenir a mis intereses.\n\nMi último día de trabajo será el **{fecha_efectiva}**, y la terminación surtirá efectos al concluir la jornada de esa fecha.' },
+    { k: 'solicitud', label: 'Solicitud de pago', def: 'Solicito que se me entregue el cálculo desglosado y el pago de las cantidades que legal o contractualmente correspondan, incluyendo, en su caso, salarios pendientes, aguinaldo proporcional, vacaciones no disfrutadas o proporcionales, prima vacacional, comisiones u otras prestaciones devengadas y prima de antigüedad cuando resulte aplicable.' },
+    { k: 'aclaracion', label: 'Aclaración', def: '**La firma de esta carta acredita únicamente mi decisión de separarme voluntariamente y la fecha en que la comunico. No constituye recibo de pago, convenio de finiquito ni renuncia a salarios, prestaciones o derechos adquiridos.**' },
+    { k: 'acuse', label: 'Nota del acuse de RH', def: 'Este acuse acredita la recepción del escrito; no implica por sí mismo que el finiquito haya sido pagado.' }
+  ],
+  rescision: [
+    { k: 'titulo', label: 'Título', def: 'AVISO DE RESCISIÓN DE LA RELACIÓN DE TRABAJO' },
+    { k: 'subtitulo', label: 'Subtítulo', def: 'Sin responsabilidad para el patrón · Artículo 47 de la Ley Federal del Trabajo' },
+    { k: 'intro', label: 'Párrafo inicial', def: 'En {ciudad}, el {fecha}, por medio del presente se comunica a **{nombre}** la rescisión de la relación de trabajo, sin responsabilidad para la empresa. El presente aviso identifica la causal legal invocada y refiere las conductas y fechas que la empresa documenta como fundamento de la decisión.' },
+    { k: 'efectos', label: 'VI. Efectos y entrega del aviso', def: 'La rescisión surte efectos a partir del {fecha_efectiva}. Conforme al artículo 47 de la Ley Federal del Trabajo, este aviso se entrega personalmente a la persona trabajadora o, si se niega a recibirlo, la empresa podrá hacerlo del conocimiento de la autoridad laboral dentro de los cinco días hábiles siguientes. Las cantidades que correspondan por la terminación se determinan y documentan por separado.' }
+  ],
+  convenio: [
+    { k: 'titulo', label: 'Título', def: 'CONVENIO DE TERMINACIÓN DE LA RELACIÓN DE TRABAJO' },
+    { k: 'subtitulo', label: 'Subtítulo', def: 'Por mutuo consentimiento · Artículos 33 y 53, fracción I, de la Ley Federal del Trabajo' },
+    { k: 'proemio', label: 'Comparecencia', def: 'En {ciudad}, el {fecha}, comparecen por una parte **{empresa}**, representada en este acto por **{representante}** (en adelante "la Empresa"), y por la otra **{nombre}** (en adelante "la Persona Trabajadora"), quienes celebran el presente convenio al tenor de lo siguiente:' },
+    { k: 'antecedentes', label: 'Antecedentes (si no se capturan en el documento)', def: 'Las partes han mantenido una relación de trabajo desde la fecha de ingreso señalada y, por así convenir a sus intereses, han decidido darla por terminada de común acuerdo.' },
+    { k: 'primera', label: 'Cláusula primera', def: '**PRIMERA.** Las partes convienen en dar por terminada la relación de trabajo por mutuo consentimiento, con fundamento en el artículo 53, fracción I, de la Ley Federal del Trabajo, con efectos a partir del **{fecha_efectiva}**.' },
+    { k: 'segunda', label: 'Cláusula segunda (antes del desglose)', def: '**SEGUNDA.** La Empresa pagará a la Persona Trabajadora la cantidad total de **{monto_letra}**, mediante **{forma_pago}**, que comprende los siguientes conceptos:' },
+    { k: 'resto', label: 'Cláusulas siguientes (después del desglose)', def: '**TERCERA.** Este convenio contiene una relación circunstanciada de los hechos que lo motivan y de los derechos comprendidos en él, conforme al artículo 33 de la Ley Federal del Trabajo, y no implica renuncia de la Persona Trabajadora a los salarios devengados, indemnizaciones y demás prestaciones que deriven de los servicios prestados.\n\n**CUARTA.** La Persona Trabajadora manifiesta que celebra el presente convenio de manera libre y voluntaria, sin coacción, error ni violencia. Las partes podrán ratificarlo ante el Centro de Conciliación o la autoridad laboral competente para su aprobación.\n\n**QUINTA.** Una vez cubierta la cantidad señalada, la Persona Trabajadora otorgará el recibo correspondiente.' }
+  ],
+  constancia_baja: [
+    { k: 'titulo', label: 'Título', def: 'CONSTANCIA ADMINISTRATIVA DE BAJA DE PERSONAL' },
+    { k: 'constancia', label: 'Texto de la constancia', def: 'En {ciudad}, a {fecha}, se hace constar que Recursos Humanos registró administrativamente la baja de la persona trabajadora identificada en este documento, con efectos a partir del {fecha_efectiva}.\n\nLa presente constancia tiene exclusivamente fines de control, trazabilidad y cierre administrativo del expediente laboral. No sustituye la renuncia voluntaria, aviso de rescisión, convenio, recibo de finiquito, comprobante de pago o cualquier otro documento que resulte aplicable conforme a la naturaleza de la terminación.' }
+  ]
+};
+const blockDefaults = (tipo) => Object.fromEntries([...DOC_BLOCKS.general, ...(DOC_BLOCKS[tipo] || [])].map((b) => [b.k, b.def]));
+// Plantillas vigentes (última versión de cada tipo), para vista previa y el editor
+const TPL = { rows: null };
+async function loadTemplates(force) {
+  if (TPL.rows && !force) return TPL.rows;
+  TPL.rows = await db('doc_templates').select('id,tipo,version,bloques,nota,created_by,created_at').order('version', false).get().catch(() => []);
+  return TPL.rows;
+}
+const latestTpl = (tipo) => (TPL.rows || []).find((t) => t.tipo === tipo) || null;
+// Texto que llevaría un documento nuevo hoy (igual que lo congela la base de datos al emitir)
+const currentPlantilla = (tipo) => { const g = latestTpl('general'), t = latestTpl(tipo); return g || t ? { ...(g ? g.bloques : {}), ...(t ? t.bloques : {}) } : null; };
+function tplVars(d, B) {
+  const s = d.snapshot || {}, x = d.datos || {};
+  return { empresa: B.empresa, ciudad: CIUDAD, nombre: s.nombre, num: s.num || 's/n', puesto: s.puesto, area: s.area, grupo: s.grupo, lider: s.lider, ingreso: fechaLarga(s.ingreso),
+    fecha: fechaLarga(d.fecha), fecha_efectiva: fechaLarga(x.fecha_efectiva), fecha_hechos: fechaLarga(x.fecha_hechos), representante: x.representante || x.rh_nombre || 'Recursos Humanos',
+    monto_letra: x.monto != null ? montoLetras(x.monto) : '________', forma_pago: String(x.forma_pago || '________').toLowerCase() };
+}
+// Texto de bloque → HTML seguro: {campo} se sustituye, **negritas**, renglón en blanco = párrafo
+function fillInline(text, vars) {
+  return esc(text).replace(/\{(\w+)\}/g, (m, k) => (k in vars ? esc(vars[k] ?? '') : m)).replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
+}
+const paras = (text, vars) => String(text || '').split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean).map((p) => `<p>${fillInline(p, vars)}</p>`).join('');
+
+const P_TD = 'border:1px solid #bbb;padding:6px 8px;vertical-align:top';
+const nl = (s) => esc(s || '').replace(/\n/g, '<br>');
+const lines = (n) => Array.from({ length: n }, () => '<div style="border-bottom:1px solid #999;height:24px"></div>').join('');
+function docHead(d, B, title, sub) {
+  return `<div style="border-bottom:3px solid #172033;padding-bottom:10px;margin-bottom:16px;display:flex;justify-content:space-between;gap:20px">
+    <div><div style="font-size:15pt;font-weight:700">${esc(B.empresa)}</div><div style="font-size:9pt;color:#555">Recursos Humanos · ${esc(CIUDAD)}</div></div>
+    <div style="text-align:right;font-size:9pt;white-space:nowrap"><b>Folio:</b> ${esc(docFolio(d))}<br><b>Fecha:</b> ${fmtDate(d.fecha)}</div></div>
+    <h1 style="text-align:center;font-size:14.5pt;letter-spacing:.4px;margin:14px 0 ${sub ? 4 : 18}px">${esc(title)}</h1>${sub ? `<p style="text-align:center;margin:0 0 16px;font-size:10pt"><b>${esc(sub)}</b></p>` : ''}`;
+}
+function empTable(s, extra = []) {
+  const rows = [['Nombre', s.nombre, 'No. empleado', s.num || '—'], ['Puesto', s.puesto || '—', 'Área', s.area || '—'], ...extra];
+  return `<table style="width:100%;border-collapse:collapse;margin:10px 0 16px;font-size:10pt">${rows.map((r) => `<tr>${r.map((c, i) => `<td style="${P_TD}${i % 2 ? '' : ';width:19%'}"${r.length === 2 && i === 1 ? ' colspan="3"' : ''}>${i % 2 ? esc(c) : `<b>${esc(c)}</b>`}</td>`).join('')}</tr>`).join('')}</table>`;
+}
+const h2 = (t) => `<h2 style="font-size:10.5pt;text-transform:uppercase;border-bottom:1px solid #777;padding-bottom:3px;margin:16px 0 6px">${t}</h2>`;
+const firmas = (a, b) => `<div style="display:grid;grid-template-columns:1fr 1fr;gap:50px;margin-top:56px;text-align:center;page-break-inside:avoid">${[a, b].map(([n, r]) => `<div style="border-top:1px solid #222;padding-top:6px">${esc(n)}<br><span style="font-size:8.5pt">${esc(r)}</span></div>`).join('')}</div>`;
+const pie = (d) => `<div style="margin-top:34px;border-top:1px solid #bbb;padding-top:6px;font-size:8pt;color:#555">Documento generado por Enterprise HR · ${esc(DOC_TIPOS[d.tipo].label)} · Folio ${esc(docFolio(d))} · Plantilla v${d.plantilla_version || 0}</div>`;
+
+function docHtml(d, extra = {}) {
+  const s = d.snapshot || {}, x = d.datos || {};
+  const B = { ...blockDefaults(d.tipo), ...(d.plantilla || {}) };
+  const V = tplVars(d, B);
+  const P = (k) => paras(B[k], V);
+  let b = '';
+  if (d.tipo === 'acta') {
+    b = docHead(d, B, B.titulo) + P('intro') +
+      empTable(s, [['Equipo', s.grupo || '—', 'Líder', s.lider || '—']]) +
+      h2('I. Motivo y fecha de los hechos') + `<p><b>Motivo:</b> ${esc(x.motivo)}<br><b>Fecha de los hechos:</b> ${fechaLarga(x.fecha_hechos)}</p>${x.motivo_texto ? `<p>${nl(x.motivo_texto)}</p>` : ''}` +
+      h2('II. Relación circunstanciada de hechos') + `<p>${nl(x.hechos)}</p><p><b>Evidencia o referencia:</b> ${nl(x.evidencia || 'No especificada.')}</p>` +
+      h2('III. Manifestación de la persona trabajadora') + (x.manifestacion ? `<p>${nl(x.manifestacion)}</p>` : lines(5)) +
+      h2('IV. Fundamento y alcance') + P('fundamento') + h2('V. Cierre y firmas') + P('cierre') +
+      firmas([s.nombre, 'Persona trabajadora'], [s.lider || 'Líder de equipo', 'Entrega · Líder de equipo']) + firmas(['Testigo', 'Nombre y firma'], ['Testigo', 'Nombre y firma']) + pie(d);
+  } else if (d.tipo === 'advertencia') {
+    const [title, base] = WARNING_FORMATS[x.motivo] || WARNING_FORMATS['Otro / Personalizado'];
+    const t = x.motivo === 'Otro / Personalizado' && x.motivo_otro ? 'CARTA DE ADVERTENCIA — ' + x.motivo_otro.toUpperCase() : title;
+    b = docHead(d, B, t) + empTable(s, [['Motivo', x.motivo === 'Otro / Personalizado' ? x.motivo_otro || x.motivo : x.motivo, 'Fecha del hecho', fmtDate(x.fecha_hechos)], ['Periodo evaluado', x.periodo_inicio && x.periodo_fin ? `Del ${fmtDate(x.periodo_inicio)} al ${fmtDate(x.periodo_fin)}` : 'No aplica / hecho puntual']]) +
+      P('intro') + `<p>${esc(base)}</p>` +
+      h2('Hechos concretos / situación observada') + `<p>${nl(x.hechos)}</p>` +
+      h2('Evidencia y antecedentes') + `<p>${nl(x.evidencia || 'No especificada.')}</p>` +
+      h2('Acción correctiva y seguimiento') + `<p><b>Acción esperada:</b> ${nl(x.accion || 'Corregir la situación comunicada y mantener el cumplimiento de las obligaciones y funciones aplicables.')}</p><p><b>Seguimiento:</b> ${nl(x.seguimiento || 'Se dará seguimiento conforme a la naturaleza de la situación y a los registros disponibles.')}</p>` +
+      P('alcance') + h2('Observaciones o manifestación de la persona trabajadora') + lines(3) +
+      firmas([s.nombre, 'Firma de recibido'], [x.rh_nombre || 'Representante de la empresa', 'Por la empresa']) + pie(d);
+  } else if (d.tipo === 'renuncia') {
+    b = docHead(d, B, B.titulo, B.subtitulo) + empTable(s, [['Fecha de ingreso', fmtDate(s.ingreso), 'Fecha de entrega', fmtDate(x.fecha_entrega)]]) +
+      P('destinatario') + P('cuerpo') + P('solicitud') + P('aclaracion') +
+      `<div style="width:55%;margin:56px auto 0;border-top:1px solid #222;padding-top:6px;text-align:center;page-break-inside:avoid">${esc(s.nombre)}<br><span style="font-size:8.5pt">Firma de la persona trabajadora</span></div>` +
+      h2('Acuse de recibido por Recursos Humanos') + `<p>Nombre: <b>${esc(x.rh_nombre || '________________')}</b> &nbsp; Firma: ____________________ &nbsp; Fecha y hora: ____________________</p><div style="font-size:9pt;color:#444">${P('acuse')}</div>` + pie(d);
+  } else if (d.tipo === 'rescision') {
+    const ants = extra.antecedentes || [];
+    b = docHead(d, B, B.titulo, B.subtitulo) + empTable(s, [['Fecha de ingreso', fmtDate(s.ingreso), 'Fecha efectiva', fmtDate(x.fecha_efectiva)]]) + P('intro') +
+      h2('I. Causal legal invocada') + `<p><b>Artículo 47, ${esc(x.causal)}</b></p><p>${esc(RESCISSION_CAUSES[x.causal] || '')}</p>` +
+      h2('II. Conducta o conductas que motivan la rescisión') + `<p>${nl(x.hechos)}</p>` +
+      h2('III. Fecha o fechas de los hechos') + `<p>${nl(x.fechas_hechos)}</p>` +
+      h2('IV. Elementos y evidencia') + `<p>${nl(x.evidencia)}</p>` +
+      h2('V. Antecedentes documentales') + (ants.length || x.antecedentes_texto ? `${ants.length ? `<ul style="margin:4px 0 8px 18px;padding:0">${ants.map((a) => `<li>${esc(DOC_TIPOS[a.tipo].label)} ${esc(docFolio(a))} del ${fmtDate(a.fecha)}${a.datos && a.datos.motivo ? ' — ' + esc(a.datos.motivo) : ''}</li>`).join('')}</ul>` : ''}${x.antecedentes_texto ? `<p>${nl(x.antecedentes_texto)}</p>` : ''}` : '<p>Sin antecedentes documentales relacionados.</p>') +
+      h2('VI. Efectos y entrega del aviso') + P('efectos') +
+      firmas([x.rh_nombre || 'Recursos Humanos', 'Por ' + B.empresa], [s.nombre, 'Acuse de recepción · persona trabajadora']) + firmas(['Testigo', 'Nombre y firma'], ['Testigo', 'Nombre y firma']) + pie(d);
+  } else if (d.tipo === 'convenio') {
+    const conceptos = String(x.conceptos || '').split('\n').map((l) => l.trim()).filter(Boolean);
+    b = docHead(d, B, B.titulo, B.subtitulo) + P('proemio') +
+      empTable(s, [['Fecha de ingreso', fmtDate(s.ingreso), 'Fecha de terminación', fmtDate(x.fecha_efectiva)]]) +
+      h2('Antecedentes') + (x.antecedentes ? `<p>${nl(x.antecedentes)}</p>` : P('antecedentes')) +
+      h2('Cláusulas') + P('primera') + P('segunda') +
+      (conceptos.length ? `<table style="width:100%;border-collapse:collapse;margin:6px 0 10px;font-size:10pt">${conceptos.map((c) => { const m = c.match(/^(.*?)[:\t]\s*(.+)$/); return `<tr><td style="${P_TD}">${esc(m ? m[1] : c)}</td><td style="${P_TD};text-align:right;width:30%">${esc(m ? m[2] : '')}</td></tr>`; }).join('')}<tr><td style="${P_TD}"><b>Total</b></td><td style="${P_TD};text-align:right"><b>${money(x.monto)}</b></td></tr></table>` : '') +
+      P('resto') +
+      firmas([x.representante || 'Representante', 'Por ' + B.empresa], [s.nombre, 'Persona trabajadora']) + firmas(['Testigo', 'Nombre y firma'], ['Testigo', 'Nombre y firma']) + pie(d);
+  } else if (d.tipo === 'constancia_baja') {
+    const o = extra.origen;
+    b = docHead(d, B, B.titulo) + empTable(s, [['Fecha de ingreso', fmtDate(s.ingreso), 'Equipo', s.grupo || '—']]) +
+      h2('Datos de la baja') + `<table style="width:100%;border-collapse:collapse;font-size:10pt"><tr><td style="${P_TD};width:19%"><b>Último día laborado</b></td><td style="${P_TD}">${fmtDate(x.ultimo_dia)}</td><td style="${P_TD};width:19%"><b>Fecha efectiva</b></td><td style="${P_TD}">${fmtDate(x.fecha_efectiva)}</td></tr><tr><td style="${P_TD}"><b>Tipo de salida</b></td><td style="${P_TD}" colspan="3">${esc(x.tipo_salida)}</td></tr></table>` +
+      h2('Documento de origen') + `<p>${o ? `${esc(DOC_TIPOS[o.tipo].label)} · ${esc(docFolio(o))} · ${fmtDate(o.fecha)}` : 'No vinculado.'}</p>` +
+      h2('Constancia') + P('constancia') +
+      `<p><b>Observaciones:</b><br>${nl(x.observaciones || 'Sin observaciones adicionales.')}</p>` +
+      `<div style="width:55%;margin:56px auto 0;border-top:1px solid #222;padding-top:6px;text-align:center">${esc(x.rh_nombre || 'Recursos Humanos')}<br><span style="font-size:8.5pt">Recursos Humanos</span></div>` + pie(d);
+  }
+  return `<article class="docpaper" style="font-family:Arial,Helvetica,sans-serif;color:#111;font-size:10.5pt;line-height:1.45">${d.estado === 'anulado' ? '<div style="border:2px solid #b42318;color:#b42318;font-weight:700;text-align:center;padding:6px;margin-bottom:10px">DOCUMENTO ANULADO</div>' : ''}${b}</article>`;
+}
+
+// Datos que necesita la plantilla además del documento (antecedentes / documento de origen)
+async function docExtra(d) {
+  const x = d.datos || {}, out = {};
+  if (d.tipo === 'rescision' && (x.antecedentes_ids || []).length) out.antecedentes = await db('documents').select('id,tipo,folio,fecha,datos').in('id', x.antecedentes_ids).order('fecha').get().catch(() => []);
+  if (d.tipo === 'constancia_baja' && d.origen_id) out.origen = (await db('documents').select('id,tipo,folio,fecha').eq('id', d.origen_id).get().catch(() => []))[0];
+  return out;
+}
+
+// Imprimir / guardar como PDF (tamaño carta/A4 desde el diálogo del navegador)
+function printDoc(d, extra) {
+  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(docFolio(d) + ' ' + DOC_TIPOS[d.tipo].label + ' ' + (d.snapshot || {}).nombre)}</title>
+    <style>@page{size:letter;margin:16mm 17mm}body{margin:0}h1,h2{page-break-after:avoid}p{orphans:3;widows:3}</style></head><body>${docHtml(d, extra)}</body></html>`;
+  const w = window.open('', '_blank');
+  if (w) { w.document.open(); w.document.write(html); w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch { /* el usuario imprime desde el menú */ } }, 350); return; }
+  // Si el navegador bloquea la ventana: imprimir desde un marco oculto
+  const f = document.createElement('iframe'); f.style.cssText = 'position:fixed;width:0;height:0;border:0;right:0;bottom:0'; document.body.appendChild(f);
+  f.contentDocument.open(); f.contentDocument.write(html); f.contentDocument.close();
+  setTimeout(() => { f.contentWindow.focus(); f.contentWindow.print(); setTimeout(() => f.remove(), 2000); }, 350);
+}
+
+// ── Vista ──
+const DS = { tab: null, q: '', tipo: '' };
+const docPending = (d) => is('developer') ? d.estado === 'emitido' : is('tl', 'supervisor') ? d.estado === 'con_lider' : false;
+async function viewDocumentos() {
+  const v = $('#view');
+  const [docs, emps] = await Promise.all([
+    db('documents').select('id,folio,tipo,employee_id,area_id,group_id,case_id,fecha,estado,snapshot,enviado_at,entregado_at,baja_aplicada').order('created_at', false).limit(1000).get(),
+    db('employees').select('id,nombre,apellido_paterno,apellido_materno,num_empleado,puesto,area_id,group_id,status,fecha_ingreso').get()
+  ]);
+  const pend = docs.filter(docPending);
+  if (!DS.tab) DS.tab = pend.length ? 'pend' : 'all';
+  const q = norm(DS.q);
+  const rows = (DS.tab === 'pend' ? pend : docs).filter((d) => (!DS.tipo || d.tipo === DS.tipo) && (!q || norm(`${d.snapshot.nombre} ${docFolio(d)} ${d.snapshot.num}`).includes(q)));
+  const pendLabel = is('developer') ? 'Por firmar' : 'Por entregar';
+  v.innerHTML = `<div class="pagehead"><div><h1>Documentos</h1><div class="muted small">${is('developer') ? `${pend.length} emitidos sin firma · ${docs.filter((d) => d.estado === 'con_lider').length} con el líder` : is('tl', 'supervisor') ? `${pend.length} por entregar` : `${docs.length} documentos`}</div></div>
+      <div class="row" style="gap:8px">${is('developer') ? '<button class="btn" id="zipall" title="ZIP con todos los documentos, copias firmadas e índice">Respaldo ZIP</button><button class="btn primary" id="newdoc">+ Nuevo documento</button>' : ''}</div></div>
+    <div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
+      ${is('developer', 'tl', 'supervisor') ? `<div class="seg" role="group" aria-label="Filtro"><button type="button" data-dt="pend" class="${DS.tab === 'pend' ? 'on' : ''}">${pendLabel} (${pend.length})</button><button type="button" data-dt="all" class="${DS.tab === 'all' ? 'on' : ''}">Todos</button></div>` : ''}
+      <div class="row" style="gap:8px"><input class="inp grow" id="dq" type="search" placeholder="Buscar por nombre, número o folio" value="${esc(DS.q)}" aria-label="Buscar documentos">
+      <select class="inp" id="dtipo" aria-label="Tipo" style="max-width:220px"><option value="">Todos los tipos</option>${Object.entries(DOC_TIPOS).map(([k, t]) => `<option value="${k}"${DS.tipo === k ? ' selected' : ''}>${esc(t.label)}</option>`).join('')}</select></div>
+    </div>
+    ${is('tl', 'supervisor') && DS.tab === 'pend' && pend.length ? '<div class="notice n-info" style="margin-bottom:10px">Imprime el documento, entrégalo a la persona y sube la foto o PDF de la hoja firmada. Si se niega a firmar, regístralo con los nombres de quienes estuvieron presentes.</div>' : ''}
+    <div class="list">${rows.length ? rows.map((d) => `<button type="button" class="item" data-doc="${d.id}">
+      <span class="mono small muted" style="width:72px">${esc(docFolio(d))}</span>
+      <span class="grow"><span class="nm">${esc(d.snapshot.nombre || '—')}</span> <span class="badge ${DOC_TIPOS[d.tipo].grupo === 'Bajas' ? 'b-bad' : 'b-acc'}">${esc(DOC_TIPOS[d.tipo].label)}</span><br><span class="small muted">${fmtDate(d.fecha)} · ${esc(areaName(d.area_id))}${d.group_id ? ' · ' + esc(groupName(d.group_id)) : ''}${d.baja_aplicada ? ' · baja aplicada' : ''}</span></span>
+      ${docBadge(d.estado)}</button>`).join('') : `<div class="card empty">${DS.tab === 'pend' ? 'Nada pendiente.' : 'Sin documentos.'}</div>`}</div>`;
+  $$('[data-dt]').forEach((b) => b.onclick = () => { DS.tab = b.dataset.dt; viewDocumentos(); });
+  $('#dtipo').onchange = (e) => { DS.tipo = e.target.value; viewDocumentos(); };
+  $('#dq').oninput = (e) => { DS.q = e.target.value; clearTimeout(viewDocumentos._t); viewDocumentos._t = setTimeout(() => viewDocumentos().then(() => { const i = $('#dq'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }), 300); };
+  $$('[data-doc]').forEach((b) => b.onclick = () => openDocument(b.dataset.doc));
+  const nb = $('#newdoc'); if (nb) nb.onclick = () => newDocPicker({ emps });
+  const zb = $('#zipall'); if (zb) zb.onclick = async () => { zb.disabled = true; try { await exportDocsZip({ titulo: 'Respaldo documentos' }, zb); } catch (e) { toast(e.message, true); } finally { zb.disabled = false; zb.textContent = 'Respaldo ZIP'; } };
+  updateDocBadge(pend.length);
+}
+function updateDocBadge(n) {
+  $$('[data-v="documentos"]').forEach((a) => {
+    let b = a.querySelector('.cnt'); if (!b) { b = document.createElement('span'); b.className = 'cnt badge b-bad'; b.style.marginLeft = 'auto'; a.appendChild(b); }
+    b.textContent = n; b.style.display = n ? '' : 'none';
+  });
+  refreshMoreBadge();
+}
+async function refreshDocBadge() {
+  if (!VIEWS.documentos || !VIEWS.documentos.roles.includes(role()) || !is('developer', 'tl', 'supervisor')) return;
+  try { const ds = await db('documents').select('id,estado').in('estado', ['emitido', 'con_lider']).get(); updateDocBadge(ds.filter(docPending).length); } catch { /* sin conexión */ }
+}
+
+// Paso 1: tipo de documento · Paso 2: trabajador · Paso 3: formato
+function newDocPicker({ emps, employee, caseRow, tipo } = {}) {
+  if (tipo) return pickEmployee({ tipo, emps, employee, caseRow });
+  const groups = {};
+  Object.entries(DOC_TIPOS).forEach(([k, t]) => { (groups[t.grupo] = groups[t.grupo] || []).push([k, t]); });
+  const m = modal({ title: employee ? 'Nuevo documento · ' + fullName(employee) : 'Nuevo documento', wide: true,
+    body: Object.entries(groups).map(([g, items]) => `<div class="eyebrow" style="margin:4px 0 8px">${esc(g)}</div><div class="doc-tiles">${items.map(([k, t]) => `<button type="button" class="doc-tile" data-nt="${k}"><span class="dt-code">${t.code}</span><b>${esc(t.label)}</b><span class="small muted">${esc(t.desc)}</span></button>`).join('')}</div>`).join('') });
+  $$('[data-nt]', m.el).forEach((b) => b.onclick = () => { m.close(); pickEmployee({ tipo: b.dataset.nt, emps, employee, caseRow }); });
+}
+async function pickEmployee({ tipo, emps, employee, caseRow }) {
+  if (employee) return docForm({ tipo, employee, caseRow });
+  emps = emps || await db('employees').select('id,nombre,apellido_paterno,apellido_materno,num_empleado,puesto,area_id,group_id,status,fecha_ingreso').get();
+  const pool = emps.filter((e) => tipo === 'constancia_baja' ? e.status === 'baja' : e.status === 'activo').sort(sortName);
+  const m = modal({ title: DOC_TIPOS[tipo].label + ' · ¿para quién?',
+    body: `<input class="inp" id="pq" type="search" placeholder="Escribe nombre o número" aria-label="Buscar trabajador"><div class="list pick-list" id="pl" style="margin-top:8px;max-height:52vh;overflow:auto"></div>` });
+  const draw = () => {
+    const q = norm($('#pq', m.el).value);
+    const xs = pool.filter((e) => !q || norm(fullName(e) + ' ' + (e.num_empleado || '')).includes(q)).slice(0, 60);
+    $('#pl', m.el).innerHTML = xs.length ? xs.map((e) => `<button type="button" class="item" data-pe="${e.id}" style="padding:8px 12px"><span class="grow"><span class="nm">${esc(fullName(e))}</span><br><span class="small muted">${esc(e.num_empleado || 's/n')} · ${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))}</span></span></button>`).join('') : `<div class="empty small muted">${tipo === 'constancia_baja' ? 'Sin personas dadas de baja con ese nombre.' : 'Sin coincidencias.'}</div>`;
+    $$('[data-pe]', m.el).forEach((b) => b.onclick = () => { m.close(); docForm({ tipo, employee: pool.find((e) => e.id === b.dataset.pe), caseRow }); });
+  };
+  $('#pq', m.el).oninput = draw; draw();
+}
+
+// Formulario del documento (nuevo o edición mientras no esté firmado)
+async function docForm({ tipo, employee, caseRow, existing }) {
+  const e = employee;
+  let d0 = existing ? { ...existing.datos } : {};
+  if (!existing && caseRow) {   // sugerencias desde el caso
+    d0 = { fecha_hechos: caseRow.fecha_hechos, hechos: caseRow.hechos, evidencia: caseRow.evidencia, fechas_hechos: fmtDate(caseRow.fecha_hechos) + (caseRow.fecha_fin ? ' al ' + fmtDate(caseRow.fecha_fin) : '') };
+  }
+  const fields = docFields(tipo, d0);
+  await loadTemplates(true);
+  // Antecedentes del mismo trabajador (rescisión) y documento de origen (constancia)
+  let prev = [];
+  if (tipo === 'rescision' || tipo === 'constancia_baja') {
+    prev = await db('documents').select('id,tipo,folio,fecha,estado,datos').eq('employee_id', e.id).neq('estado', 'anulado').order('fecha').get().catch(() => []);
+  }
+  const ants = prev.filter((p) => DOC_LIDER.includes(p.tipo));
+  const origins = prev.filter((p) => DOC_BAJA.includes(p.tipo));
+  const sel = new Set(existing ? (existing.datos.antecedentes_ids || []) : ants.map((a) => a.id));
+  const extraHtml = tipo === 'rescision'
+    ? `<div class="fbox" style="margin-top:12px"><header>Actas y cartas registradas en la app (${ants.length})</header><div class="fbody">${ants.length ? ants.map((a) => `<label class="chk"><input type="checkbox" data-ant="${a.id}"${sel.has(a.id) ? ' checked' : ''}> ${esc(DOC_TIPOS[a.tipo].label)} ${esc(docFolio(a))} · ${fmtDate(a.fecha)}${a.datos.motivo ? ' · ' + esc(a.datos.motivo) : ''} <span class="small muted">(${DOC_ST[a.estado][0]})</span></label>`).join('') : '<span class="small muted">No hay actas ni cartas de esta persona.</span>'}</div></div>`
+    : tipo === 'constancia_baja'
+      ? `<label class="field" style="margin-top:12px">Documento que origina la baja<select id="f_origen"><option value="">Sin documento en la app</option>${origins.map((o) => `<option value="${o.id}"${(existing ? existing.origen_id : origins[origins.length - 1] && origins[origins.length - 1].id) === o.id ? ' selected' : ''}>${esc(DOC_TIPOS[o.tipo].label)} ${esc(docFolio(o))} · ${fmtDate(o.fecha)} (${DOC_ST[o.estado][0]})</option>`).join('')}</select></label>`
+      : '';
+  const fechaF = { k: '_fecha', label: 'Fecha del documento', type: 'date', req: true, val: existing ? existing.fecha : todayMX() };
+  const intro = `<div class="notice n-info"><b>${esc(fullName(e))}</b> · ${esc(e.num_empleado || 's/n')} · ${esc(e.puesto || 'sin puesto')} · ${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))}${caseRow ? `<br>Desde el caso #${caseRow.folio}` : ''}</div>`;
+  const m = modal({ title: (existing ? 'Editar · ' : '') + DOC_TIPOS[tipo].label, wide: true,
+    body: intro + fieldsHtml([fechaF]) + fieldsHtml(fields) + extraHtml,
+    actions: [{ label: 'Cancelar' }, { label: 'Vista previa', run: async ({ el }) => { const doc = build(el); printDoc(doc, await docExtra(doc)); return false; } },
+      { label: existing ? 'Guardar cambios' : 'Generar documento', cls: 'primary', run: async ({ el }) => {
+        const doc = build(el);
+        if (tipo === 'convenio' && !(Number(doc.datos.monto) > 0)) throw new Error('La cantidad total debe ser mayor a 0.');
+        if (tipo === 'advertencia' && doc.datos.motivo === 'Otro / Personalizado' && !doc.datos.motivo_otro) throw new Error('Escribe el motivo personalizado.');
+        if (doc.datos.periodo_inicio && doc.datos.periodo_fin && doc.datos.periodo_fin < doc.datos.periodo_inicio) throw new Error('El periodo evaluado termina antes de empezar.');
+        const row = { fecha: doc.fecha, datos: doc.datos, snapshot: doc.snapshot, origen_id: doc.origen_id || null };
+        let id;
+        if (existing) { await mustUpdate(db('documents').eq('id', existing.id).update(row), 'el documento'); id = existing.id; }
+        else { const [r] = await db('documents').insert([{ ...row, tipo, employee_id: e.id, case_id: caseRow ? caseRow.id : null }]); id = Array.isArray(r) ? r[0].id : r.id; }
+        toast(existing ? 'Documento actualizado' : 'Documento generado');
+        if (S.view === 'documentos') viewDocumentos().catch(() => {});
+        setTimeout(() => openDocument(id), 0);
+      } }] });
+  // El motivo del acta llena el texto base
+  const mot = $('#f_motivo', m.el), mt = $('#f_motivo_texto', m.el);
+  if (tipo === 'acta' && mot && mt) mot.addEventListener('change', () => { if (!mt.value.trim() || Object.values(ACT_REASONS).includes(mt.value.trim())) mt.value = ACT_REASONS[mot.value] || ''; });
+  function build(el) {
+    const v = readFields(el, [fechaF, ...fields]);
+    const datos = Object.fromEntries(Object.entries(v).filter(([k, x]) => k !== '_fecha' && x != null));
+    if ('recontratable' in datos) datos.recontratable = datos.recontratable === 'true';
+    if (tipo === 'rescision') datos.antecedentes_ids = $$('[data-ant]', el).filter((c) => c.checked).map((c) => c.dataset.ant);
+    if (tipo === 'constancia_baja' && datos.ultimo_dia && datos.fecha_efectiva && datos.fecha_efectiva < datos.ultimo_dia) throw new Error('La fecha efectiva no puede ser antes del último día laborado.');
+    if (datos.fecha_efectiva && DOC_BAJA.includes(tipo)) datos.motivo_baja = tipo === 'rescision' ? datos.causal : tipo === 'convenio' ? 'Mutuo consentimiento' : '';
+    const origen = tipo === 'constancia_baja' ? ($('#f_origen', el) || {}).value || null : null;
+    const tv = latestTpl(tipo);
+    return { id: existing && existing.id, folio: existing ? existing.folio : 0, tipo, fecha: v._fecha, estado: existing ? existing.estado : 'emitido', datos, snapshot: existing ? { ...existing.snapshot, ...empSnapshot(e) } : empSnapshot(e), origen_id: origen,
+      plantilla: existing ? existing.plantilla : currentPlantilla(tipo), plantilla_version: existing ? existing.plantilla_version : tv && tv.version };
+  }
+}
+
+async function docFileUrl(path) { return storageUrl(DOC_BUCKET, path); }
+
+async function openDocument(id) {
+  const [d] = await db('documents').eq('id', id).get();
+  if (!d) return toast('Documento no encontrado o sin permiso', true);
+  const extra = await docExtra(d);
+  const s = d.snapshot || {}, t = DOC_TIPOS[d.tipo];
+  const g = S.groups.find((x) => x.id === d.group_id) || {};
+  const responsable = g.tipo === 'lideres' || !g.tl_id ? 'Supervisión del área' : profName(g.tl_id);
+  const canDeliver = d.estado === 'con_lider' && (is('developer') || (is('tl') && g.tl_id === S.me.id) || (is('supervisor') && S.myAreas.includes(d.area_id)));
+  const kv = [['Persona', `${s.nombre || '—'} · ${s.num || 's/n'}`], ['Área / equipo', `${areaName(d.area_id)}${d.group_id ? ' · ' + groupName(d.group_id) : ''}`], ['Fecha', fmtDate(d.fecha)],
+    d.enviado_at ? ['Enviado al líder', `${fmtDateTime(d.enviado_at)} · entrega: ${responsable}`] : null,
+    d.entregado_at ? [d.estado === 'negativa' ? 'Negativa registrada' : 'Firmado', `${fmtDateTime(d.entregado_at)} · ${profName(d.entregado_by)}`] : null,
+    d.entrega_nota ? ['Nota de entrega', d.entrega_nota] : null,
+    d.baja_aplicada ? ['Baja', 'Aplicada automáticamente en Personal'] : null,
+    d.anulado_motivo ? ['Motivo de anulación', d.anulado_motivo] : null,
+    d.case_id ? ['Caso', 'Ligado a un caso'] : null, ['Texto', `Plantilla v${d.plantilla_version || 0} (congelado al emitir)`]].filter(Boolean);
+  const body = `<div class="row">${docBadge(d.estado)}<span class="badge ${t.grupo === 'Bajas' ? 'b-bad' : 'b-acc'}">${esc(t.label)}</span><span class="mono small muted">${esc(docFolio(d))}</span></div>
+    <div class="kv">${kv.map(([k, v]) => `<span>${esc(k)}</span><span>${esc(v)}</span>`).join('')}</div>
+    ${d.firmado_path ? `<a class="evid-item" id="docfile" target="_blank" rel="noopener" aria-disabled="true"><span class="fic">${fileIcon(d.firmado_tipo)}</span><span class="grow"><b>Copia firmada</b><span class="small muted">${esc(d.firmado_nombre || '')}</span></span><span class="go" aria-hidden="true">↗</span></a>` : ''}
+    ${d.estado === 'emitido' && DOC_BAJA.includes(d.tipo) && is('developer') ? `<div class="notice n-warn">Al registrar ${d.tipo === 'rescision' ? 'la firma o la negativa de firma' : 'la firma'}, la persona pasa a <b>Baja</b> en Personal con fecha ${fmtDate(d.datos.fecha_efectiva)} y sale del pase de lista.</div>` : ''}
+    <div class="docframe">${docHtml(d, extra)}</div>`;
+  const reload = () => { if (S.view === 'documentos') viewDocumentos().catch(() => {}); };
+  const actions = [{ label: 'Imprimir / PDF', run: () => { printDoc(d, extra); return false; } }];
+  if (is('developer') && d.estado === 'emitido') {
+    actions.push({ label: 'Editar', run: async () => { const [e] = await db('employees').eq('id', d.employee_id).get(); setTimeout(() => docForm({ tipo: d.tipo, employee: e, existing: d }), 0); } });
+    if (DOC_LIDER.includes(d.tipo)) actions.push({ label: 'Enviar al líder', cls: 'primary', run: async () => {
+      if (!(await confirmBox('Enviar al líder', `El documento aparecerá a <b>${esc(responsable)}</b> para imprimirlo, entregarlo y subir la copia firmada.`, { okLabel: 'Enviar' }))) return false;
+      await mustUpdate(db('documents').eq('id', d.id).update({ estado: 'con_lider' }), 'el documento'); toast('Enviado al líder'); reload(); setTimeout(() => openDocument(d.id), 0);
+    } });
+  }
+  if ((is('developer') && d.estado === 'emitido' && d.tipo !== 'constancia_baja') || canDeliver) actions.push({ label: d.estado === 'con_lider' ? 'Registrar entrega' : 'Registrar firma', cls: d.estado === 'emitido' && DOC_LIDER.includes(d.tipo) ? '' : 'primary', run: () => { setTimeout(() => deliveryForm(d), 0); } });
+  if (is('developer') && d.tipo === 'constancia_baja' && d.estado === 'emitido') actions.push({ label: 'Marcar firmada', cls: 'primary', run: () => { setTimeout(() => deliveryForm(d), 0); } });
+  if (is('developer') && DOC_BAJA.includes(d.tipo) && ['firmado', 'negativa'].includes(d.estado)) actions.push({ label: 'Constancia de baja', run: async () => { const [e] = await db('employees').eq('id', d.employee_id).get(); setTimeout(() => docForm({ tipo: 'constancia_baja', employee: e }), 0); } });
+  if (is('developer') && d.estado !== 'anulado') actions.push({ label: 'Anular', cls: 'danger', run: () => { setTimeout(() => simpleCaseAction('Anular ' + docFolio(d), [{ k: 'm', label: 'Motivo de la anulación', type: 'textarea', req: true, full: true }],
+    async (v) => { await mustUpdate(db('documents').eq('id', d.id).update({ estado: 'anulado', anulado_motivo: v.m }), 'el documento'); }, () => { reload(); setTimeout(() => openDocument(d.id), 0); },
+    d.baja_aplicada ? 'La baja ya se aplicó en Personal; anular el documento no la revierte.' : 'El documento queda visible como anulado; no se borra.'), 0); } });
+  if (is('developer')) actions.push({ label: 'Ver ficha', run: () => { setTimeout(() => openEmployee(d.employee_id), 0); } });
+  if (d.case_id && is('developer', 'director', 'rh_general', 'rh_area', 'supervisor')) actions.push({ label: 'Ver caso', run: () => { setTimeout(() => openCase(d.case_id), 0); } });
+  const m = modal({ title: `${t.label} · ${s.nombre || ''}`, body, actions, wide: true });
+  const a = $('#docfile', m.el);
+  if (a) docFileUrl(d.firmado_path).then((u) => { a.href = u; a.removeAttribute('aria-disabled'); }).catch((e) => { a.classList.add('err'); a.title = e.message; });
+}
+
+// Registrar entrega: copia firmada (foto o PDF) o negativa de firma
+function deliveryForm(d) {
+  const canRefuse = DOC_LIDER.includes(d.tipo) || d.tipo === 'rescision';
+  const needsFile = d.tipo !== 'constancia_baja';
+  const fb = fileBox('docsign', { title: 'Copia firmada', label: 'Tomar foto o elegir archivo', hint: 'Foto clara de la hoja firmada o PDF escaneado · hasta 10 MB', accept: 'image/*,application/pdf', ok: (f) => /^image\/|^application\/pdf$/.test(mimeOf(f)), max: 1 });
+  const m = modal({ title: `${d.estado === 'con_lider' ? 'Entrega' : 'Firma'} · ${docFolio(d)} · ${(d.snapshot || {}).nombre || ''}`,
+    body: `${canRefuse ? `<div class="seg" role="group" aria-label="Resultado" style="margin-bottom:10px"><button type="button" data-res="firmado" class="on">Firmó</button><button type="button" data-res="negativa">Se negó a firmar</button></div>` : ''}
+      <div id="r_firmado">${needsFile ? fb.html : '<div class="notice n-info">La constancia es un documento interno; puedes subir la copia firmada después desde aquí si la necesitas.</div>'}</div>
+      <div id="r_negativa" hidden>${fieldsHtml([{ k: 'nota', label: 'Cómo ocurrió y quiénes estuvieron presentes', type: 'textarea', req: true, full: true, hint: 'Ej. "Se le leyó el acta el 06/10 a las 10:30; se negó a firmar. Presentes: TL Juan Pérez y Sup. Ana Ruiz."' }])}</div>
+      ${DOC_BAJA.includes(d.tipo) ? `<div class="notice n-warn" style="margin-top:10px">Al confirmar, la persona pasa a Baja con fecha ${fmtDate(d.datos.fecha_efectiva)}.</div>` : ''}`,
+    actions: [{ label: 'Cancelar' }, { label: 'Confirmar', cls: 'primary', run: async ({ el, btn }) => {
+      const res = ($('[data-res].on', el) || { dataset: { res: 'firmado' } }).dataset.res;
+      if (res === 'negativa') {
+        const v = readFields(el, [{ k: 'nota', label: 'Cómo ocurrió y quiénes estuvieron presentes', req: true }]);
+        await rpc('doc_entrega', { p_id: d.id, p_resultado: 'negativa', p_path: null, p_nombre: null, p_tipo: null, p_nota: v.nota });
+      } else if (!needsFile && !fb.files.length) {
+        await mustUpdate(db('documents').eq('id', d.id).update({ estado: 'firmado' }), 'el documento');
+      } else {
+        const f = fb.files[0]; if (!f) throw new Error('Sube la foto o PDF de la hoja firmada.');
+        const ext = (f.name.match(/\.([a-z0-9]{1,6})$/i) || [])[1];
+        const key = `${d.id}/${newId()}${ext ? '.' + ext.toLowerCase() : ''}`;
+        btn.textContent = 'Subiendo…';
+        try { await storageUpload(DOC_BUCKET, key, f); } finally { btn.textContent = 'Confirmar'; }
+        await rpc('doc_entrega', { p_id: d.id, p_resultado: 'firmado', p_path: key, p_nombre: f.name.slice(0, 200), p_tipo: mimeOf(f), p_nota: null });
+      }
+      toast(res === 'negativa' ? 'Negativa registrada' : DOC_BAJA.includes(d.tipo) ? 'Firmado · baja aplicada' : 'Entrega registrada');
+      if (S.view === 'documentos') viewDocumentos().catch(() => {});
+      refreshDocBadge();
+      setTimeout(() => openDocument(d.id), 0);
+    } }] });
+  if (needsFile) fb.wire(m.el);
+  $$('[data-res]', m.el).forEach((b) => b.onclick = () => {
+    $$('[data-res]', m.el).forEach((x) => x.classList.toggle('on', x === b));
+    $('#r_firmado', m.el).hidden = b.dataset.res !== 'firmado'; $('#r_negativa', m.el).hidden = b.dataset.res !== 'negativa';
+  });
+}
+
+// Documentos en la ficha del trabajador y en el caso
+function docListHtml(docs) {
+  return docs.length ? `<div class="list">${docs.map((k) => `<button type="button" class="item" data-opendoc="${k.id}" style="padding:8px 12px"><span class="mono small muted">${esc(docFolio(k))}</span><span class="grow small">${esc(DOC_TIPOS[k.tipo].label)} · ${fmtDate(k.fecha)}</span>${docBadge(k.estado)}</button>`).join('')}</div>` : '<span class="small muted">Sin documentos.</span>';
+}
+const CASE_DOC = { acta: 'acta', advertencia: 'advertencia', terminacion: 'rescision' };
+
+
+// ── Plantillas: editor con versiones (solo Daniel) ──
+const TPL_TIPOS = { general: { label: 'Datos generales', desc: 'Nombre de la empresa que aparece en todos los documentos.' }, ...Object.fromEntries(Object.entries(DOC_TIPOS).map(([k, t]) => [k, { label: t.label, desc: t.desc }])) };
+// Datos de ejemplo para la vista previa
+const TPL_SAMPLE = {
+  snapshot: { nombre: 'María Fernanda López Ruiz', num: 'M-123', puesto: 'Asesor de marketing', area: 'Marketing', grupo: 'Equipo 1', lider: 'Juan Pérez Gómez', ingreso: '2025-03-10' },
+  datos: { fecha_hechos: '2026-10-01', fecha_efectiva: '2026-10-15', fecha_entrega: '2026-10-08', motivo: 'Falta injustificada sin previo aviso', motivo_texto: 'Se hace constar la inasistencia del trabajador en la fecha indicada.', hechos: 'Ejemplo de hechos capturados en el documento.', evidencia: 'Pase de lista de la app.', fechas_hechos: '15, 18, 22 y 29 de septiembre de 2026', causal: 'Fracción X — Más de tres faltas de asistencia en 30 días', representante: 'Daniel Reyes', rh_nombre: 'Daniel Reyes', monto: 12500, forma_pago: 'Transferencia', conceptos: 'Aguinaldo proporcional: $3,000.00\nVacaciones y prima: $2,500.00\nGratificación: $7,000.00', tipo_salida: 'Renuncia voluntaria', ultimo_dia: '2026-10-15' }
+};
+function tplSampleDoc(tipo, bloques, version) {
+  const t = tipo === 'general' ? 'renuncia' : tipo;
+  const extra = tipo === 'general' ? currentPlantilla('renuncia') || {} : {};
+  return { tipo: t, folio: 1, fecha: todayMX(), estado: 'emitido', snapshot: TPL_SAMPLE.snapshot, datos: TPL_SAMPLE.datos, plantilla: { ...(latestTpl('general') || {}).bloques, ...extra, ...bloques }, plantilla_version: version };
+}
+async function viewPlantillas() {
+  const v = $('#view');
+  await loadTemplates(true);
+  v.innerHTML = `<div class="pagehead"><div><h1>Plantillas</h1><div class="muted small">Textos de los documentos · cada cambio crea una versión nueva; los documentos ya emitidos conservan su texto</div></div></div>
+    <div class="notice n-info" style="margin-bottom:12px">Todos los documentos se emiten en <b>${esc(CIUDAD)}</b>. Los datos de cada caso (hechos, fechas, montos) se capturan al generar el documento; aquí cambias los párrafos fijos.</div>
+    <div class="list">${Object.entries(TPL_TIPOS).map(([k, t]) => { const l = latestTpl(k); const n = (TPL.rows || []).filter((r) => r.tipo === k).length; return `<button type="button" class="item" data-tpl="${k}">
+      <span class="grow"><span class="nm">${esc(t.label)}</span><br><span class="small muted">${l ? `v${l.version} · ${fmtDateTime(l.created_at)} · ${esc(l.nota)}` : 'Texto base (v0)'}</span></span>
+      <span class="badge ${l ? 'b-acc' : 'b-mut'}">${l ? n + (n === 1 ? ' versión' : ' versiones') : 'Base'}</span></button>`; }).join('')}</div>`;
+  $$('[data-tpl]').forEach((b) => b.onclick = () => openTemplate(b.dataset.tpl));
+}
+function openTemplate(tipo, from) {
+  const blocks = DOC_BLOCKS[tipo];
+  const cur = latestTpl(tipo);
+  const base = from ? from.bloques : cur ? cur.bloques : {};
+  const val = (b) => base[b.k] ?? b.def;
+  const hist = (TPL.rows || []).filter((r) => r.tipo === tipo);
+  const vars = tipo === 'general' ? [] : Object.entries(TPL_VARS);
+  const m = modal({ title: `Plantilla · ${TPL_TIPOS[tipo].label}`, wide: true,
+    body: `${from ? `<div class="notice n-warn">Cargaste el texto de la versión ${from.version}. Al guardar se crea una versión nueva con ese texto.</div>` : ''}
+      ${vars.length ? `<div class="fbox"><header>Campos automáticos <span class="small muted" style="font-weight:400">· toca uno para insertarlo donde está el cursor</span></header><div class="fbody tpl-vars">${vars.map(([k, l]) => `<button type="button" class="chipvar" data-var="${k}" title="${esc(l)}">{${k}}</button>`).join('')}</div>
+        <div class="fbody small muted" style="padding-top:0">Usa <b>**texto**</b> para negritas y deja un renglón en blanco para separar párrafos.</div></div>` : ''}
+      ${blocks.map((b) => `<label class="field" style="margin-top:10px">${esc(b.label)}<textarea data-blk="${b.k}" rows="${Math.min(10, Math.max(2, Math.ceil(val(b).length / 90) + (val(b).match(/\n/g) || []).length))}">${esc(val(b))}</textarea>
+        ${val(b) !== b.def ? `<button type="button" class="btn sm" data-reset="${b.k}" style="align-self:flex-start;min-height:32px">Usar texto base</button>` : ''}</label>`).join('')}
+      ${fieldsHtml([{ k: 'nota', label: '¿Qué cambiaste? (queda en el historial)', req: true, full: true }])}
+      <div class="eyebrow" style="margin:14px 0 6px">Vista previa</div><div class="docframe" id="tplprev"></div>
+      ${hist.length ? `<div class="eyebrow" style="margin:14px 0 6px">Historial</div><div class="list">${hist.map((h) => `<div class="item" style="padding:8px 12px"><span class="mono small muted">v${h.version}</span><span class="grow small">${fmtDateTime(h.created_at)} · ${esc(profName(h.created_by))}<br><span class="muted">${esc(h.nota)}</span></span>${h === cur && !from ? '<span class="badge b-ok">Vigente</span>' : `<button type="button" class="btn sm" data-load="${h.version}">Cargar</button>`}</div>`).join('')}</div>` : ''}`,
+    actions: [{ label: 'Cancelar' }, { label: 'Guardar versión ' + ((hist[0] ? hist[0].version : 0) + 1), cls: 'primary', run: async ({ el }) => {
+      const v = readFields(el, [{ k: 'nota', label: '¿Qué cambiaste?', req: true }]);
+      const bloques = read(el);
+      if (cur && JSON.stringify(bloques) === JSON.stringify(cur.bloques)) throw new Error('No hay cambios respecto a la versión vigente.');
+      for (const [k, t] of Object.entries(bloques)) if (!t.trim()) throw new Error(`El texto "${blocks.find((b) => b.k === k).label}" está vacío.`);
+      await db('doc_templates').insert([{ tipo, bloques, nota: v.nota }]);
+      toast('Versión guardada · los documentos nuevos usarán este texto');
+      await loadTemplates(true); if (S.view === 'plantillas') viewPlantillas().catch(() => {});
+    } }] });
+  const read = (el) => Object.fromEntries($$('[data-blk]', el).map((t) => [t.dataset.blk, t.value.replace(/\r/g, '')]));
+  let last = null;
+  const preview = () => { $('#tplprev', m.el).innerHTML = docHtml(tplSampleDoc(tipo, read(m.el), (hist[0] ? hist[0].version : 0) + 1)); };
+  $$('[data-blk]', m.el).forEach((t) => { t.addEventListener('focus', () => { last = t; }); t.addEventListener('input', () => { clearTimeout(preview._t); preview._t = setTimeout(preview, 250); }); });
+  $$('[data-var]', m.el).forEach((b) => b.onclick = () => {
+    const t = last || $('[data-blk]', m.el); const ins = '{' + b.dataset.var + '}';
+    const a = t.selectionStart ?? t.value.length, z = t.selectionEnd ?? a;
+    t.value = t.value.slice(0, a) + ins + t.value.slice(z); t.focus(); t.setSelectionRange(a + ins.length, a + ins.length); preview();
+  });
+  $$('[data-reset]', m.el).forEach((b) => b.onclick = (e) => { e.preventDefault(); const t = $(`[data-blk="${b.dataset.reset}"]`, m.el); t.value = blocks.find((x) => x.k === b.dataset.reset).def; b.remove(); preview(); });
+  $$('[data-load]', m.el).forEach((b) => b.onclick = () => { m.close(); openTemplate(tipo, hist.find((h) => String(h.version) === b.dataset.load)); });
+  preview();
+}
+
+// ── Expediente / respaldo en ZIP: copias firmadas + documentos imprimibles + índice ──
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+const crc32 = (b) => { let c = 0xffffffff; for (let i = 0; i < b.length; i++) c = CRC_T[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+function zipStore(files) {
+  const te = new TextEncoder(), parts = [], central = []; let off = 0;
+  const u16 = (n) => [n & 255, (n >>> 8) & 255], u32 = (n) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255];
+  const d = new Date(), dt = ((d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1)), dd = (((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate());
+  for (const f of files) {
+    const name = te.encode(f.name), data = typeof f.data === 'string' ? te.encode(f.data) : f.data, crc = crc32(data);
+    const head = [...u16(20), ...u16(0x0800), ...u16(0), ...u16(dt), ...u16(dd), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0)];
+    const local = new Uint8Array([...u32(0x04034b50), ...head]);
+    parts.push(local, name, data);
+    central.push(new Uint8Array([...u32(0x02014b50), ...u16(20), ...head, ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(off)]), name);
+    off += local.length + name.length + data.length;
+  }
+  const csize = central.reduce((a, b) => a + b.length, 0);
+  const end = new Uint8Array([...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length), ...u32(csize), ...u32(off), ...u16(0)]);
+  return new Blob([...parts, ...central, end], { type: 'application/zip' });
+}
+const safeName = (s) => norm(s).replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 60) || 'documento';
+function docExtraFrom(all, d) {
+  const x = d.datos || {}, out = {};
+  if (d.tipo === 'rescision') out.antecedentes = all.filter((a) => (x.antecedentes_ids || []).includes(a.id));
+  if (d.tipo === 'constancia_baja' && d.origen_id) out.origen = all.find((a) => a.id === d.origen_id);
+  return out;
+}
+async function exportDocsZip({ employeeId, titulo }, btn) {
+  let q = db('documents').order('fecha').order('folio');
+  if (employeeId) q = q.eq('employee_id', employeeId);
+  const docs = await q.get();
+  if (!docs.length) throw new Error('No hay documentos para descargar.');
+  const files = [], faltan = [];
+  for (let i = 0; i < docs.length; i++) {
+    const d = docs[i]; if (!d.firmado_path) continue;
+    if (btn) btn.textContent = `Descargando firmados ${i + 1}/${docs.length}…`;
+    try {
+      const r = await fetch(await storageUrl(DOC_BUCKET, d.firmado_path)); if (!r.ok) throw new Error(r.status);
+      const ext = (d.firmado_path.match(/\.([a-z0-9]{1,6})$/i) || [, 'bin'])[1];
+      files.push({ name: `firmados/${docFolio(d)}_${safeName(d.snapshot.nombre)}.${ext}`, data: new Uint8Array(await r.arrayBuffer()) });
+    } catch { faltan.push(docFolio(d)); }
+  }
+  const pages = docs.map((d) => `<section class="pg">${docHtml(d, docExtraFrom(docs, d))}</section>`).join('');
+  files.unshift({ name: 'documentos.html', data: `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(titulo)}</title><style>@page{size:letter;margin:16mm 17mm}body{margin:0;background:#eee}.pg{background:#fff;max-width:760px;margin:16px auto;padding:28px 32px}@media print{body{background:#fff}.pg{margin:0;padding:0;max-width:none;page-break-after:always}}</style></head><body>${pages}</body></html>` });
+  const csv = [['Folio', 'Tipo', 'Fecha', 'Nombre', 'No. empleado', 'Área', 'Estado', 'Entregado', 'Copia firmada', 'Plantilla'].join(','),
+    ...docs.map((d) => [docFolio(d), DOC_TIPOS[d.tipo].label, d.fecha, d.snapshot.nombre, d.snapshot.num, d.snapshot.area, DOC_ST[d.estado][0], d.entregado_at ? fmtDateTime(d.entregado_at) : '', d.firmado_path ? (faltan.includes(docFolio(d)) ? 'NO SE PUDO DESCARGAR' : 'sí') : '', 'v' + (d.plantilla_version || 0)].map((v) => '"' + String(v ?? '').replace(/"/g, '""') + '"').join(','))].join('\r\n');
+  files.splice(1, 0, { name: 'indice.csv', data: '﻿' + csv }, { name: 'datos.json', data: JSON.stringify(docs, null, 1) });
+  const blob = zipStore(files);
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = safeName(titulo) + '_' + todayMX() + '.zip';
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+  toast(faltan.length ? `ZIP listo; no se pudieron bajar: ${faltan.join(', ')}` : `ZIP listo · ${docs.length} documentos`, !!faltan.length);
 }
 
 // ───────────────────────── PWA ─────────────────────────

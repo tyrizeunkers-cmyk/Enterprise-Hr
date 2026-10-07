@@ -236,11 +236,25 @@ details.card summary{cursor:pointer}
 .log{display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px}
 .log:last-child{border-bottom:0}
 .log .tm{font-family:var(--mono);color:var(--muted);flex-shrink:0;width:48px}
+/* Documentos laborales */
+.doc-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-bottom:14px}
+.doc-tile{display:flex;flex-direction:column;align-items:flex-start;gap:4px;text-align:left;padding:14px;border:1px solid var(--line2);border-radius:12px;background:#fff;min-height:44px}
+.doc-tile:hover,.doc-tile:focus-visible{border-color:var(--accent);background:var(--accent-t)}
+.doc-tile b{font-size:15px;color:var(--ink)}
+.dt-code{font:700 11px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.6px;color:var(--accent);background:var(--accent-t);border-radius:6px;padding:4px 6px}
+.docframe{border:1px solid var(--line2);border-radius:10px;background:#fff;padding:28px 30px;box-shadow:0 1px 3px rgba(20,32,43,.08);overflow-x:auto}
+.docframe .docpaper{max-width:720px;margin:0 auto}
+@media (max-width:640px){.docframe{padding:16px 12px}.docframe .docpaper{font-size:9.5pt!important}}
+.chk{display:flex;gap:8px;align-items:flex-start;padding:6px 0;font-weight:400;font-size:14px}
+.chk input{width:18px;height:18px;margin-top:2px;flex-shrink:0}
+.tpl-vars{display:flex;flex-wrap:wrap;gap:6px}
+.chipvar{font:600 12.5px ui-monospace,Menlo,Consolas,monospace;padding:6px 9px;border-radius:7px;border:1px solid var(--line2);background:var(--accent-t);color:var(--accent-d);min-height:32px}
+.chipvar:hover{border-color:var(--accent)}
 </style>
 </head>
 <body>
 <div id="app"><div class="login"><div class="muted">Cargando…</div></div></div>
-<script src="config.js?v=0.8.6"></script>
-<script src="app.js?v=0.8.6"></script>
+<script src="config.js?v=0.9.1"></script>
+<script src="app.js?v=0.9.1"></script>
 </body>
 </html>
