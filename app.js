@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.7.0';
+const APP_VERSION = '0.8.1';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -161,7 +161,13 @@ async function mustUpdate(promise, what = 'el registro') {
 }
 
 // ───────────────────────── UI base ─────────────────────────
+// Últimos errores que vio la persona: se adjuntan (si quiere) al reportar un error
+const ERRLOG = [];
+function logErr(m) { ERRLOG.push({ at: new Date().toISOString(), msg: String(m).slice(0, 300), vista: (location.hash || '').replace(/^#\//, '') }); if (ERRLOG.length > 8) ERRLOG.shift(); }
+window.addEventListener('error', (e) => logErr(e.message || 'Error de la página'));
+window.addEventListener('unhandledrejection', (e) => logErr((e.reason && e.reason.message) || String(e.reason)));
 function toast(msg, err = false) {
+  if (err) logErr(msg);
   $$('.toast').forEach((x) => x.remove());
   const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : ''); t.textContent = msg; t.setAttribute('role', 'status');
   document.body.appendChild(t); setTimeout(() => t.remove(), err ? 5200 : 2800);
@@ -315,6 +321,7 @@ const VIEWS = {
   asistencia: { label: 'Asistencia', ic: '▦', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor'], render: () => viewAsistencia() },
   usuarios: { label: 'Usuarios', ic: '🔑', roles: ['developer'], render: () => viewUsuarios() },
   catalogos: { label: 'Áreas y grupos', ic: '⌂', roles: ['developer'], render: () => viewCatalogos() },
+  buzon: { label: 'Buzón', ic: '✉', roles: ['developer'], render: () => viewBuzon() },
   bitacora: { label: 'Bitácora', ic: '🕘', roles: ['developer', 'director'], render: () => viewBitacora() }
 };
 const myViews = () => Object.entries(VIEWS).filter(([, v]) => v.roles.includes(role()));
@@ -323,21 +330,23 @@ function renderShell() {
   const tabs = myViews().map(([k, v]) => `<a href="#/${k}" data-v="${k}"><span class="ic" aria-hidden="true">${v.ic}</span>${esc(v.label)}</a>`).join('');
   $('#app').innerHTML = `
     <aside class="side"><div class="brand">Enterprise HR<small>v${APP_VERSION}</small></div><nav class="nav">${nav}</nav>
-      <div class="me"><b>${esc(S.me.full_name)}</b><span class="muted" style="color:#A9B6C2">${esc(ROLES[role()])}</span>
+      <div class="me"><button class="btn sm fb-btn" id="fb">💬 Sugerencias y errores</button><b>${esc(S.me.full_name)}</b><span class="muted" style="color:#A9B6C2">${esc(ROLES[role()])}</span>
       <div class="row" style="margin-top:10px"><button class="btn sm" id="pw" style="background:none;color:#fff;border-color:#3A4B5A">Contraseña</button><button class="btn sm" id="lo" style="background:none;color:#fff;border-color:#3A4B5A">Salir</button></div></div></aside>
-    <div class="main"><div class="top"><span class="t" id="ttl">Enterprise HR</span><button class="btn sm" id="menu" style="background:var(--ink2);color:#fff;border-color:#3A4B5A" aria-label="Mi cuenta">${esc(S.me.full_name.split(' ')[0])} ▾</button></div>
+    <div class="main"><div class="top"><span class="t" id="ttl">Enterprise HR</span><button class="btn sm" id="fbTop" style="background:var(--ink2);color:#fff;border-color:#3A4B5A" aria-label="Sugerencias y reportar errores">💬</button><button class="btn sm" id="menu" style="background:var(--ink2);color:#fff;border-color:#3A4B5A" aria-label="Mi cuenta">${esc(S.me.full_name.split(' ')[0])} ▾</button></div>
       ${CFG.demo ? `<div class="notice n-warn" style="border-radius:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 12px"><span class="grow"><b>Demo</b> · como <b>${esc(S.me.full_name)}</b></span><button class="btn sm" id="demoSwitch">Cambiar usuario</button><button class="btn sm" id="demoReset">Reiniciar</button></div>` : ''}
       <div class="content" id="view"></div></div>
     <nav class="tabbar">${tabs}</nav>`;
   $('#lo').onclick = logout;
   $('#pw').onclick = changePassword;
+  $('#fb').onclick = () => openFeedback();
+  $('#fbTop').onclick = () => openFeedback();
   if (CFG.demo) {
     $('#demoSwitch').onclick = logout;
     $('#demoReset').onclick = async () => { if (await confirmBox('Reiniciar demo', 'Se borran tus cambios y vuelven los datos de ejemplo.', { okLabel: 'Reiniciar' })) { window.HR_DEMO.reset(); S.me = null; location.hash = ''; renderLogin(); } };
   }
   $('#menu').onclick = () => modal({
     title: S.me.full_name, body: `<div class="kv"><span>Rol</span><span>${esc(ROLES[role()])}</span><span>Correo</span><span>${esc(S.me.email || '')}</span><span>Versión</span><span>${APP_VERSION}</span></div>`,
-    actions: [{ label: 'Cambiar contraseña', run: () => { setTimeout(changePassword, 0); } }, { label: 'Cerrar sesión', cls: 'danger', run: () => { logout(); } }]
+    actions: [{ label: 'Sugerencias y errores', run: () => { setTimeout(() => openFeedback(), 0); } }, { label: 'Cambiar contraseña', run: () => { setTimeout(changePassword, 0); } }, { label: 'Cerrar sesión', cls: 'danger', run: () => { logout(); } }]
   });
 }
 function route() {
@@ -349,6 +358,7 @@ function route() {
   const v = $('#view'); v.innerHTML = '<div class="empty">Cargando…</div>';
   Promise.resolve(VIEWS[k].render()).catch((e) => { v.innerHTML = `<div class="notice n-bad">${esc(e.message)}</div>`; });
   if (k !== 'casos') refreshCaseBadge();
+  if (k !== 'buzon') refreshBuzonBadge();
 }
 window.addEventListener('hashchange', () => { if (S.me) route(); });
 
@@ -994,10 +1004,12 @@ function userForm(p, areas, done) {
 async function viewCatalogos() {
   await loadCatalogs();
   const v = $('#view');
+  const empsG = await db('employees').select('group_id,status').get().catch(() => []);
+  const perG = {}; empsG.forEach((e) => { if (e.group_id && e.status !== 'baja' && e.status !== 'rechazado') perG[e.group_id] = (perG[e.group_id] || 0) + 1; });
   const tls = S.profiles.filter((p) => p.role === 'tl' && p.active);
   v.innerHTML = `<div class="pagehead"><h1>Áreas y grupos</h1><div class="row"><button class="btn" id="na">+ Área</button><button class="btn primary" id="ng">+ Grupo</button></div></div>
   ${S.areas.map((a) => `<div class="card" style="margin-bottom:12px"><div class="pad row" style="border-bottom:1px solid var(--line)"><b class="grow">${esc(a.name)}</b><span class="small muted">Cierre desde ${String(a.hora_cierre || '16:00').slice(0, 5)}</span>${a.active ? '' : '<span class="badge b-mut">Inactiva</span>'}<button class="btn sm" data-ea="${a.id}">Editar</button></div>
-    <table class="tbl"><tbody>${S.groups.filter((g) => g.area_id === a.id).map((g) => `<tr><td><b>${esc(g.name)}</b>${g.tipo === 'lideres' ? ' <span class="badge b-acc">Líderes</span>' : ''}${g.active ? '' : ' <span class="badge b-mut">Inactivo</span>'}</td><td>${g.tipo === 'lideres' ? '<span class="small muted">Pasa lista: Supervisión</span>' : g.tl_id ? esc(profName(g.tl_id)) : '<span class="badge b-warn">Sin TL</span>'}</td><td style="text-align:right"><button class="btn sm" data-eg="${g.id}">Editar</button></td></tr>`).join('') || '<tr><td class="muted">Sin grupos</td></tr>'}</tbody></table></div>`).join('')}
+    <table class="tbl"><tbody>${S.groups.filter((g) => g.area_id === a.id).map((g) => `<tr><td><b>${esc(g.name)}</b>${g.tipo === 'lideres' ? ' <span class="badge b-acc">Líderes</span>' : ''}${g.active ? '' : ' <span class="badge b-mut">Inactivo</span>'}</td><td>${g.tipo === 'lideres' ? '<span class="small muted">Pasa lista: Supervisión</span>' : g.tl_id ? esc(profName(g.tl_id)) : '<span class="badge b-warn">Sin TL</span>'}</td><td class="small muted">${perG[g.id] ? perG[g.id] + (perG[g.id] === 1 ? ' persona' : ' personas') : 'Vacío'}</td><td style="text-align:right;white-space:nowrap"><button class="btn sm" data-eg="${g.id}">Editar</button> <button class="btn sm danger" data-dg="${g.id}" aria-label="Eliminar ${esc(g.name)}">Eliminar</button></td></tr>`).join('') || '<tr><td class="muted">Sin grupos</td></tr>'}</tbody></table></div>`).join('')}
   <div class="card pad"><div class="eyebrow" style="margin-bottom:8px">Cambios de área no permitidos</div>
     ${S.blocks.map((b) => `<div class="row" style="padding:4px 0"><span class="grow">${esc(areaName(b.from_area))} → ${esc(areaName(b.to_area))}</span><button class="btn sm danger" data-db="${b.from_area}|${b.to_area}">Quitar</button></div>`).join('') || '<span class="muted small">Ninguno</span>'}
     <button class="btn sm" id="nb" style="margin-top:8px">+ Bloquear cambio</button></div>`;
@@ -1012,6 +1024,17 @@ async function viewCatalogos() {
     ...(g ? [{ k: 'active', label: 'Estado', type: 'select', val: g.active ? '1' : '0', options: [['1', 'Activo'], ['0', 'Inactivo']] }] : [])
   ];
   $('#ng').onclick = () => simpleForm('Nuevo grupo', gFields(null), (x) => db('groups').insert([{ ...x, tl_id: x.tipo === 'lideres' ? null : x.tl_id || null }]), 'Solo aparecen como TL los usuarios con rol Team Leader. Un grupo de Líderes no lleva TL.');
+  $$('[data-dg]').forEach((b) => b.onclick = async () => {
+    const g = S.groups.find((x) => x.id === b.dataset.dg);
+    const n = perG[g.id] || 0;
+    if (n) return toast(`“${g.name}” tiene ${n} persona(s). Muévelas a otro grupo antes de eliminarlo.`, true);
+    if (!(await confirmBox('Eliminar grupo', `Se eliminará <b>${esc(g.name)}</b> de ${esc(areaName(g.area_id))}. Solo se puede si no tiene historial; si lo tiene, desactívalo desde Editar.`, { okLabel: 'Eliminar', danger: true }))) return;
+    try {
+      const rows = await db('groups').eq('id', g.id).remove();
+      if (!rows || !rows.length) throw new Error('No se pudo eliminar el grupo.');
+      toast('Grupo eliminado'); viewCatalogos();
+    } catch (e) { toast(e.message, true); }
+  });
   $$('[data-eg]').forEach((b) => b.onclick = () => { const g = S.groups.find((x) => x.id === b.dataset.eg); simpleForm('Editar grupo', gFields(g), (x) => mustUpdate(db('groups').eq('id', g.id).update({ area_id: x.area_id, name: x.name, tipo: x.tipo, tl_id: x.tipo === 'lideres' ? null : x.tl_id || null, active: x.active === '1' }))); });
   $('#nb').onclick = () => simpleForm('Bloquear cambio de área', [{ k: 'from_area', label: 'De', type: 'select', options: areaOpts }, { k: 'to_area', label: 'A', type: 'select', options: areaOpts }], (x) => { if (x.from_area === x.to_area) throw new Error('Elige áreas distintas'); return db('area_transfer_blocks').insert([x]); }, 'Se bloquea solo en esa dirección. Agrega también la inversa si aplica.');
   $$('[data-db]').forEach((b) => b.onclick = async () => { const [fa, ta] = b.dataset.db.split('|'); try { await db('area_transfer_blocks').eq('from_area', fa).eq('to_area', ta).remove(); viewCatalogos(); } catch (e) { toast(e.message, true); } });
@@ -1187,6 +1210,110 @@ function renderOperacion(st, groups) {
   $$('#ops [data-id]').forEach((card) => wireOps(card, st, () => renderOperacion(st, groups)));
 }
 
+// ───────────────────────── Buzón: sugerencias y reporte de errores ─────────────────────────
+const FB_TIPO = { error: 'Reportar un error', sugerencia: 'Sugerencia' };
+const FB_ESTADO = { nuevo: ['Nuevo', 'b-warn'], en_revision: ['En revisión', 'b-acc'], resuelto: ['Resuelto', 'b-ok'], descartado: ['Descartado', 'b-mut'] };
+const fbBadge = (e) => `<span class="badge ${FB_ESTADO[e][1]}">${FB_ESTADO[e][0]}</span>`;
+const imgOk = (f) => /^image\//.test(f.type || '');
+function techDetail() {
+  return { vista: (location.hash || '').replace(/^#\//, '') || 'inicio', version: APP_VERSION, dispositivo: navigator.userAgent, pantalla_px: `${innerWidth}x${innerHeight}`,
+    en_linea: navigator.onLine, pase_de_lista: LS.group ? { grupo: groupName(LS.group), fecha: LS.fecha, turno: LS.turno } : null, errores: ERRLOG.slice() };
+}
+function openFeedback(tipo = 'error') {
+  const fb = fileBox('fb_img', { title: 'Capturas de pantalla', label: 'Adjuntar captura', hint: 'Solo imágenes · hasta 5 MB · máximo 3', accept: 'image/*', ok: imgOk, max: 3, maxSize: 5 * 1048576 });
+  let t = tipo;
+  const body = () => `
+    <div class="seg fb-seg" role="group" aria-label="Tipo">${Object.entries(FB_TIPO).map(([k, l]) => `<button type="button" data-fbt="${k}" class="${t === k ? 'on' : ''}" aria-pressed="${t === k}">${l}</button>`).join('')}</div>
+    <label class="field">${t === 'error' ? '¿Qué estabas haciendo y qué pasó?' : '¿Qué te gustaría mejorar o agregar?'} *
+      <textarea id="f_fbm" rows="5" maxlength="4000" placeholder="${t === 'error' ? 'Ej. Al enviar el cierre de la tarde me salió un error y no se guardó.' : 'Ej. Que el pase de lista muestre primero a quienes faltan.'}"></textarea></label>
+    ${fb.html}
+    <label class="row small" style="gap:8px;align-items:flex-start"><input type="checkbox" id="f_fbtech" checked style="margin-top:3px"><span>Incluir datos técnicos: pantalla, versión (${APP_VERSION}), dispositivo y los últimos mensajes de error${ERRLOG.length ? ` (${ERRLOG.length})` : ''}. Ayuda a encontrar el problema.</span></label>
+    <button type="button" class="btn sm ghost" id="fb_mine" style="align-self:flex-start">Ver mis reportes</button>`;
+  const m = modal({ title: 'Sugerencias y errores', body: body(),
+    actions: [{ label: 'Cancelar' }, { label: 'Enviar', cls: 'primary', run: async ({ el, btn }) => {
+      const msg = ($('#f_fbm', el).value || '').trim();
+      if (msg.length < 5) throw new Error('Escribe al menos una frase.');
+      const paths = []; const failed = [];
+      for (let i = 0; i < fb.files.length; i++) {
+        const f = fb.files[i]; btn.textContent = `Subiendo captura ${i + 1} de ${fb.files.length}…`;
+        const ext = (f.name.match(/\.([a-z0-9]{1,5})$/i) || [, 'png'])[1].toLowerCase();
+        const key = `${S.me.id}/${newId()}.${ext}`;
+        try { await storageUpload('buzon', key, f); paths.push(key); } catch (e) { failed.push(f.name); }
+      }
+      const tech = $('#f_fbtech', el).checked;
+      const [row] = await db('feedback').insert([{ user_id: S.me.id, tipo: t, mensaje: msg, pantalla: tech ? techDetail().vista : null, app_version: APP_VERSION, detalle: tech ? techDetail() : null, adjuntos: paths }]);
+      toast(`Gracias. Quedó registrado con folio #${row.folio}${failed.length ? ` (no se subieron: ${failed.join(', ')})` : ''}`, !!failed.length);
+    } }] });
+  const wire = () => {
+    fb.wire(m.el);
+    $$('[data-fbt]', m.el).forEach((b) => b.onclick = () => { const txt = $('#f_fbm', m.el).value; t = b.dataset.fbt; const keep = fb.files.splice(0); m.mb.innerHTML = body(); fb.files.push(...keep); wire(); $('#f_fbm', m.el).value = txt; $('#fb_img .flist', m.el) && keep.length && $('#fb_img input', m.el).dispatchEvent(new Event('change')); });
+    $('#fb_mine', m.el).onclick = () => myFeedback();
+  };
+  wire();
+}
+async function myFeedback() {
+  const rows = await db('feedback').eq('user_id', S.me.id).order('created_at', false).limit(50).get();
+  modal({ title: 'Mis reportes', body: rows.length ? `<div class="list">${rows.map((f) => `<div class="card" style="padding:10px 12px;display:flex;flex-direction:column;gap:6px">
+      <div class="row small"><b class="mono">#${f.folio}</b><span class="badge ${f.tipo === 'error' ? 'b-bad' : 'b-acc'}">${f.tipo === 'error' ? 'Error' : 'Sugerencia'}</span><span class="grow muted">${fmtDateTime(f.created_at)}</span>${fbBadge(f.estado)}</div>
+      <div>${esc(f.mensaje)}</div>
+      ${f.respuesta ? `<div class="inc-note"><div class="small muted">Respuesta${f.atendido_at ? ' · ' + fmtDateTime(f.atendido_at) : ''}</div><div>${esc(f.respuesta)}</div></div>` : ''}
+    </div>`).join('')}</div>` : '<div class="empty">Aún no has enviado reportes.</div>', actions: [{ label: 'Cerrar', cls: 'primary' }] });
+}
+// Vista de Daniel
+const BZ = { estado: 'nuevo', tipo: '' };
+function updateBuzonBadge(n) {
+  $$('[data-v="buzon"]').forEach((a) => {
+    let b = a.querySelector('.cnt'); if (!b) { b = document.createElement('span'); b.className = 'cnt badge b-bad'; b.style.marginLeft = 'auto'; a.appendChild(b); }
+    b.textContent = n; b.style.display = n ? '' : 'none';
+  });
+}
+async function refreshBuzonBadge() {
+  if (!is('developer')) return;
+  try { updateBuzonBadge((await db('feedback').select('id').eq('estado', 'nuevo').get()).length); } catch { /* sin conexión */ }
+}
+async function viewBuzon() {
+  const v = $('#view');
+  let q = db('feedback').order('created_at', false).limit(300);
+  if (BZ.estado) q = q.eq('estado', BZ.estado);
+  if (BZ.tipo) q = q.eq('tipo', BZ.tipo);
+  const [rows, all] = await Promise.all([q.get(), db('feedback').select('id,estado').get()]);
+  const cnt = {}; all.forEach((f) => { cnt[f.estado] = (cnt[f.estado] || 0) + 1; });
+  updateBuzonBadge(cnt.nuevo || 0);
+  v.innerHTML = `<div class="pagehead"><div><h1>Buzón</h1><div class="muted small">Sugerencias y errores reportados por los usuarios</div></div>
+    <div class="row"><select class="inp" id="bz_t" aria-label="Tipo"><option value="">Todos los tipos</option><option value="error"${BZ.tipo === 'error' ? ' selected' : ''}>Errores</option><option value="sugerencia"${BZ.tipo === 'sugerencia' ? ' selected' : ''}>Sugerencias</option></select></div></div>
+  <div class="seg" role="group" aria-label="Estado" style="margin-bottom:12px">${[['nuevo', 'Nuevos'], ['en_revision', 'En revisión'], ['resuelto', 'Resueltos'], ['descartado', 'Descartados'], ['', 'Todos']].map(([k, l]) => `<button type="button" data-bz="${k}" class="${BZ.estado === k ? 'on' : ''}">${l}${k && cnt[k] ? ` (${cnt[k]})` : ''}</button>`).join('')}</div>
+  <div class="list" id="bzlist">${rows.length ? rows.map((f) => `<button type="button" class="item" data-fb="${f.id}">
+      <span class="grow"><span class="row small" style="gap:6px"><b class="mono">#${f.folio}</b><span class="badge ${f.tipo === 'error' ? 'b-bad' : 'b-acc'}">${f.tipo === 'error' ? 'Error' : 'Sugerencia'}</span>${f.adjuntos.length ? `<span class="small muted">📎 ${f.adjuntos.length}</span>` : ''}</span>
+      <span style="display:block;margin-top:2px">${esc(f.mensaje.length > 140 ? f.mensaje.slice(0, 140) + '…' : f.mensaje)}</span>
+      <span class="small muted">${esc(f.user_name || '—')} · ${esc(ROLES[f.user_role] || '')} · ${fmtDateTime(f.created_at)}${f.pantalla ? ' · ' + esc(f.pantalla) : ''}</span></span>${fbBadge(f.estado)}</button>`).join('') : '<div class="card empty">Sin reportes en este filtro.</div>'}</div>`;
+  $$('[data-bz]').forEach((b) => b.onclick = () => { BZ.estado = b.dataset.bz; viewBuzon(); });
+  $('#bz_t').onchange = (e) => { BZ.tipo = e.target.value; viewBuzon(); };
+  $$('[data-fb]').forEach((b) => b.onclick = () => openFeedbackAdmin(rows.find((x) => x.id === b.dataset.fb)));
+}
+function openFeedbackAdmin(f) {
+  const d = f.detalle || {};
+  const f2 = [{ k: 'estado', label: 'Estado', type: 'select', val: f.estado === 'nuevo' ? 'en_revision' : f.estado, options: Object.entries(FB_ESTADO).map(([k, x]) => [k, x[0]]) },
+    { k: 'respuesta', label: 'Respuesta para la persona', type: 'textarea', full: true, val: f.respuesta || '', hint: 'La verá en “Mis reportes”.' }];
+  const m = modal({ title: `#${f.folio} · ${f.tipo === 'error' ? 'Error' : 'Sugerencia'}`, wide: true, body: `
+    <div class="row">${fbBadge(f.estado)}<span class="small muted">${esc(f.user_name || '—')} · ${esc(ROLES[f.user_role] || '')} · ${fmtDateTime(f.created_at)}</span></div>
+    <div class="card pad" style="white-space:pre-wrap">${esc(f.mensaje)}</div>
+    ${f.adjuntos.length ? `<div class="evid-list" style="padding:0">${f.adjuntos.map((p) => `<a class="evid-item" data-bzp="${esc(p)}" target="_blank" rel="noopener" aria-disabled="true"><img alt="" class="thumb"><span class="grow"><b>Captura</b></span><span class="go" aria-hidden="true">↗</span></a>`).join('')}</div>` : ''}
+    ${f.detalle ? `<details class="card pad"><summary><b>Datos técnicos</b> · ${esc(d.vista || '')} · v${esc(f.app_version || '')}</summary>
+      <div class="kv" style="margin-top:8px"><span>Pantalla</span><span>${esc(d.vista || '—')}</span><span>Versión</span><span>${esc(d.version || f.app_version || '—')}</span><span>Tamaño</span><span>${esc(d.pantalla_px || '—')}</span><span>En línea</span><span>${d.en_linea === false ? 'No' : 'Sí'}</span>
+      ${d.pase_de_lista ? `<span>Pase de lista</span><span>${esc(d.pase_de_lista.grupo || '')} · ${esc(d.pase_de_lista.fecha || '')} · ${esc(d.pase_de_lista.turno || '')}</span>` : ''}<span>Dispositivo</span><span class="small">${esc(d.dispositivo || '—')}</span></div>
+      ${(d.errores || []).length ? `<div class="eyebrow" style="margin:10px 0 4px">Últimos errores que vio</div>${d.errores.map((x) => `<div class="small"><span class="mono muted">${esc(fmtTime(x.at))}</span> · ${esc(x.vista || '')} · ${esc(x.msg)}</div>`).join('')}` : '<div class="small muted" style="margin-top:8px">Sin mensajes de error registrados.</div>'}
+    </details>` : '<div class="small muted">La persona no incluyó datos técnicos.</div>'}
+    ${fieldsHtml(f2)}`,
+    actions: [{ label: 'Cerrar' }, { label: 'Guardar', cls: 'primary', run: async ({ el }) => {
+      const v = readFields(el, f2);
+      await mustUpdate(db('feedback').eq('id', f.id).update({ estado: v.estado, respuesta: v.respuesta }), 'el reporte');
+      toast('Guardado'); viewBuzon();
+    } }] });
+  $$('[data-bzp]', m.el).forEach(async (a) => {
+    try { const url = await storageUrl('buzon', a.dataset.bzp); a.href = url; a.removeAttribute('aria-disabled'); $('img', a).src = url; } catch (e) { a.classList.add('err'); }
+  });
+}
+
 // ───────────────────────── Casos: incidencia formal → cierre ─────────────────────────
 const CASE_ST = {
   en_validacion: ['En validación · Supervisión', 'b-warn'], regresado: ['Regresado al líder', 'b-bad'], en_rh: ['En RH', 'b-acc'],
@@ -1215,22 +1342,23 @@ const evidOk = (f) => /^(image\/|audio\/)|^application\/pdf$|^video\/(mp4|quickt
 const fileIcon = (t) => /^image\//.test(t || '') ? 'IMG' : /pdf/.test(t || '') ? 'PDF' : /^audio\//.test(t || '') ? 'AUD' : /^video\//.test(t || '') ? 'VID' : 'DOC';
 const newId = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => { const r = Math.random() * 16 | 0; return (ch === 'x' ? r : (r & 3 | 8)).toString(16); }));
 const canAddEvidence = (c) => c.status !== 'cerrado' && !is('director', 'nomina');
-function fileBox(id) {
+function fileBox(id, o = {}) {
+  const opt = { title: 'Archivos de evidencia', label: 'Adjuntar archivos', hint: 'Fotos, capturas, PDF, audios o documentos · hasta 10 MB cada uno · máximo 10', accept: EVID_ACCEPT, ok: evidOk, max: EVID_MAX_FILES, maxSize: EVID_MAX, ...o };
   const files = [];
   const html = `<div class="filebox" id="${id}">
-    <div class="fb-title">Archivos de evidencia <span class="small muted">(opcional)</span></div>
-    <label class="drop"><input type="file" multiple accept="${EVID_ACCEPT}" class="sr-only">
-      <span class="drop-ic" aria-hidden="true">⇪</span><b>Adjuntar archivos</b>
-      <span class="small muted">Fotos, capturas, PDF, audios o documentos · hasta 10 MB cada uno · máximo 10</span></label>
+    <div class="fb-title">${esc(opt.title)} <span class="small muted">(opcional)</span></div>
+    <label class="drop"><input type="file" multiple accept="${opt.accept}" class="sr-only">
+      <span class="drop-ic" aria-hidden="true">⇪</span><b>${esc(opt.label)}</b>
+      <span class="small muted">${esc(opt.hint)}</span></label>
     <div class="flist"></div></div>`;
   const wire = (root) => {
     const box = $('#' + id, root); const inp = $('input[type=file]', box); const list = $('.flist', box);
     const draw = () => { list.innerHTML = files.map((f, i) => `<div class="fitem"><span class="fic">${fileIcon(mimeOf(f))}</span><span class="grow"><b>${esc(f.name)}</b><span class="small muted">${fmtSize(f.size)}</span></span><button type="button" class="x" data-rm="${i}" aria-label="Quitar ${esc(f.name)}">×</button></div>`).join(''); };
     const add = (picked) => {
       for (const f of picked) {
-        if (files.length >= EVID_MAX_FILES) { toast('Máximo 10 archivos por envío', true); break; }
-        if (!evidOk(f)) { toast(`${f.name}: tipo de archivo no permitido`, true); continue; }
-        if (f.size > EVID_MAX) { toast(`${f.name} pasa de 10 MB`, true); continue; }
+        if (files.length >= opt.max) { toast(`Máximo ${opt.max} archivos`, true); break; }
+        if (!opt.ok(f)) { toast(`${f.name}: tipo de archivo no permitido`, true); continue; }
+        if (f.size > opt.maxSize) { toast(`${f.name} pasa de ${Math.round(opt.maxSize / 1048576)} MB`, true); continue; }
         if (!files.some((x) => x.name === f.name && x.size === f.size)) files.push(f);
       }
       draw();
@@ -1242,6 +1370,21 @@ function fileBox(id) {
     list.onclick = (e) => { const b = e.target.closest('[data-rm]'); if (b) { files.splice(Number(b.dataset.rm), 1); draw(); } };
   };
   return { html, wire, files };
+}
+async function storageUpload(bucket, key, f) {
+  await ensureFresh();
+  let r;
+  try { r = await fetch(`${CFG.url}/storage/v1/object/${bucket}/${key}`, { method: 'POST', headers: { apikey: CFG.key, Authorization: 'Bearer ' + S.session.access_token, 'Content-Type': mimeOf(f) || 'application/octet-stream', 'x-upsert': 'false' }, body: f }); }
+  catch (e) { throw new Error(friendly(String(e.message || e))); }
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(r.status === 413 || /maximum allowed size/i.test(d.message || '') ? 'archivo demasiado grande' : r.status === 415 || /mime/i.test(d.message || '') ? 'tipo de archivo no permitido' : friendly(d.message || 'Error ' + r.status));
+  }
+}
+async function storageUrl(bucket, path) {
+  const d = await http(`/storage/v1/object/sign/${bucket}/${path}`, { method: 'POST', body: { expiresIn: 900 } });
+  const u = d.signedURL || d.signedUrl;
+  return /^(https?:|blob:|data:)/.test(u) ? u : CFG.url + '/storage/v1' + u;
 }
 async function uploadEvidence(caseId, files, onProgress) {
   const failed = [];
