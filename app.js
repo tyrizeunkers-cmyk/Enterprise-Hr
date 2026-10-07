@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.6.0';
+const APP_VERSION = '0.7.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -379,7 +379,7 @@ async function viewLista() {
   if (!LS.fecha) LS.fecha = todayMX();
   const g = groups.find((x) => x.id === LS.group);
   const [emps, day] = await Promise.all([
-    db('employees').select('id,nombre,apellido_paterno,apellido_materno,puesto,group_id,area_id,status').eq('group_id', g.id).eq('status', 'activo').get(),
+    db('employees').select('id,nombre,apellido_paterno,apellido_materno,puesto,group_id,area_id,status,origen').eq('group_id', g.id).in('status', ['activo', 'alta_pendiente']).get(),
     db('attendance_days').eq('group_id', g.id).eq('fecha', LS.fecha).get()
   ]);
   emps.sort(sortName);
@@ -427,6 +427,7 @@ function renderLista(st, groups) {
   ${tarde && open && diffs ? `<div class="notice n-warn" style="margin-bottom:10px"><b>${diffs}</b> ${diffs === 1 ? 'persona no coincide' : 'personas no coinciden'} con el pase de la mañana. Revísalas antes de enviar el cierre.</div>` : ''}
   ${total && !locked ? `<div class="row" style="margin-bottom:10px"><button class="btn ghost grow" id="allok"${done === total ? ' disabled' : ''}>${tarde ? 'Marcar pendientes igual que en la mañana' : 'Marcar pendientes como “Asistencia”'}</button></div>` : ''}
   <div class="list" id="people">${total ? emps.map((e) => personCard(e, rec[e.id], fx[e.id], locked, tarde ? recM[e.id] : null)).join('') : `<div class="card empty">${lider ? 'Aún no hay líderes en este grupo. Asígnalos desde Personal (grupo “Líderes”).' : 'No hay personal activo en este grupo.'}</div>`}</div>
+  ${canAddToList(g) && !lockedDay ? '<button type="button" class="btn ghost add-person" id="addPerson">+ Agregar persona que no aparece en la lista</button>' : ''}
   ${total ? `<div class="stickybar">
     <button class="btn primary" id="send" ${done < total || locked ? 'disabled' : ''} style="${sentAt && done === total ? 'background:var(--ok);border-color:var(--ok)' : ''}">${done < total ? `Faltan ${total - done} por registrar` : sentAt ? `${tarde ? 'Cierre enviado' : 'Entrada enviada'} ✓ · reenviar` : tarde ? 'Enviar cierre (tarde)' : 'Enviar entrada (mañana)'}</button>
     <span class="small muted" style="text-align:center">${sentAt ? `Enviado por ${esc(profName(sentBy))} a las ${fmtTime(sentAt)}. ` : ''}Se envía dos veces al día: entrada por la mañana y cierre al final de la jornada.</span>
@@ -434,6 +435,7 @@ function renderLista(st, groups) {
   const reload = () => viewLista().catch((e) => toast(e.message, true));
   $('#lf_date').onchange = (e) => { const val = e.target.value; if (!val || val > todayMX()) { e.target.value = LS.fecha; return toast('No se puede pasar lista a futuro', true); } LS.fecha = val; LS.turno = null; reload(); };
   if ($('#lf_group')) $('#lf_group').onchange = (e) => { LS.group = e.target.value; store.set('hr.lista.group', LS.group); LS.open = null; LS.turno = null; reload(); };
+  if ($('#addPerson')) $('#addPerson').onclick = () => addPersonForm(g, reload);
   $$('[data-turno]').forEach((b) => b.onclick = () => { if (LS.turno === b.dataset.turno) return; LS.turno = b.dataset.turno; renderLista(st, groups); });
   if ($('#allok')) $('#allok').onclick = async (ev) => {
     const pend = emps.filter((e) => !rec[e.id]); if (!pend.length) return;
@@ -456,6 +458,26 @@ function renderLista(st, groups) {
   };
   $$('#people .person').forEach((card) => wirePerson(card, st, groups));
 }
+// El líder agrega a alguien que RH no ha dado de alta: queda como alta pendiente en su grupo
+const canAddToList = (g) => g.tipo !== 'lideres' && (is('developer') || (is('tl') && g.tl_id === S.me.id));
+function addPersonForm(g, onDone) {
+  const f = [
+    { k: 'nombre', label: 'Nombre(s)', req: true },
+    { k: 'apellido_paterno', label: 'Apellido paterno', req: true },
+    { k: 'apellido_materno', label: 'Apellido materno' },
+    { k: 'puesto', label: 'Puesto', val: (areaName(g.area_id) === 'Cobranza' ? 'Ejecutivo de cobranza' : areaName(g.area_id) === 'Marketing' ? 'Asesor de marketing' : '') },
+    { k: 'fecha_ingreso', label: 'Fecha en que empezó', type: 'date', req: true, val: LS.fecha || todayMX(), max: todayMX() }
+  ];
+  modal({ title: `Agregar a ${groupLabel(g)} · ${areaName(g.area_id)}`,
+    body: `<div class="notice n-info">Úsalo solo si la persona ya está trabajando y RH no la ha dado de alta. Queda como <b>Alta pendiente</b>: RH completa sus datos y Daniel confirma el alta. Mientras tanto puedes pasarle lista.</div>${fieldsHtml(f)}`,
+    actions: [{ label: 'Cancelar' }, { label: 'Agregar a mi lista', cls: 'primary', run: async ({ el }) => {
+      const v = readFields(el, f);
+      if (v.fecha_ingreso > todayMX()) throw new Error('La fecha no puede ser futura.');
+      await db('employees').insert([{ ...v, area_id: g.area_id, group_id: g.id, status: 'alta_pendiente' }]);
+      toast('Agregada · RH debe completar su alta'); onDone && onDone();
+    } }] });
+}
+const pendBadge = (e) => e.status === 'alta_pendiente' ? `<span class="badge b-warn">${e.origen === 'lider' ? 'Agregado por líder · falta alta' : 'Alta pendiente'}</span>` : '';
 function personCard(e, r, faltas, locked, morning) {
   const open = LS.open === e.id;
   const col = r ? ATT_COLOR[attKey(r)] : null;
@@ -471,7 +493,7 @@ function personCard(e, r, faltas, locked, morning) {
     <button type="button" class="ph" aria-expanded="${open}">
       <span class="dot" style="${col ? `background:${col};border-color:${col}` : ''}"></span>
       <span class="grow"><span style="display:block;font-weight:600">${esc(fullName(e))}</span><span class="small muted">${esc(summary.length > 90 ? summary.slice(0, 90) + '…' : summary)}</span></span>
-      ${diff ? '<span class="badge b-warn">No coincide</span>' : ''}${faltasBadge(faltas)}<span class="muted" aria-hidden="true">${open ? '▴' : '▾'}</span>
+      ${pendBadge(e)}${diff ? '<span class="badge b-warn">No coincide</span>' : ''}${faltasBadge(faltas)}<span class="muted" aria-hidden="true">${open ? '▴' : '▾'}</span>
     </button>
     ${open ? `<div class="body">
       ${tarde ? `<div class="morning-ref${diff ? ' diff' : ''}"><span class="small muted">En la mañana</span><span>${morning ? attBadges(morning) : '<span class="badge b-mut">Sin registro</span>'}</span>${diff ? `<span class="small" style="color:var(--warn);font-weight:600">${esc(diff)}</span>` : ''}</div>` : ''}
@@ -490,7 +512,8 @@ function personCard(e, r, faltas, locked, morning) {
         </div>
       </section>
       ${r ? `<div class="small muted">Último cambio: ${esc(profName(r.updated_by))} · ${fmtDateTime(r.updated_at)}</div>` : ''}
-      ${canReportCase() ? `<section class="fbox">
+      ${e.status === 'alta_pendiente' ? '<div class="notice n-warn">Esta persona aún no tiene alta confirmada. Las solicitudes e incidencias de riesgo se habilitan cuando Daniel acepte el alta.</div>' : ''}
+      ${canReportCase() && e.status === 'activo' ? `<section class="fbox">
         <header>Solicitud de incidencias<span>Se envía a Supervisión</span></header>
         <div class="req-list">${Object.entries(SOLICITUD_LIDER).map(([k, l]) => reqRow(k, l)).join('')}</div>
         <footer>Cada solicitud pide razón, evidencias y fechas.</footer>
@@ -559,7 +582,7 @@ let EMP_CACHE = [];
 async function viewPersonal() {
   const v = $('#view');
   const [emps, faltas] = await Promise.all([
-    db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,puesto,area_id,group_id,status,fecha_ingreso,fecha_baja,requested_by,requested_at').get(),
+    db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,puesto,area_id,group_id,status,fecha_ingreso,fecha_baja,requested_by,requested_at,origen').get(),
     db('faltas_30d').get()
   ]);
   emps.sort(sortName); EMP_CACHE = emps;
@@ -588,7 +611,7 @@ async function viewPersonal() {
       && (!q || norm(fullName(e) + ' ' + (e.num_empleado || '') + ' ' + (e.puesto || '')).includes(q)));
     $('#plist').innerHTML = rows.length ? rows.slice(0, 400).map((e) => `<button type="button" class="item" data-id="${e.id}">
         <span class="grow"><span class="nm">${esc(fullName(e))}</span><br><span class="small muted">${e.num_empleado ? esc(e.num_empleado) + ' · ' : ''}${esc(e.puesto || 'Sin puesto')} · ${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))}</span></span>
-        ${faltasBadge(fx[e.id])} ${PS.status !== e.status || !PS.status ? statusBadge(e.status) : (e.status === 'alta_pendiente' ? statusBadge(e.status) : '')}</button>`).join('')
+        ${e.origen === 'lider' && e.status === 'alta_pendiente' ? '<span class="badge b-acc">Agregado por líder</span>' : ''}${faltasBadge(fx[e.id])} ${PS.status !== e.status || !PS.status ? statusBadge(e.status) : (e.status === 'alta_pendiente' ? statusBadge(e.status) : '')}</button>`).join('')
       + (rows.length > 400 ? `<div class="muted small">Mostrando 400 de ${rows.length}. Usa el buscador.</div>` : '')
       : '<div class="card empty">Sin resultados</div>';
     $$('#plist .item').forEach((b) => b.onclick = () => openEmployee(b.dataset.id, fx));
@@ -629,6 +652,7 @@ async function openEmployee(id, fx = {}) {
   const canEditPriv = is('developer') || (is('rh_general', 'rh_area') && inMyArea);
   const body = `
     <div class="row">${statusBadge(e.status)} ${faltasBadge(c.falta)}</div>
+    ${e.origen === 'lider' && e.status === 'alta_pendiente' ? `<div class="notice n-warn">Agregado al pase de lista por ${esc(profName(e.requested_by))} el ${fmtDateTime(e.requested_at)}. RH debe completar datos y Daniel confirmar el alta.</div>` : ''}
     <div class="kv">
       <span>No. empleado</span><span>${esc(e.num_empleado || '—')}</span>
       <span>Puesto</span><span>${esc(e.puesto || '—')}</span>
@@ -816,7 +840,7 @@ async function viewAsistencia() {
   const areas = visibleAreas();
   const groups = S.groups.filter((g) => g.active && (seesAllAreas() || S.myAreas.includes(g.area_id)) && (!AS.area || g.area_id === AS.area))
     .sort((a, b) => (areaName(a.area_id) + a.name).localeCompare(areaName(b.area_id) + b.name, 'es'));
-  let ef = db('employees').select('id,nombre,apellido_paterno,apellido_materno,area_id,group_id,status').eq('status', 'activo');
+  let ef = db('employees').select('id,nombre,apellido_paterno,apellido_materno,area_id,group_id,status,origen').in('status', ['activo', 'alta_pendiente']);
   let af = db('attendance').eq('fecha', AS.fecha);
   if (AS.area) { ef = ef.eq('area_id', AS.area); af = af.eq('area_id', AS.area); }
   const [emps, att, days, faltas] = await Promise.all([ef.get(), af.get(), db('attendance_days').eq('fecha', AS.fecha).get(), db('faltas_30d').gte('faltas', 3).get()]);
@@ -853,7 +877,7 @@ async function viewAsistencia() {
         ${canReview ? `<br><button class="btn sm" data-rev="${r.g.id}" data-on="${r.d.reviewed_at ? '0' : '1'}" style="margin-top:4px">${r.d.reviewed_at ? 'Quitar revisión' : 'Marcar revisado'}</button>` : ''}</td></tr>
       ${AS.open === r.g.id ? `<tr><td colspan="8" style="background:var(--soft)">${r.people.length ? `<table class="tbl sub"><thead><tr><th>Persona</th><th>Mañana</th><th>Tarde</th></tr></thead><tbody>${r.people.map((e) => { const a = byEmp[e.id], t = byEmpT[e.id]; const dif = attMismatch(a, t);
           const cell = (x) => x ? `${attBadges(x)}${x.comentario ? `<br><span class="small muted">${esc(x.comentario)}</span>` : ''}` : '<span class="badge b-mut">Sin registrar</span>';
-          return `<tr${dif ? ' class="dif"' : ''}><td>${esc(fullName(e))}${dif ? `<br><span class="small" style="color:var(--warn);font-weight:600">${esc(dif)}</span>` : ''}</td><td>${cell(a)}</td><td>${cell(t)}</td></tr>`; }).join('')}</tbody></table>` : '<span class="muted">Sin personal</span>'}
+          return `<tr${dif ? ' class="dif"' : ''}><td>${esc(fullName(e))}${e.status === 'alta_pendiente' ? ' <span class="badge b-warn">alta pendiente</span>' : ''}${dif ? `<br><span class="small" style="color:var(--warn);font-weight:600">${esc(dif)}</span>` : ''}</td><td>${cell(a)}</td><td>${cell(t)}</td></tr>`; }).join('')}</tbody></table>` : '<span class="muted">Sin personal</span>'}
         ${canWriteAttendance() && writableGroups().some((x) => x.id === r.g.id) ? `<button class="btn sm ghost" data-goto="${r.g.id}" style="margin-top:8px">Abrir pase de lista</button>` : ''}</td></tr>` : ''}`).join('') || '<tr><td colspan="8" class="empty">Sin grupos</td></tr>'}
   </tbody></table></div>
   ${noGroup ? `<div class="small muted" style="margin-top:8px">${noGroup} personas activas sin grupo asignado (no aparecen en ningún pase de lista).</div>` : ''}`;
