@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.8.5';
+const APP_VERSION = '0.8.6';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -172,8 +172,8 @@ function toast(msg, err = false) {
   const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : ''); t.textContent = msg; t.setAttribute('role', 'status');
   document.body.appendChild(t); setTimeout(() => t.remove(), err ? 5200 : 2800);
 }
-function modal({ title, body, actions = [], wide = false, onClose }) {
-  const bg = document.createElement('div'); bg.className = 'modal-bg';
+function modal({ title, body, actions = [], wide = false, onClose, sheet = false }) {
+  const bg = document.createElement('div'); bg.className = 'modal-bg' + (sheet ? ' sheet' : '');
   bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}" style="${wide ? 'max-width:860px' : ''}">
     <header><h2>${esc(title)}</h2><button class="x" aria-label="Cerrar">×</button></header>
     <div class="mb"></div><footer></footer></div>`;
@@ -314,20 +314,61 @@ async function logout() {
 
 // ───────────────────────── shell y rutas ─────────────────────────
 const VIEWS = {
-  lista: { label: 'Pase de lista', ic: '✓', roles: ['developer', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewLista() },
-  personal: { label: 'Personal', ic: '👥', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewPersonal() },
-  casos: { label: 'Casos', ic: '⚑', roles: ['developer', 'director', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewCasos() },
-  operacion: { label: 'Actividad', ic: '◔', roles: ['developer', 'supervisor'], render: () => viewOperacion() },
-  asistencia: { label: 'Asistencia', ic: '▦', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor'], render: () => viewAsistencia() },
-  usuarios: { label: 'Usuarios', ic: '🔑', roles: ['developer'], render: () => viewUsuarios() },
-  catalogos: { label: 'Áreas y grupos', ic: '⌂', roles: ['developer'], render: () => viewCatalogos() },
-  buzon: { label: 'Buzón', ic: '✉', roles: ['developer'], render: () => viewBuzon() },
-  bitacora: { label: 'Bitácora', ic: '🕘', roles: ['developer', 'director'], render: () => viewBitacora() }
+  lista: { label: 'Pase de lista', short: 'Lista', ic: '✓', grupo: 'Operación', roles: ['developer', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewLista() },
+  personal: { label: 'Personal', ic: '👥', grupo: 'Personal', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewPersonal() },
+  casos: { label: 'Casos', ic: '⚑', grupo: 'Operación', roles: ['developer', 'director', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewCasos() },
+  operacion: { label: 'Actividad', ic: '◔', grupo: 'Operación', roles: ['developer', 'supervisor'], render: () => viewOperacion() },
+  asistencia: { label: 'Asistencia', ic: '▦', grupo: 'Operación', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor'], render: () => viewAsistencia() },
+  usuarios: { label: 'Usuarios', ic: '🔑', grupo: 'Administración', roles: ['developer'], render: () => viewUsuarios() },
+  catalogos: { label: 'Áreas y grupos', ic: '⌂', grupo: 'Administración', roles: ['developer'], render: () => viewCatalogos() },
+  buzon: { label: 'Buzón', ic: '✉', grupo: 'Administración', roles: ['developer'], render: () => viewBuzon() },
+  bitacora: { label: 'Bitácora', ic: '🕘', grupo: 'Administración', roles: ['developer', 'director'], render: () => viewBitacora() }
 };
 const myViews = () => Object.entries(VIEWS).filter(([, v]) => v.roles.includes(role()));
+// Íconos de línea uniformes (24×24, trazo)
+const ICONS = {
+  lista: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/>',
+  personal: '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3 3-4.8 5.5-4.8s4.9 1.8 5.5 4.8"/><circle cx="16.5" cy="9" r="2.6"/><path d="M15.5 14.4c2.3-.3 4.4 1.2 5 4.6"/>',
+  casos: '<path d="M6 21V4"/><path d="M6 4h11l-2.5 4 2.5 4H6"/>',
+  operacion: '<path d="M3 12h4l2.5-6 4 12 2.5-6H21"/>',
+  asistencia: '<rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  usuarios: '<circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2 2M14 9l2 2"/>',
+  catalogos: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
+  buzon: '<path d="M3 13l2.5-7h13L21 13v6H3z"/><path d="M3 13h5l1.5 2.5h5L16 13h5"/>',
+  bitacora: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  mas: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
+  fb: '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/>',
+  cuenta: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/>'
+};
+const icon = (k, sz = 22) => `<svg viewBox="0 0 24 24" width="${sz}" height="${sz}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[k] || ''}</svg>`;
+// En el celular: máximo 4 secciones abajo + "Más" (el resto en un panel agrupado)
+const TAB_PRIO = ['lista', 'personal', 'casos', 'asistencia', 'operacion', 'buzon', 'usuarios', 'catalogos', 'bitacora'];
+const navCount = (k) => Number(($(`.nav a[data-v="${k}"] .cnt`) || {}).textContent || 0);
+function refreshMoreBadge() {
+  const t = $('#tabMore'); if (!t) return;
+  const n = (S.moreKeys || []).reduce((a, k) => a + navCount(k), 0);
+  let b = t.querySelector('.cnt'); if (!b) { b = document.createElement('span'); b.className = 'cnt badge b-bad'; t.appendChild(b); }
+  b.textContent = n; b.style.display = n ? '' : 'none';
+}
+function openMore() {
+  const keys = S.moreKeys || []; const groups = {};
+  keys.forEach((k) => { (groups[VIEWS[k].grupo] = groups[VIEWS[k].grupo] || []).push(k); });
+  const m = modal({ title: 'Más secciones', sheet: true, body: `
+    ${Object.entries(groups).map(([g, ks]) => `<div class="eyebrow">${esc(g)}</div><div class="tiles">${ks.map((k) => `<a class="tile" href="#/${k}" data-v="${k}">${icon(k, 26)}<span>${esc(VIEWS[k].label)}</span>${navCount(k) ? `<span class="cnt badge b-bad">${navCount(k)}</span>` : ''}</a>`).join('')}</div>`).join('')}
+    <div class="eyebrow">Cuenta</div><div class="tiles">
+      <button type="button" class="tile" id="more_fb">${icon('fb', 26)}<span>Sugerencias y errores</span></button>
+      <button type="button" class="tile" id="more_me">${icon('cuenta', 26)}<span>Mi cuenta</span></button></div>` });
+  $$('.tile[data-v]', m.el).forEach((a) => a.onclick = () => m.close());
+  $('#more_fb', m.el).onclick = () => { m.close(); openFeedback(); };
+  $('#more_me', m.el).onclick = () => { m.close(); $('#menu').click(); };
+}
 function renderShell() {
-  const nav = myViews().map(([k, v]) => `<a href="#/${k}" data-v="${k}"><span aria-hidden="true">${v.ic}</span>${esc(v.label)}</a>`).join('');
-  const tabs = myViews().map(([k, v]) => `<a href="#/${k}" data-v="${k}"><span class="ic" aria-hidden="true">${v.ic}</span>${esc(v.label)}</a>`).join('');
+  const nav = myViews().map(([k, v]) => `<a href="#/${k}" data-v="${k}">${icon(k, 20)}${esc(v.label)}</a>`).join('');
+  const byPrio = myViews().sort((a, b) => TAB_PRIO.indexOf(a[0]) - TAB_PRIO.indexOf(b[0]));
+  const primary = byPrio.length <= 5 ? byPrio : byPrio.slice(0, 4);
+  S.moreKeys = byPrio.length <= 5 ? [] : byPrio.slice(4).map(([k]) => k);
+  const tabs = primary.map(([k, v]) => `<a href="#/${k}" data-v="${k}"><span class="ic">${icon(k)}</span><span class="lb">${esc(v.short || v.label)}</span></a>`).join('')
+    + (S.moreKeys.length ? `<a href="#" id="tabMore" role="button" aria-label="Más secciones"><span class="ic">${icon('mas')}</span><span class="lb">Más</span></a>` : '');
   $('#app').innerHTML = `
     <aside class="side"><div class="brand">Enterprise HR<small>v${APP_VERSION}</small></div><nav class="nav">${nav}</nav>
       <div class="me"><button class="btn sm fb-btn" id="fb">💬 Sugerencias y errores</button><b>${esc(S.me.full_name)}</b><span class="muted" style="color:#A9B6C2">${esc(ROLES[role()])}</span>
@@ -336,6 +377,7 @@ function renderShell() {
       ${CFG.demo ? `<div class="notice n-warn" style="border-radius:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 12px"><span class="grow"><b>Demo</b> · como <b>${esc(S.me.full_name)}</b></span><button class="btn sm" id="demoSwitch">Cambiar usuario</button><button class="btn sm" id="demoReset">Reiniciar</button></div>` : ''}
       <div class="content" id="view"></div></div>
     <nav class="tabbar">${tabs}</nav>`;
+  if ($('#tabMore')) $('#tabMore').onclick = (e) => { e.preventDefault(); openMore(); };
   $('#lo').onclick = logout;
   $('#pw').onclick = changePassword;
   $('#fb').onclick = () => openFeedback();
@@ -354,6 +396,7 @@ function route() {
   let k = (location.hash.match(/^#\/(\w+)/) || [])[1];
   if (!k || !VIEWS[k] || !VIEWS[k].roles.includes(role())) k = is('tl', 'supervisor') ? 'lista' : 'personal';
   $$('[data-v]').forEach((a) => a.classList.toggle('on', a.dataset.v === k));
+  if ($('#tabMore')) $('#tabMore').classList.toggle('on', (S.moreKeys || []).includes(k));
   const ttl = $('#ttl'); if (ttl) ttl.textContent = VIEWS[k].label;
   const v = $('#view'); v.innerHTML = '<div class="empty">Cargando…</div>';
   Promise.resolve(VIEWS[k].render()).catch((e) => { v.innerHTML = `<div class="notice n-bad">${esc(e.message)}</div>`; });
@@ -503,7 +546,7 @@ function personCard(e, r, faltas, locked, morning) {
     <button type="button" class="ph" aria-expanded="${open}">
       <span class="dot" style="${col ? `background:${col};border-color:${col}` : ''}"></span>
       <span class="grow"><span style="display:block;font-weight:600">${esc(fullName(e))}</span><span class="small muted">${esc(summary.length > 90 ? summary.slice(0, 90) + '…' : summary)}</span></span>
-      ${pendBadge(e)}${diff ? '<span class="badge b-warn">No coincide</span>' : ''}${faltasBadge(faltas)}<span class="more" aria-hidden="true">${open ? 'Cerrar ▴' : 'Más ▾'}</span>
+      ${pendBadge(e)}${diff ? '<span class="badge b-warn">No coincide</span>' : ''}${faltasBadge(faltas)}<span class="more" aria-hidden="true">${open ? 'Cerrar ▴' : 'Detalle ▾'}</span>
     </button>
     ${open ? '' : `<div class="quick" role="group" aria-label="Asistencia rápida de ${esc(fullName(e))}">${Object.keys(ST).map((k) => `<button type="button" class="${k}${r && r.status === k ? ' on' : ''}" data-att="${k}" aria-pressed="${!!(r && r.status === k)}"${dis}>${k === 'salida' ? 'Salida' : ST[k]}</button>`).join('')}</div>`}
     ${open ? `<div class="body">
@@ -1324,6 +1367,7 @@ function updateBuzonBadge(n) {
     let b = a.querySelector('.cnt'); if (!b) { b = document.createElement('span'); b.className = 'cnt badge b-bad'; b.style.marginLeft = 'auto'; a.appendChild(b); }
     b.textContent = n; b.style.display = n ? '' : 'none';
   });
+  refreshMoreBadge();
 }
 async function refreshBuzonBadge() {
   if (!is('developer')) return;
@@ -1583,6 +1627,7 @@ function updateCaseBadge(n) {
     let b = a.querySelector('.cnt'); if (!b) { b = document.createElement('span'); b.className = 'cnt badge b-bad'; b.style.marginLeft = 'auto'; a.appendChild(b); }
     b.textContent = n; b.style.display = n ? '' : 'none';
   });
+  refreshMoreBadge();
 }
 async function refreshCaseBadge() {
   if (!VIEWS.casos.roles.includes(role())) return;
