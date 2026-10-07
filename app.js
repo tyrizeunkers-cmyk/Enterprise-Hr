@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.10.2';
+const APP_VERSION = '0.11.1';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -331,6 +331,7 @@ const VIEWS = {
   documentos: { label: 'Documentos', short: 'Docs', ic: '📄', grupo: 'Personal', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewDocumentos() },
   operacion: { label: 'Actividad', ic: '◔', grupo: 'Operación', roles: ['developer', 'supervisor'], render: () => viewOperacion() },
   asistencia: { label: 'Asistencia', ic: '▦', grupo: 'Operación', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor'], render: () => viewAsistencia() },
+  prenomina: { label: 'Pre-nómina', short: 'Nómina', ic: '$', grupo: 'Nómina', roles: ['director', 'nomina'], render: () => viewPrenomina() },
   usuarios: { label: 'Usuarios', ic: '🔑', grupo: 'Administración', roles: ['developer'], render: () => viewUsuarios() },
   catalogos: { label: 'Áreas y grupos', ic: '⌂', grupo: 'Administración', roles: ['developer'], render: () => viewCatalogos() },
   plantillas: { label: 'Plantillas', ic: '✎', grupo: 'Administración', roles: ['developer'], render: () => viewPlantillas() },
@@ -352,13 +353,14 @@ const ICONS = {
   plantillas: '<path d="M6 3h8l4 4v6"/><path d="M6 3v18h6"/><path d="M14 3v4h4"/><path d="M14.5 21l1-3.5 5-5 2.5 2.5-5 5z"/>',
   buzon: '<path d="M3 13l2.5-7h13L21 13v6H3z"/><path d="M3 13h5l1.5 2.5h5L16 13h5"/>',
   bitacora: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  prenomina: '<rect x="3" y="6" width="18" height="12" rx="2.5"/><circle cx="12" cy="12" r="2.6"/><path d="M6.5 9.5v5M17.5 9.5v5"/>',
   mas: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
   fb: '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/>',
   cuenta: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/>'
 };
 const icon = (k, sz = 22) => `<svg viewBox="0 0 24 24" width="${sz}" height="${sz}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[k] || ''}</svg>`;
 // En el celular: máximo 4 secciones abajo + "Más" (el resto en un panel agrupado)
-const TAB_PRIO = ['lista', 'personal', 'casos', 'documentos', 'reclutamiento', 'asistencia', 'operacion', 'buzon', 'usuarios', 'catalogos', 'plantillas', 'bitacora'];
+const TAB_PRIO = ['lista', 'personal', 'casos', 'documentos', 'reclutamiento', 'asistencia', 'prenomina', 'operacion', 'buzon', 'usuarios', 'catalogos', 'plantillas', 'bitacora'];
 // Supervisión: su trabajo diario es la lista y la actividad; documentos va en "Más"
 const TAB_PRIO_SUP = ['lista', 'personal', 'casos', 'operacion', 'asistencia', 'reclutamiento', 'documentos'];
 const navCount = (k) => Number(($(`.nav a[data-v="${k}"] .cnt`) || {}).textContent || 0);
@@ -711,8 +713,16 @@ const PRIV_FIELDS = [
   { k: 'curp', label: 'CURP', upper: true }, { k: 'rfc', label: 'RFC', upper: true }, { k: 'nss', label: 'NSS' },
   { k: 'fecha_nacimiento', label: 'Fecha de nacimiento', type: 'date' }, { k: 'telefono', label: 'Teléfono', type: 'tel' },
   { k: 'correo', label: 'Correo personal', type: 'email' }, { k: 'domicilio', label: 'Domicilio', full: true },
-  { k: 'salario_diario', label: 'Salario diario', type: 'number' }, { k: 'salario_mensual', label: 'Salario mensual', type: 'number' }
+  { k: 'salario_diario', label: 'Salario diario', type: 'number' }, { k: 'salario_mensual', label: 'Salario mensual', type: 'number' },
+  { k: 'clabe', label: 'CLABE interbancaria', hint: '18 dígitos' }, { k: 'banco', label: 'Banco', upper: true }, { k: 'beneficiario', label: 'Beneficiario de la cuenta', upper: true, full: true, hint: 'Vacío si la cuenta es del trabajador' }
 ];
+// Valida y normaliza los datos bancarios capturados en la ficha
+function checkBanco(pv) {
+  if (!pv.clabe) return pv;
+  const d = clabeDigits(pv.clabe);
+  if (!clabeOk(d)) throw new Error('La CLABE no es válida: deben ser 18 dígitos y el dígito verificador debe cuadrar.');
+  return { ...pv, clabe: d, banco: pv.banco || bancoDeClabe(d) || null };
+}
 
 // Eliminar a una persona y todo su historial (solo Daniel). Para quien dejó de trabajar se usa Baja.
 async function storageRemove(bucket, paths) {
@@ -795,6 +805,7 @@ async function openEmployee(id, fx = {}) {
   }
   if (canEdit || canEditPriv) actions.push({ label: 'Editar datos', run: () => { setTimeout(() => editEmployee(e, p, { basic: canEdit, priv: canEditPriv }), 0); } });
   if (canMove) actions.push({ label: 'Cambiar grupo', run: () => { setTimeout(() => moveGroup(e), 0); } });
+  if (is('nomina') && e.status === 'activo') actions.push({ label: 'Datos bancarios', run: () => { setTimeout(() => bancoForm(e, p), 0); } });
   if (is('developer')) {
     if (e.status === 'activo') actions.push({ label: 'Cambiar área', run: () => { setTimeout(() => moveArea(e), 0); } });
     if (['activo', 'baja', 'alta_pendiente'].includes(e.status)) actions.push({ label: 'Generar documento', run: () => { setTimeout(() => e.status === 'baja' ? docForm({ tipo: 'constancia_baja', employee: e }) : newDocPicker({ employee: e }), 0); } });
@@ -852,7 +863,7 @@ async function altaForm() {
   let confirmedKey = null;
   $$('#f_curp,#f_nombre,#f_apellido_paterno,#f_apellido_materno', m.el).forEach((i) => i.addEventListener('input', () => { confirmedKey = null; $('#rehire', m.el).innerHTML = ''; }));
   async function submit({ el }, direct) {
-    const b = readFields(el, base); const pv = readFields(el, priv);
+    const b = readFields(el, base); const pv = checkBanco(readFields(el, priv));
     if (pv.curp && !/^[A-Z]{4}\d{6}[HMX][A-Z]{5}[A-Z0-9]\d$/.test(pv.curp)) throw new Error('La CURP no tiene un formato válido (18 caracteres).');
     const key = JSON.stringify([pv.curp, b.nombre, b.apellido_paterno, b.apellido_materno]);
     if (confirmedKey !== key) {
@@ -897,7 +908,7 @@ function editEmployee(e, p, { basic, priv }) {
         if (Object.keys(patch).length) await mustUpdate(db('employees').eq('id', e.id).update(patch));
       }
       if (pf.length) {
-        const v = readFields(el, pf);
+        const v = checkBanco(readFields(el, pf));
         if (v.curp && !/^[A-Z]{4}\d{6}[HMX][A-Z]{5}[A-Z0-9]\d$/.test(v.curp)) throw new Error('La CURP no tiene un formato válido.');
         const changed = PRIV_FIELDS.some((f) => String(v[f.k] ?? '') !== String((p && p[f.k]) ?? ''));
         if (changed) await db('employee_private').insert([{ employee_id: e.id, ...v }], { onConflict: 'employee_id' });
@@ -905,6 +916,22 @@ function editEmployee(e, p, { basic, priv }) {
       toast('Guardado'); viewPersonal();
     } }]
   });
+}
+
+// Nómina: solo los datos bancarios de la ficha
+function bancoForm(e, p) {
+  const fields = PRIV_FIELDS.filter((f) => ['clabe', 'banco', 'beneficiario'].includes(f.k)).map((f) => ({ ...f, val: p ? p[f.k] : '' }));
+  const m = modal({
+    title: 'Datos bancarios · ' + fullName(e), body: fieldsHtml(fields) + '<div id="bf_h" class="small" style="margin-top:6px"></div>',
+    actions: [{ label: 'Cancelar' }, { label: 'Guardar', cls: 'primary', run: async ({ el }) => {
+      const v = checkBanco(readFields(el, fields));
+      await rpc('set_datos_bancarios', { p_emp: e.id, p_clabe: v.clabe, p_banco: v.banco, p_beneficiario: v.beneficiario });
+      toast('Datos bancarios guardados'); openEmployee(e.id);
+    } }]
+  });
+  const cl = $('#f_clabe', m.el), h = $('#bf_h', m.el);
+  const paint = () => { const d = clabeDigits(cl.value); h.innerHTML = !d ? '' : clabeOk(d) ? `<span style="color:var(--ok)">CLABE válida${bancoDeClabe(d) ? ' · ' + esc(bancoDeClabe(d)) : ''}</span>` : `<span style="color:var(--bad)">CLABE no válida (${d.length} dígitos)</span>`; };
+  cl.addEventListener('input', paint); paint();
 }
 
 function moveGroup(e, done) {
@@ -2873,6 +2900,430 @@ async function purgeCandidatos(cands) {
   if (paths.length) await storageRemove(CV_BUCKET, paths).catch(() => {});
   await db('candidatos').in('id', old.map((c) => c.id)).remove();
   toast(`${old.length} candidatos depurados`); viewReclutamiento();
+}
+
+// ───────────────────────── Pre-nómina ─────────────────────────
+// Nómina arma el periodo y lo autoriza; Dirección (Wendy y Emma) solo consulta.
+// Base: salario diario × días pagados. Faltas, retardos, permisos y festivos trabajados salen del pase de lista.
+// Todos los importes los calcula la base de datos; aquí solo se capturan y se muestran.
+const BANCOS = {
+  '002': 'BANAMEX', '012': 'BBVA', '014': 'SANTANDER', '021': 'HSBC', '030': 'BAJIO', '036': 'INBURSA', '044': 'SCOTIABANK',
+  '058': 'BANREGIO', '072': 'BANORTE', '127': 'BANCO AZTECA', '130': 'COMPARTAMOS', '137': 'BANCOPPEL', '167': 'HEY BANCO',
+  '638': 'NU MEXICO', '646': 'STP', '722': 'MERCADO PAGO', '728': 'SPIN BY OXXO'
+};
+const clabeDigits = (c) => String(c || '').replace(/[\s.\-]/g, '');
+const clabeOk = (c) => {
+  const d = clabeDigits(c); if (!/^\d{18}$/.test(d)) return false;
+  const w = [3, 7, 1]; let s = 0; for (let i = 0; i < 17; i++) s += (Number(d[i]) * w[i % 3]) % 10;
+  return (10 - (s % 10)) % 10 === Number(d[17]);
+};
+const bancoDeClabe = (c) => BANCOS[clabeDigits(c).slice(0, 3)] || '';
+const NOM_PERC = [['chips', 'Pago de chips'], ['pendiente', 'Pendiente de pago'], ['com_admin', 'Comisión administrativo'], ['bono_referido', 'Bono de referido'],
+  ['com_asesores', 'Comisión asesores'], ['com_lideres', 'Comisión líderes'], ['hrs_dobles', 'Horas dobles'], ['horas_extras', 'Horas extras']];
+const NOM_DED = [['otras_deducciones', 'Otras deducciones'], ['multas_disciplina', 'Multas por disciplina'], ['multas_retardo', 'Multas por retardo']];
+const NOM_AUTO = { salario_diario: 'Salario diario', dias_no_lab: 'Días no laborados', faltas: 'Faltas', festivo: 'Pago día festivo', clabe: 'CLABE', banco: 'Banco', beneficiario: 'Beneficiario' };
+const NS = { periodo: null, q: '', filtro: '' };
+const num = (n) => Number(n || 0);
+const r2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
+const hhmm = (min) => { const m = num(min); return m ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}` : ''; };
+function parseHHMM(s) {
+  s = String(s || '').trim(); if (!s) return 0;
+  const m = s.match(/^(\d{1,3})(?::(\d{1,2}))?$/); if (!m || Number(m[2] || 0) > 59) throw new Error('Permisos: escribe horas:minutos, por ejemplo 2:30');
+  return Number(m[1]) * 60 + Number(m[2] || 0);
+}
+const lastDay = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();   // m: 1-12
+function periodoTitulo(p) {
+  const [y1, m1, d1] = p.fecha_inicio.split('-').map(Number); const [y2, m2, d2] = p.fecha_fin.split('-').map(Number);
+  const rango = m1 === m2 && y1 === y2 ? `${d1} al ${d2} de ${MESES[m2 - 1]} ${y2}` : `${d1} de ${MESES[m1 - 1]}${y1 !== y2 ? ' ' + y1 : ''} al ${d2} de ${MESES[m2 - 1]} ${y2}`;
+  return (p.numero ? `Periodo ${p.numero} · ` : '') + rango;
+}
+// Días de descanso obligatorio (Art. 74 LFT)
+function festivosLFT(y) {
+  const nthMon = (m, n) => { const d = new Date(Date.UTC(y, m - 1, 1)); const off = (8 - d.getUTCDay()) % 7; return `${y}-${String(m).padStart(2, '0')}-${String(1 + off + (n - 1) * 7).padStart(2, '0')}`; };
+  const out = [[`${y}-01-01`, 'Año Nuevo'], [nthMon(2, 1), 'Día de la Constitución'], [nthMon(3, 3), 'Natalicio de Benito Juárez'], [`${y}-05-01`, 'Día del Trabajo'],
+    [`${y}-09-16`, 'Independencia'], [nthMon(11, 3), 'Revolución Mexicana'], [`${y}-12-25`, 'Navidad']];
+  if ((y - 2024) % 6 === 0) out.push([`${y}-10-01`, 'Transmisión del Poder Ejecutivo']);
+  return out;
+}
+function festivosEn(ini, fin) {
+  if (!ini || !fin) return [];
+  const ys = new Set([Number(ini.slice(0, 4)), Number(fin.slice(0, 4))]);
+  return [...ys].flatMap(festivosLFT).filter(([d]) => d >= ini && d <= fin).sort();
+}
+const festivoNombre = (d) => (festivosLFT(Number(d.slice(0, 4))).find(([x]) => x === d) || [null, 'Día festivo'])[1];
+function siguientePeriodo(last) {
+  let y, m, half;
+  if (last) {
+    const [ly, lm, ld] = last.fecha_fin.split('-').map(Number);
+    if (ld <= 15) { y = ly; m = lm; half = 2; } else { y = lm === 12 ? ly + 1 : ly; m = lm === 12 ? 1 : lm + 1; half = 1; }
+  } else {
+    const [ty, tm, td] = todayMX().split('-').map(Number); y = ty; m = tm; half = td <= 15 ? 1 : 2;
+  }
+  const mm = String(m).padStart(2, '0');
+  return { numero: last && last.numero ? last.numero + 1 : null, fecha_inicio: `${y}-${mm}-${half === 1 ? '01' : '16'}`, fecha_fin: `${y}-${mm}-${half === 1 ? '15' : lastDay(y, m)}`, dias: 15 };
+}
+// Revisión automática de cada línea: [nivel, clave, texto]
+const normTok = (s) => norm(s).replace(/[^a-z ]/g, ' ').split(/\s+/).filter((t) => t.length > 2);
+function lineaAlertas(l) {
+  const a = [];
+  if (!num(l.salario_diario)) a.push(['bad', 'sinsal', 'Sin salario diario']);
+  if (!l.clabe) a.push(['bad', 'sinclabe', 'Sin CLABE']);
+  if (l.beneficiario) {
+    const n = normTok(l.nombre), b = normTok(l.beneficiario);
+    const comunes = b.filter((t) => n.includes(t)).length;
+    if (comunes < 2) a.push(['warn', 'tercero', 'Cuenta a nombre de otra persona']);
+    else if (n.join(' ') !== b.join(' ')) a.push(['info', 'benef', 'Beneficiario escrito distinto al nombre']);
+  }
+  if (!l.fecha_ingreso) a.push(['warn', 'sining', 'Sin fecha de ingreso en la app']);
+  if (num(l.dias_no_lab)) a.push(['info', 'parcial', `${l.dias_no_lab} días no laborados (${l.fecha_baja ? 'baja ' + fmtDate(l.fecha_baja) : 'ingreso ' + fmtDate(l.fecha_ingreso)})`]);
+  if (num(l.faltas) > 3) a.push(['warn', 'faltas', `${l.faltas} faltas en el periodo`]);
+  if ((l.ajustados || []).length) a.push(['info', 'ajuste', 'Ajustado a mano: ' + l.ajustados.map((k) => NOM_AUTO[k] || k).join(', ')]);
+  if (num(l.neto) <= 0) a.push(['bad', 'neto', 'Neto en cero o negativo']);
+  return a;
+}
+const ALERTA_FILTROS = [['sinsal', 'Sin salario'], ['sinclabe', 'Sin CLABE'], ['tercero', 'Cuenta de tercero'], ['sining', 'Sin fecha de ingreso'], ['parcial', 'Ingreso/baja en el periodo'], ['faltas', 'Más de 3 faltas'], ['ajuste', 'Ajustes manuales'], ['neto', 'Neto en cero']];
+const nivelBadge = { bad: 'b-bad', warn: 'b-warn', info: 'b-acc' };
+
+async function viewPrenomina() {
+  const v = $('#view');
+  const periodos = await db('nomina_periodos').order('fecha_inicio', false).get();
+  const canEdit = is('nomina');
+  if (!periodos.length) {
+    v.innerHTML = `<div class="pagehead"><div><h1>Pre-nómina</h1><div class="muted small">Aún no hay periodos</div></div>${canEdit ? '<button class="btn primary" id="np_new">+ Nuevo periodo</button>' : ''}</div>
+      <div class="card empty">${canEdit ? 'Crea el primer periodo: la app toma a todo el personal activo, su salario y las faltas del pase de lista.' : 'Nómina todavía no ha armado ninguna pre-nómina.'}</div>`;
+    const b = $('#np_new'); if (b) b.onclick = () => periodoForm(null, periodos);
+    return;
+  }
+  if (!NS.periodo || !periodos.some((p) => p.id === NS.periodo)) NS.periodo = periodos[0].id;
+  const p = periodos.find((x) => x.id === NS.periodo);
+  const lineas = await db('nomina_lineas').eq('periodo_id', p.id).order('nombre').getAll();
+  const borr = p.estado === 'borrador', edit = canEdit && borr;
+  const tot = (k) => r2(lineas.reduce((s, l) => s + num(l[k]), 0));
+  const deducc = r2(tot('faltas_monto') + tot('otras_deducciones') + tot('permisos_monto') + tot('multas_disciplina') + tot('multas_retardo'));
+  const al = new Map(lineas.map((l) => [l.id, lineaAlertas(l)]));
+  const cuenta = {}; for (const xs of al.values()) for (const [, k] of xs) cuenta[k] = (cuenta[k] || 0) + 1;
+  const bad = [...al.values()].filter((xs) => xs.some((x) => x[0] === 'bad')).length;
+  const q = norm(NS.q);
+  const rows = lineas.map((l, i) => ({ l, i })).filter(({ l }) => (!q || norm(`${l.nombre} ${l.num_empleado || ''} ${l.departamento || ''}`).includes(q))
+    && (!NS.filtro || al.get(l.id).some((x) => x[1] === NS.filtro)));
+  v.innerHTML = `<div class="pagehead"><div><h1>Pre-nómina</h1><div class="muted small">${esc(periodoTitulo(p))}</div></div>
+      <div class="row" style="gap:8px">
+        <select class="inp" id="np_sel" aria-label="Periodo">${periodos.map((x) => `<option value="${x.id}"${x.id === p.id ? ' selected' : ''}>${esc(periodoTitulo(x))}${x.estado === 'autorizado' ? ' ✓' : ''}</option>`).join('')}</select>
+        ${canEdit ? '<button class="btn" id="np_new">+ Nuevo periodo</button>' : ''}
+        <button class="btn primary" id="np_xls">Descargar Excel</button></div></div>
+    <div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
+      <div class="row" style="gap:8px;align-items:center">
+        ${borr ? '<span class="badge b-warn">Borrador</span>' : '<span class="badge b-ok">Autorizada</span>'}
+        <span class="small muted grow">${p.dias} días a pagar${p.festivos.length ? ' · festivo: ' + p.festivos.map((d) => `${fmtDate(d)} (${esc(festivoNombre(d))})`).join(', ') : ''}${p.generado_at ? ' · calculada ' + fmtDateTime(p.generado_at) : ''}
+          ${!borr ? ` · autorizó ${esc(profName(p.autorizado_by))} el ${fmtDateTime(p.autorizado_at)}` : ''}</span>
+        ${edit ? `<button class="btn sm" id="np_edit">Editar periodo</button><button class="btn sm" id="np_add">+ Agregar persona</button><button class="btn sm" id="np_calc">Recalcular</button><button class="btn sm primary" id="np_auth">Autorizar</button>` : ''}
+        ${canEdit && !borr ? '<button class="btn sm" id="np_open">Reabrir</button>' : ''}
+      </div>
+      ${p.reabierto_motivo && borr ? `<div class="notice n-warn">Reabierta: ${esc(p.reabierto_motivo)}</div>` : ''}
+      ${p.notas ? `<div class="small muted">Notas: ${esc(p.notas)}</div>` : ''}
+      ${edit ? '<div class="notice n-info">Las faltas, retardos, días festivos trabajados, altas y bajas salen solos del pase de lista. Toca a una persona para capturar comisiones o corregir algo; los cambios a mano quedan marcados y el recálculo los respeta.</div>' : ''}
+      <div class="row" style="gap:18px;flex-wrap:wrap">
+        <div><div class="eyebrow">Personas</div><b style="font-size:20px">${lineas.length}</b></div>
+        <div><div class="eyebrow">Percepciones</div><b style="font-size:20px">${money(tot('total_percepciones'))}</b></div>
+        <div><div class="eyebrow">Deducciones</div><b style="font-size:20px">${money(deducc)}</b></div>
+        <div><div class="eyebrow">Neto a pagar</div><b style="font-size:20px;color:var(--ok)">${money(tot('neto'))}</b></div>
+      </div>
+      ${Object.keys(cuenta).length ? `<div><div class="eyebrow" style="margin-bottom:6px">Revisión automática${bad ? ` · <span style="color:var(--bad)">${bad} con pendientes</span>` : ''}</div><div class="row" style="gap:6px">
+        <button type="button" class="btn sm${NS.filtro ? '' : ' primary'}" data-nf="">Todos (${lineas.length})</button>
+        ${ALERTA_FILTROS.filter(([k]) => cuenta[k]).map(([k, t]) => `<button type="button" class="btn sm${NS.filtro === k ? ' primary' : ''}" data-nf="${k}">${esc(t)} (${cuenta[k]})</button>`).join('')}</div></div>` : ''}
+      <input class="inp" id="np_q" type="search" placeholder="Buscar por nombre, número o departamento" value="${esc(NS.q)}" aria-label="Buscar">
+    </div>
+    ${lineas.length ? `<div class="card scrollx"><table class="tbl" id="np_tbl"><thead><tr><th>#</th><th>Nombre</th><th>Depto.</th><th style="text-align:right">Sal. diario</th><th style="text-align:right">Días</th><th style="text-align:right">Nómina</th><th style="text-align:right">Otras percep.</th><th style="text-align:right">Faltas</th><th style="text-align:right">Deducc.</th><th style="text-align:right">Neto</th><th>Revisión</th></tr></thead><tbody>
+      ${rows.map(({ l, i }) => { const xs = al.get(l.id); const ded = r2(num(l.faltas_monto) + num(l.otras_deducciones) + num(l.permisos_monto) + num(l.multas_disciplina) + num(l.multas_retardo));
+        return `<tr data-nl="${l.id}" style="cursor:pointer"><td class="mono small muted">${i + 1}</td><td style="min-width:170px"><b>${esc(l.nombre)}</b>${l.num_empleado ? `<br><span class="small muted mono">${esc(l.num_empleado)}</span>` : ''}</td><td class="small">${esc(l.departamento || '—')}</td>
+          <td class="mono" style="text-align:right">${money(l.salario_diario)}</td><td class="mono" style="text-align:right">${l.dias_pagados}</td><td class="mono" style="text-align:right">${money(l.nomina)}</td>
+          <td class="mono" style="text-align:right">${money(r2(num(l.total_percepciones) - num(l.nomina)))}</td><td class="mono" style="text-align:right">${l.faltas || ''}</td><td class="mono" style="text-align:right">${ded ? money(ded) : ''}</td>
+          <td class="mono" style="text-align:right"><b>${money(l.neto)}</b></td>
+          <td style="min-width:200px;white-space:normal">${xs.filter((x) => x[0] !== 'info').map(([n, , t]) => `<span class="badge ${nivelBadge[n]}" style="margin:1px">${esc(t)}</span>`).join('')}${(l.ajustados || []).length ? '<span class="badge b-acc" style="margin:1px">Ajustado</span>' : ''}</td></tr>`; }).join('')}
+      </tbody></table></div>${rows.length ? '' : '<div class="card empty">Nadie coincide con el filtro.</div>'}` : `<div class="card empty">${edit ? 'Sin personas. Presiona Recalcular.' : 'Sin personas.'}</div>`}`;
+  $('#np_sel').onchange = (e) => { NS.periodo = e.target.value; NS.filtro = ''; viewPrenomina(); };
+  $('#np_q').oninput = (e) => { NS.q = e.target.value; clearTimeout(viewPrenomina._t); viewPrenomina._t = setTimeout(() => viewPrenomina().then(() => { const i = $('#np_q'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }), 300); };
+  $$('[data-nf]').forEach((b) => b.onclick = () => { NS.filtro = b.dataset.nf; viewPrenomina(); });
+  $$('[data-nl]').forEach((tr) => tr.onclick = () => lineaForm(p, lineas.find((l) => l.id === tr.dataset.nl)));
+  const on = (id, fn) => { const b = $(id); if (b) b.onclick = fn; };
+  on('#np_new', () => periodoForm(null, periodos));
+  on('#np_edit', () => periodoForm(p, periodos));
+  on('#np_calc', async (ev) => { const b = ev.currentTarget; b.disabled = true; try { const [r] = await rpc('nomina_generar', { p_periodo: p.id }); toast(`Recalculada · ${r.lineas} personas${r.nuevas ? ` · ${r.nuevas} nuevas` : ''}${r.quitadas ? ` · ${r.quitadas} quitadas` : ''}`); viewPrenomina(); } catch (e) { toast(e.message, true); b.disabled = false; } });
+  on('#np_add', () => agregarPersona(p, lineas));
+  on('#np_auth', () => autorizarPeriodo(p, lineas, al));
+  on('#np_open', () => modal({ title: 'Reabrir pre-nómina', body: fieldsHtml([{ k: 'motivo', label: 'Motivo', type: 'textarea', req: true, full: true }]),
+    actions: [{ label: 'Cancelar' }, { label: 'Reabrir', cls: 'primary', run: async ({ el }) => { const { motivo } = readFields(el, [{ k: 'motivo', label: 'Motivo', req: true }]); await rpc('nomina_reabrir', { p_periodo: p.id, p_motivo: motivo }); toast('Pre-nómina reabierta'); viewPrenomina(); } }] }));
+  on('#np_xls', async (ev) => { const b = ev.currentTarget; b.disabled = true; try { await exportPrenomina(p, lineas); } catch (e) { toast(e.message, true); } finally { b.disabled = false; } });
+}
+
+function periodoForm(p, periodos) {
+  const def = p || siguientePeriodo(periodos[0]);
+  const locked = !!(p && p.generado_at);
+  const fields = [
+    { k: 'numero', label: 'Número de periodo', type: 'number', val: def.numero ?? '', hint: 'Como lo numeran en nómina (opcional)' },
+    { k: 'dias', label: 'Días a pagar', type: 'number', req: true, val: def.dias, hint: 'Normalmente 15 en cada quincena' },
+    ...(locked ? [] : [{ k: 'fecha_inicio', label: 'Del', type: 'date', req: true, val: def.fecha_inicio }, { k: 'fecha_fin', label: 'Al', type: 'date', req: true, val: def.fecha_fin }]),
+    { k: 'notas', label: 'Notas', type: 'textarea', full: true, val: (p && p.notas) || '' }
+  ];
+  const m = modal({
+    title: p ? 'Editar periodo' : 'Nuevo periodo', wide: true,
+    body: `${locked ? `<div class="notice n-info">${esc(periodoTitulo(p))}. Las fechas ya no se cambian porque el periodo está calculado.</div>` : ''}${fieldsHtml(fields)}
+      <div class="eyebrow" style="margin:12px 0 6px">Días de descanso obligatorio en el periodo</div><div id="np_fest" class="list"></div>
+      <div class="small muted" style="margin-top:6px">Quien trabaje un día festivo marcado recibe su pago doble además del salario (Art. 75 LFT). Ese día no cuenta como falta.</div>`,
+    actions: [{ label: 'Cancelar' }, { label: p ? 'Guardar y recalcular' : 'Crear y calcular', cls: 'primary', run: async ({ el }) => {
+      const v = readFields(el, fields);
+      const ini = locked ? p.fecha_inicio : v.fecha_inicio, fin = locked ? p.fecha_fin : v.fecha_fin;
+      if (fin < ini) throw new Error('La fecha final es anterior a la inicial.');
+      if (!Number.isInteger(v.dias) || v.dias < 1 || v.dias > 31) throw new Error('Días a pagar: un número entero de 1 a 31.');
+      const festivos = $$('[data-fd]:checked', el).map((c) => c.value).filter((d) => d >= ini && d <= fin);
+      const row = { numero: v.numero == null ? null : Math.trunc(v.numero), dias: v.dias, notas: v.notas, festivos };
+      let id = p && p.id;
+      if (p) await mustUpdate(db('nomina_periodos').eq('id', p.id).update(locked ? row : { ...row, fecha_inicio: ini, fecha_fin: fin }), 'el periodo');
+      else { const [n] = await db('nomina_periodos').insert([{ ...row, fecha_inicio: ini, fecha_fin: fin }]); id = n.id; }
+      const [r] = await rpc('nomina_generar', { p_periodo: id });
+      NS.periodo = id; NS.filtro = '';
+      toast(`${p ? 'Periodo actualizado' : 'Periodo creado'} · ${r.lineas} personas`); viewPrenomina();
+    } }]
+  });
+  const paint = () => {
+    const ini = locked ? p.fecha_inicio : $('#f_fecha_inicio', m.el).value, fin = locked ? p.fecha_fin : $('#f_fecha_fin', m.el).value;
+    const marcados = new Set(p ? p.festivos : festivosEn(ini, fin).map(([d]) => d));
+    const lista = festivosEn(ini, fin);
+    for (const d of (p ? p.festivos : [])) if (!lista.some(([x]) => x === d)) lista.push([d, 'Día festivo']);
+    $('#np_fest', m.el).innerHTML = lista.length ? lista.map(([d, n]) => `<label class="item" style="gap:10px"><input type="checkbox" data-fd value="${d}"${marcados.has(d) ? ' checked' : ''}><span class="grow">${fmtDate(d)} · ${esc(n)}</span></label>`).join('') : '<span class="small muted">Ninguno en estas fechas.</span>';
+  };
+  paint();
+  if (!locked) $$('#f_fecha_inicio,#f_fecha_fin', m.el).forEach((i) => i.addEventListener('change', paint));
+}
+
+async function agregarPersona(p, lineas) {
+  const ya = new Set(lineas.map((l) => l.employee_id));
+  const emps = (await db('employees').select('id,nombre,apellido_paterno,apellido_materno,num_empleado,area_id,status,fecha_ingreso').in('status', ['activo', 'baja']).getAll())
+    .filter((e) => !ya.has(e.id)).sort(sortName);
+  const m = modal({ title: 'Agregar persona', body: `<div class="notice n-info">Solo hace falta para casos especiales (por ejemplo, un pago pendiente a alguien que ya se fue). El personal activo entra solo al recalcular.</div>
+    <input class="inp" id="ap_q" type="search" placeholder="Buscar" style="width:100%;margin:8px 0"><div class="list" id="ap_l"></div>` });
+  const paint = () => {
+    const q = norm($('#ap_q', m.el).value);
+    const xs = emps.filter((e) => !q || norm(fullName(e) + ' ' + (e.num_empleado || '')).includes(q)).slice(0, 40);
+    $('#ap_l', m.el).innerHTML = xs.length ? xs.map((e) => `<button type="button" class="item" data-ap="${e.id}"><span class="grow"><span class="nm">${esc(fullName(e))}</span><br><span class="small muted">${esc(areaName(e.area_id))} · ingreso ${fmtDate(e.fecha_ingreso)}</span></span>${statusBadge(e.status)}</button>`).join('') : '<div class="card empty">Nadie disponible.</div>';
+    $$('[data-ap]', m.el).forEach((b) => b.onclick = async () => { b.disabled = true; try { await rpc('nomina_agregar', { p_periodo: p.id, p_emp: b.dataset.ap }); m.close(); toast('Agregado'); viewPrenomina(); } catch (e) { toast(e.message, true); b.disabled = false; } });
+  };
+  $('#ap_q', m.el).oninput = paint; paint();
+}
+
+async function autorizarPeriodo(p, lineas, al) {
+  const bad = lineas.filter((l) => al.get(l.id).some((x) => x[0] === 'bad'));
+  const neto = r2(lineas.reduce((s, l) => s + num(l.neto), 0));
+  const ok = await confirmBox('Autorizar pre-nómina', `<p style="margin-top:0"><b>${esc(periodoTitulo(p))}</b><br>${lineas.length} personas · neto a pagar <b>${money(neto)}</b></p>
+    ${bad.length ? `<div class="notice n-warn">${bad.length} personas tienen pendientes (sin CLABE, sin salario o neto en cero): ${bad.slice(0, 8).map((l) => esc(l.nombre)).join(', ')}${bad.length > 8 ? '…' : ''}</div>` : '<div class="notice n-info">La revisión automática no encontró pendientes graves.</div>'}
+    <p class="small muted">Ya autorizada no se puede modificar; si hace falta, se reabre con un motivo.</p>`, { okLabel: 'Autorizar' });
+  if (!ok) return;
+  try { await rpc('nomina_autorizar', { p_periodo: p.id }); toast('Pre-nómina autorizada'); viewPrenomina(); } catch (e) { toast(e.message, true); }
+}
+
+async function lineaForm(p, l) {
+  const edit = is('nomina') && p.estado === 'borrador';
+  const att = l.employee_id ? await db('attendance').select('fecha,turno,status,incidencia,comentario').eq('employee_id', l.employee_id).gte('fecha', p.fecha_inicio).lte('fecha', p.fecha_fin).order('fecha').get().catch(() => []) : [];
+  const aj = new Set(l.ajustados || []);
+  const tag = (k) => aj.has(k) ? ` <span class="badge b-acc">ajustado</span>${edit ? ` <button type="button" class="btn sm ghost" data-rest="${k}" style="min-height:24px;padding:0 6px">restaurar</button>` : ''}` : ' <span class="small muted">(automático)</span>';
+  const baseF = [
+    { k: 'salario_diario', label: 'Salario diario', type: 'number', val: l.salario_diario },
+    { k: 'dias_no_lab', label: 'Días no laborados (ingreso / baja)', type: 'number', val: l.dias_no_lab },
+    { k: 'faltas', label: 'Faltas', type: 'number', val: l.faltas },
+    { k: 'festivo', label: 'Pago día festivo', type: 'number', val: l.festivo }
+  ];
+  const percF = NOM_PERC.map(([k, label]) => ({ k, label, type: 'number', val: num(l[k]) || '' }));
+  const dedF = [{ k: 'permisos', label: 'Permisos sin goce (horas:minutos)', val: hhmm(l.permisos_min), hint: 'Ej. 2:30 = dos horas y media' }, ...NOM_DED.map(([k, label]) => ({ k, label, type: 'number', val: num(l[k]) || '' }))];
+  const pagoF = [{ k: 'clabe', label: 'CLABE', val: l.clabe || '', ac: 'off' }, { k: 'banco', label: 'Banco', val: l.banco || '', upper: true }, { k: 'beneficiario', label: 'Beneficiario', val: l.beneficiario || '', upper: true, full: true }];
+  const notaF = [{ k: 'notas', label: 'Notas / motivo del ajuste', type: 'textarea', full: true, val: l.notas || '' }];
+  const ro = (fs) => `<div class="kv">${fs.map((f) => `<span>${esc(f.label)}</span><span class="mono">${f.type === 'number' ? (f.k === 'faltas' || f.k === 'dias_no_lab' ? esc(f.val || 0) : money(f.val || 0)) : esc(f.val || '—')}${NOM_AUTO[f.k] ? (aj.has(f.k) ? ' <span class="badge b-acc">ajustado</span>' : '') : ''}</span>`).join('')}</div>`;
+  const alerts = lineaAlertas(l);
+  const attHtml = att.length ? `<div class="scrollx"><table class="tbl sub"><tbody>${att.map((a) => `<tr><td class="mono small">${fmtDate(a.fecha)}${a.turno === 'tarde' ? ' tarde' : ''}${p.festivos.includes(a.fecha) ? ' <span class="badge b-acc">festivo</span>' : ''}</td><td class="small">${attBadges(a)}</td><td class="small muted">${esc(a.comentario || '')}</td></tr>`).join('')}</tbody></table></div>` : '<span class="small muted">Sin registros del pase de lista en el periodo.</span>';
+  const body = `
+    <div class="kv"><span>Departamento</span><span>${esc(l.departamento || '—')}</span><span>Ingreso</span><span>${fmtDate(l.fecha_ingreso)}</span>${l.fecha_baja ? `<span>Baja</span><span>${fmtDate(l.fecha_baja)}</span>` : ''}
+      <span>Días pagados</span><span class="mono">${l.dias_pagados} de ${p.dias}</span><span>Del pase de lista</span><span>${l.retardos} retardos · ${l.dias_permiso} días con permiso · ${l.festivos_lab} festivos trabajados</span></div>
+    ${alerts.length ? `<div class="row" style="gap:4px;margin-top:8px">${alerts.map(([n, , t]) => `<span class="badge ${nivelBadge[n]}">${esc(t)}</span>`).join('')}</div>` : ''}
+    <div class="eyebrow" style="margin:14px 0 6px">Base</div>
+    ${edit ? fieldsHtml(baseF) : ro(baseF)}
+    <div class="eyebrow" style="margin:14px 0 6px">Percepciones</div>${edit ? fieldsHtml(percF) : ro(percF)}
+    <div class="eyebrow" style="margin:14px 0 6px">Deducciones</div>${edit ? fieldsHtml(dedF) : ro(dedF.map((f) => f.k === 'permisos' ? { ...f, val: f.val || '—' } : f))}
+    <div class="eyebrow" style="margin:14px 0 6px">Pago</div>${edit ? fieldsHtml(pagoF) + `<div id="cl_hint" class="small" style="margin-top:4px"></div>${l.employee_id ? '<label class="row small" style="gap:6px;margin-top:6px"><input type="checkbox" id="cl_ficha"> Guardar también estos datos bancarios en la ficha del trabajador</label>' : ''}` : ro(pagoF)}
+    ${edit ? fieldsHtml(notaF) : l.notas ? `<div class="notice n-info" style="margin-top:12px">${esc(l.notas)}</div>` : ''}
+    <div class="card pad" style="margin-top:12px;background:var(--soft)" id="nl_prev"></div>
+    <details style="margin-top:12px"><summary class="small" style="cursor:pointer">Pase de lista del periodo (${att.length} registros)</summary><div style="margin-top:8px">${attHtml}</div></details>`;
+  const allF = [...baseF, ...percF, ...NOM_DED.map(([k, label]) => ({ k, label, type: 'number' })), ...pagoF, ...notaF];
+  const collect = (el) => {
+    const v = readFields(el, allF.filter((f) => f.k !== 'permisos'));
+    const out = { notas: v.notas, clabe: v.clabe ? clabeDigits(v.clabe) : null, banco: v.banco, beneficiario: v.beneficiario, permisos_min: parseHHMM($('#f_permisos', el).value) };
+    for (const f of [...baseF, ...percF, ...NOM_DED.map(([k]) => ({ k }))]) out[f.k] = num(v[f.k]);
+    for (const k of ['dias_no_lab', 'faltas']) if (!Number.isInteger(out[k])) throw new Error(`${k === 'faltas' ? 'Faltas' : 'Días no laborados'}: escribe un número entero.`);
+    return out;
+  };
+  const preview = (el) => {
+    let x; try { x = collect(el); } catch { return; }
+    const dias = p.dias - x.dias_no_lab, nom = r2(x.salario_diario * dias);
+    const perc = r2(nom + x.festivo + NOM_PERC.reduce((s, [k]) => s + x[k], 0));
+    const fm = r2(x.salario_diario * x.faltas), pm = r2(x.salario_diario / 8 * x.permisos_min / 60);
+    const neto = r2(perc - fm - pm - NOM_DED.reduce((s, [k]) => s + x[k], 0));
+    $('#nl_prev', el).innerHTML = `<div class="kv"><span>Nómina (${dias} días)</span><span class="mono">${money(nom)}</span><span>Total percepciones</span><span class="mono">${money(perc)}</span>
+      <span>Faltas (${x.faltas})</span><span class="mono">−${money(fm)}</span><span>Permisos (${hhmm(x.permisos_min) || '0:00'} h)</span><span class="mono">−${money(pm)}</span>
+      <span><b>Neto</b></span><span class="mono"><b style="color:${neto > 0 ? 'var(--ok)' : 'var(--bad)'}">${money(neto)}</b></span></div>`;
+    const cl = $('#f_clabe', el); if (cl) {
+      const d = clabeDigits(cl.value), h = $('#cl_hint', el);
+      h.innerHTML = !d ? '' : clabeOk(d) ? `<span style="color:var(--ok)">CLABE válida${bancoDeClabe(d) ? ' · ' + esc(bancoDeClabe(d)) : ''}</span>` : `<span style="color:var(--bad)">CLABE no válida (${d.length} dígitos)</span>`;
+    }
+  };
+  const m = modal({
+    title: l.nombre, wide: true, body,
+    actions: edit ? [
+      { label: 'Quitar de la pre-nómina', cls: 'danger', run: async () => { if (!(await confirmBox('Quitar persona', `¿Quitar a <b>${esc(l.nombre)}</b> de esta pre-nómina? Si sigue activa, volverá a entrar al recalcular.`, { danger: true, okLabel: 'Quitar' }))) return false; await db('nomina_lineas').eq('id', l.id).remove(); toast('Quitada'); viewPrenomina(); } },
+      { label: 'Cancelar' },
+      { label: 'Guardar', cls: 'primary', run: async ({ el }) => {
+        const x = collect(el);
+        if (x.clabe && !clabeOk(x.clabe)) throw new Error('La CLABE no es válida: deben ser 18 dígitos y el dígito verificador debe cuadrar.');
+        if (x.clabe && !x.banco) x.banco = bancoDeClabe(x.clabe) || null;
+        const cambiaAuto = Object.keys(NOM_AUTO).filter((k) => !aj.has(k) && String(x[k] ?? '') !== String(k === 'clabe' || k === 'banco' || k === 'beneficiario' ? (l[k] ?? '') : num(l[k])));
+        if (cambiaAuto.length && !x.notas) throw new Error(`Escribe en Notas el motivo del ajuste (${cambiaAuto.map((k) => NOM_AUTO[k]).join(', ')}).`);
+        const patch = {}; for (const k in x) if (String(x[k] ?? '') !== String(l[k] ?? '') && !(typeof x[k] === 'number' && x[k] === num(l[k]))) patch[k] = x[k];
+        if (Object.keys(patch).length) await mustUpdate(db('nomina_lineas').eq('id', l.id).update(patch), 'la línea');
+        const ficha = $('#cl_ficha', el);
+        if (ficha && ficha.checked) await rpc('set_datos_bancarios', { p_emp: l.employee_id, p_clabe: x.clabe, p_banco: x.banco, p_beneficiario: x.beneficiario });
+        toast('Guardado'); viewPrenomina();
+      } }] : [{ label: 'Cerrar' }]
+  });
+  if (edit) {
+    for (const f of baseF) { const lab = $('#f_' + f.k, m.el).closest('label'); lab.insertBefore(document.createRange().createContextualFragment(tag(f.k)), lab.querySelector('input')); }
+    $$('input,textarea', m.el).forEach((i) => i.addEventListener('input', () => preview(m.el)));
+    const cl = $('#f_clabe', m.el), bc = $('#f_banco', m.el);
+    if (cl && bc) cl.addEventListener('change', () => { const b = bancoDeClabe(cl.value); if (b && !bc.value.trim()) bc.value = b; });
+    $$('[data-rest]', m.el).forEach((b) => b.onclick = async (ev) => { ev.preventDefault(); b.disabled = true; try { await rpc('nomina_restaurar', { p_linea: l.id, p_campo: b.dataset.rest }); m.close(); toast('Valor automático restaurado'); await viewPrenomina(); const [nl] = await db('nomina_lineas').eq('id', l.id).get(); if (nl) lineaForm(p, nl); } catch (e) { toast(e.message, true); b.disabled = false; } });
+  }
+  preview(m.el);
+}
+
+// ───── Excel (.xlsx) en el formato de pre-nómina de la empresa ─────
+// Escritor mínimo de SpreadsheetML: celdas con valor, fórmula (con su resultado ya calculado) y estilos fijos.
+const XS = { base: 0, head: 1, money: 2, text: 3, date: 4, int: 5, title: 6, total: 7, time: 8, bold: 9, adj: 10, wrap: 11, sub: 12, warn: 13 };
+const xmlEsc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+const colL = (n) => { let s = ''; for (n++; n; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s; return s; };
+const xlDate = (iso) => iso ? (Date.UTC(...iso.split('-').map((x, i) => Number(x) - (i === 1 ? 1 : 0))) - Date.UTC(1899, 11, 30)) / 86400000 : null;
+function xlsxSheet(sh) {
+  const rows = sh.rows.map((r, ri) => `<row r="${ri + 1}"${sh.heights && sh.heights[ri] ? ` ht="${sh.heights[ri]}" customHeight="1"` : ''}>${r.map((c, ci) => {
+    if (c == null || c === '') return '';
+    const cell = typeof c === 'object' ? c : { v: c }; const ref = colL(ci) + (ri + 1); const s = cell.s != null ? ` s="${cell.s}"` : '';
+    if (cell.f) return `<c r="${ref}"${s}${typeof cell.v === 'string' ? ' t="str"' : ''}><f>${xmlEsc(cell.f)}</f>${cell.v != null ? `<v>${xmlEsc(cell.v)}</v>` : ''}</c>`;
+    if (cell.v == null || cell.v === '') return cell.s != null ? `<c r="${ref}"${s}/>` : '';
+    if (typeof cell.v === 'number') return `<c r="${ref}"${s}><v>${cell.v}</v></c>`;
+    return `<c r="${ref}"${s} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(cell.v)}</t></is></c>`;
+  }).join('')}</row>`).join('');
+  const cols = sh.cols ? `<cols>${sh.cols.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>` : '';
+  const pane = sh.freeze ? `<pane xSplit="${sh.freeze[0]}" ySplit="${sh.freeze[1]}" topLeftCell="${colL(sh.freeze[0])}${sh.freeze[1] + 1}" activePane="bottomRight" state="frozen"/>` : '';
+  const merges = sh.merges && sh.merges.length ? `<mergeCells count="${sh.merges.length}">${sh.merges.map((m) => `<mergeCell ref="${m}"/>`).join('')}</mergeCells>` : '';
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><sheetViews><sheetView workbookViewId="0"${sh.zoom ? ` zoomScale="${sh.zoom}"` : ''}>${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/>${cols}<sheetData>${rows}</sheetData>${merges}<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>`;
+}
+function xlsxBuild(sheets) {
+  const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<numFmts count="3"><numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0.00;\\-&quot;$&quot;#,##0.00;&quot;-&quot;"/><numFmt numFmtId="165" formatCode="dd/mm/yyyy"/><numFmt numFmtId="166" formatCode="[h]:mm"/></numFmts>
+<fonts count="5"><font><sz val="10"/><name val="Arial"/></font><font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Arial"/></font><font><b/><sz val="13"/><name val="Arial"/></font><font><b/><sz val="10"/><name val="Arial"/></font><font><i/><sz val="9"/><color rgb="FF595959"/><name val="Arial"/></font></fonts>
+<fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF0070C0"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF8CBAD"/></patternFill></fill></fills>
+<borders count="3"><border/><border><left style="thin"><color rgb="FFBFBFBF"/></left><right style="thin"><color rgb="FFBFBFBF"/></right><top style="thin"><color rgb="FFBFBFBF"/></top><bottom style="thin"><color rgb="FFBFBFBF"/></bottom></border><border><top style="medium"/><bottom style="double"/></border></borders>
+<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+<cellXfs count="14">
+<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
+<xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>
+<xf numFmtId="49" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>
+<xf numFmtId="165" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>
+<xf numFmtId="1" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>
+<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="164" fontId="3" fillId="0" borderId="2" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1"/>
+<xf numFmtId="166" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>
+<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+<xf numFmtId="164" fontId="0" fillId="3" borderId="1" xfId="0" applyNumberFormat="1" applyFill="1" applyBorder="1"/>
+<xf numFmtId="49" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+<xf numFmtId="49" fontId="0" fillId="4" borderId="1" xfId="0" applyNumberFormat="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
+</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+  const files = [
+    { name: '[Content_Types].xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>` },
+    { name: '_rels/.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
+    { name: 'xl/workbook.xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((s, i) => `<sheet name="${xmlEsc(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets><calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>` },
+    { name: 'xl/_rels/workbook.xml.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
+    { name: 'xl/styles.xml', data: styles },
+    ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: xlsxSheet(s) }))
+  ];
+  return new Blob([zipStore(files)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+
+// Mismas columnas que la pre-nómina en Excel (A…AB) + DÍAS PAGADOS y NOTAS al final.
+// Todas las filas usan la misma fórmula y los totales cubren todas las filas.
+function prenominaSheets(p, lineas, att) {
+  const first = 4, last = first + lineas.length - 1, tr = last + 1;
+  const titulo = `PERIODO ${p.numero ? p.numero + ' ' : ''}DEL ${periodoTitulo({ ...p, numero: null }).toUpperCase()}`;
+  const H = ['#', 'NOMBRE', 'Salario diario', 'Nomina \nquincenal', `PAGO DIA FESTIVO${p.festivos.length ? ' ' + p.festivos.map((d) => Number(d.slice(8)) + ' ' + MESES[Number(d.slice(5, 7)) - 1].toUpperCase()).join(', ') : ''}`, 'PAGO DE CHIPS ', 'FECHA DE INGRESO', 'PENDIENTE DE PAGO',
+    'COMISION ADMINISTRATIVO', 'BONO DE REFERIDO', 'COMISION ASESORES', 'COMISION LIDERES', 'TOTAL', 'Hrs\nDobles', 'HORAS \nEXTRAS', '#', 'FALTAS', 'OTRAS\nDEDUCCIONES', 'TOTAL',
+    'PERMISOS EN LA QUINCENA', 'HRS / MINUTOS', 'MULTAS POR DISCIPLINA', 'MULTAS POR RETARDO', 'DEPARTAMENTO', 'CLAVE', 'BANCO', 'BENEFICIARIO', 'FIRMA DEL EMPLEADO', 'DÍAS PAGADOS', 'NOTAS / AJUSTES'];
+  const rows = [[null, { v: titulo, s: XS.title }], [], H.map((h) => ({ v: h, s: XS.head }))];
+  rows[1][12] = { v: 'PERCEP', s: XS.bold }; rows[1][16] = { v: 'DEDUCC', s: XS.bold };
+  lineas.forEach((l, i) => {
+    const r = first + i, aj = new Set(l.ajustados || []);
+    const mon = (v, k) => ({ v: num(v), s: aj.has(k) ? XS.adj : XS.money });
+    const notas = [(l.ajustados || []).length ? 'Ajustado: ' + l.ajustados.map((k) => NOM_AUTO[k] || k).join(', ') : '', num(l.dias_no_lab) ? `${l.dias_no_lab} días no laborados (${l.fecha_baja ? 'baja ' + fmtDate(l.fecha_baja) : 'ingreso ' + fmtDate(l.fecha_ingreso)})` : '', l.notas || ''].filter(Boolean).join(' · ');
+    rows.push([
+      { v: i + 1, s: XS.int }, { v: l.nombre, s: XS.text }, mon(l.salario_diario, 'salario_diario'),
+      { f: `ROUND(C${r}*AC${r},2)`, v: num(l.nomina), s: XS.money }, mon(l.festivo, 'festivo'), mon(l.chips),
+      l.fecha_ingreso ? { v: xlDate(l.fecha_ingreso), s: XS.date } : { v: '', s: XS.text }, mon(l.pendiente), mon(l.com_admin), mon(l.bono_referido), mon(l.com_asesores), mon(l.com_lideres),
+      { f: `D${r}+E${r}+F${r}+H${r}+I${r}+J${r}+K${r}+L${r}+N${r}+O${r}`, v: num(l.total_percepciones), s: XS.money }, mon(l.hrs_dobles), mon(l.horas_extras),
+      { v: num(l.faltas), s: aj.has('faltas') ? XS.adj : XS.int }, { f: `ROUND(C${r}*P${r},2)`, v: num(l.faltas_monto), s: XS.money }, mon(l.otras_deducciones),
+      { f: `M${r}-Q${r}-R${r}-T${r}-V${r}-W${r}`, v: num(l.neto), s: XS.money },
+      { f: `ROUND(C${r}/8*U${r}*24,2)`, v: num(l.permisos_monto), s: XS.money }, { v: num(l.permisos_min) / 1440, s: XS.time },
+      mon(l.multas_disciplina), mon(l.multas_retardo), { v: l.departamento || '', s: XS.text }, { v: l.clabe || '', s: l.clabe ? XS.text : XS.warn },
+      { v: l.banco || '', s: XS.text }, { v: l.beneficiario || '', s: XS.text }, { v: '', s: XS.text }, { v: num(l.dias_pagados), s: aj.has('dias_no_lab') ? XS.adj : XS.int }, { v: notas, s: XS.wrap }
+    ]);
+  });
+  const sum = (c, k) => ({ f: `SUM(${c}${first}:${c}${last})`, v: r2(lineas.reduce((s, l) => s + num(typeof k === 'function' ? k(l) : l[k]), 0)), s: XS.total });
+  if (lineas.length) {
+    const t = []; t[1] = { v: 'TOTALES', s: XS.bold };
+    const cols = { D: 'nomina', E: 'festivo', F: 'chips', H: 'pendiente', I: 'com_admin', J: 'bono_referido', K: 'com_asesores', L: 'com_lideres', M: 'total_percepciones', N: 'hrs_dobles', O: 'horas_extras', Q: 'faltas_monto', R: 'otras_deducciones', S: 'neto', T: 'permisos_monto', V: 'multas_disciplina', W: 'multas_retardo' };
+    for (const [c, k] of Object.entries(cols)) t[c.charCodeAt(0) - 65] = sum(c, k);
+    t[15] = { f: `SUM(P${first}:P${last})`, v: lineas.reduce((s, l) => s + num(l.faltas), 0), s: XS.int };
+    rows.push(t);
+    rows.push([]); rows.push([null, { v: 'NETO A PAGAR', s: XS.bold }, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, { f: `S${tr}`, v: r2(lineas.reduce((s, l) => s + num(l.neto), 0)), s: XS.total }]);
+    rows.push([]); rows.push([null, { v: `Generado en Enterprise HR el ${fmtDateTime(new Date().toISOString())} · ${p.estado === 'autorizado' ? `Autorizado por ${profName(p.autorizado_by)} el ${fmtDateTime(p.autorizado_at)}` : 'BORRADOR (sin autorizar)'} · Celdas amarillas = ajustadas a mano. Permisos en horas:minutos. Salario diario × días pagados.`, s: XS.sub }]);
+  }
+  const nomina = { name: 'NOMINA', rows, freeze: [2, 3], zoom: 90, merges: ['B1:S1', 'Q2:R2'], heights: { 2: 45 },
+    cols: [5, 38, 12, 12, 12, 11, 12, 12, 13, 11, 13, 12, 12, 8, 9, 6, 11, 12, 13, 13, 10, 11, 11, 23, 22, 15, 36, 26, 9, 48] };
+  // INCIDENCIAS: pase de lista del periodo (fuente de faltas, retardos y permisos)
+  const dias = []; for (let d = p.fecha_inicio; d <= p.fecha_fin; d = addDays(d, 1)) dias.push(d);
+  const byEmp = {}; for (const a of att) ((byEmp[a.employee_id] = byEmp[a.employee_id] || {})[a.fecha] = byEmp[a.employee_id][a.fecha] || []).push(a);
+  const DOW = ['D', 'L', 'M', 'M', 'J', 'V', 'S'];
+  const code = (xs) => { if (!xs) return ''; const m = xs.find((a) => a.turno !== 'tarde'), t = xs.find((a) => a.turno === 'tarde'); return [m && attShort(m), t && t.status && t.status !== 'asistio' ? (t.status === 'salida' ? 'S' : 'F') + 'ᵗ' : ''].filter(Boolean).join(' '); };
+  const inc = { name: 'INCIDENCIAS', freeze: [2, 3], cols: [5, 38, ...dias.map(() => 5), 8, 8, 8, 8],
+    rows: [[null, { v: `INCIDENCIAS · ${periodoTitulo(p).toUpperCase()}`, s: XS.title }],
+      [null, { v: 'A asistió · F falta · R retardo · P permiso · D descanso · I inactividad · Sᵗ salida anticipada (tarde) · Fᵗ ausente en la tarde · ★ día festivo', s: XS.sub }],
+      [{ v: '#', s: XS.head }, { v: 'NOMBRE', s: XS.head }, ...dias.map((d) => ({ v: `${DOW[new Date(d + 'T12:00:00Z').getUTCDay()]} ${Number(d.slice(8))}${p.festivos.includes(d) ? ' ★' : ''}`, s: XS.head })), { v: 'FALTAS', s: XS.head }, { v: 'RETARDOS', s: XS.head }, { v: 'PERMISOS', s: XS.head }, { v: 'FALTAS EN NÓMINA', s: XS.head }],
+      ...lineas.map((l, i) => { const m = byEmp[l.employee_id] || {}; const cs = dias.map((d) => code(m[d]));
+        const fuera = (d) => (l.fecha_ingreso && d < l.fecha_ingreso) || (l.fecha_baja && d > l.fecha_baja);
+        return [{ v: i + 1, s: XS.int }, { v: l.nombre, s: XS.text }, ...dias.map((d, j) => ({ v: fuera(d) ? '—' : cs[j], s: XS.int })),
+          { v: dias.filter((d) => (m[d] || []).some((a) => a.turno !== 'tarde' && a.status === 'falta') && !p.festivos.includes(d)).length, s: XS.int },
+          { v: num(l.retardos), s: XS.int }, { v: num(l.dias_permiso), s: XS.int }, { v: num(l.faltas), s: (l.ajustados || []).includes('faltas') ? XS.adj : XS.int }]; })] };
+  // REVISIÓN: la misma revisión automática que se ve en la app
+  const rev = { name: 'REVISION', freeze: [0, 3], cols: [5, 38, 14, 70],
+    rows: [[null, { v: 'REVISIÓN AUTOMÁTICA', s: XS.title }], [null, { v: 'Revisión generada por la app; no sustituye la revisión de Nómina.', s: XS.sub }],
+      [{ v: '#', s: XS.head }, { v: 'NOMBRE', s: XS.head }, { v: 'NIVEL', s: XS.head }, { v: 'OBSERVACIÓN', s: XS.head }]] };
+  let n = 0;
+  lineas.forEach((l) => lineaAlertas(l).forEach(([lv, , t]) => rev.rows.push([{ v: ++n, s: XS.int }, { v: l.nombre, s: XS.text }, { v: lv === 'bad' ? 'Pendiente' : lv === 'warn' ? 'Revisar' : 'Aviso', s: lv === 'bad' ? XS.warn : XS.text }, { v: t + (t.startsWith('Ajustado') && l.notas ? ' — ' + l.notas : ''), s: XS.wrap }])));
+  if (!n) rev.rows.push([null, { v: 'Sin observaciones.', s: XS.text }]);
+  return [nomina, inc, rev];
+}
+async function exportPrenomina(p, lineas) {
+  if (!lineas.length) throw new Error('La pre-nómina no tiene personas.');
+  const att = await db('attendance').select('employee_id,fecha,turno,status,incidencia').gte('fecha', p.fecha_inicio).lte('fecha', p.fecha_fin).order('fecha').order('id').getAll();
+  const blob = xlsxBuild(prenominaSheets(p, lineas, att));
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = `Prenomina_${p.numero ? 'P' + p.numero + '_' : ''}${p.fecha_inicio}_al_${p.fecha_fin}${p.estado === 'autorizado' ? '' : '_BORRADOR'}.xlsx`;
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+  toast('Excel listo');
 }
 
 // ───────────────────────── PWA ─────────────────────────
