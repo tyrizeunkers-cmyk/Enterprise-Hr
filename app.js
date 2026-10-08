@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.11.2';
+const APP_VERSION = '0.12.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -414,14 +414,25 @@ function renderShell() {
 }
 function route() {
   const views = myViews(); if (!views.length) return renderNoRole();
+  const exp = location.hash.match(/^#\/expediente\/([0-9a-f-]{36})/i);
+  if (exp && (canSeeExp() || is('nomina'))) {
+    $$('[data-v]').forEach((a) => a.classList.toggle('on', a.dataset.v === 'personal'));
+    if ($('#tabMore')) $('#tabMore').classList.toggle('on', (S.moreKeys || []).includes('personal'));
+    const ttl = $('#ttl'); if (ttl) ttl.textContent = 'Perfil';
+    S.prevView = S.view; S.view = 'expediente'; rollWorkday();
+    $('#view').innerHTML = '<div class="empty">Cargando…</div>'; window.scrollTo(0, 0);
+    viewExpediente(exp[1]).catch((e) => { $('#view').innerHTML = `<div class="notice n-bad">${esc(e.message)}</div>`; });
+    return;
+  }
   let k = (location.hash.match(/^#\/(\w+)/) || [])[1];
   if (!k || !VIEWS[k] || !VIEWS[k].roles.includes(role())) k = is('tl', 'supervisor') ? 'lista' : 'personal';
   $$('[data-v]').forEach((a) => a.classList.toggle('on', a.dataset.v === k));
   if ($('#tabMore')) $('#tabMore').classList.toggle('on', (S.moreKeys || []).includes(k));
   const ttl = $('#ttl'); if (ttl) ttl.textContent = VIEWS[k].label;
   const v = $('#view'); v.innerHTML = '<div class="empty">Cargando…</div>';
+  S.prevView = S.view; S.view = k;
   Promise.resolve(VIEWS[k].render()).catch((e) => { v.innerHTML = `<div class="notice n-bad">${esc(e.message)}</div>`; });
-  S.view = k; rollWorkday();
+  rollWorkday();
   if (k !== 'casos') refreshCaseBadge();
   if (k !== 'documentos') refreshDocBadge();
   if (k !== 'buzon') refreshBuzonBadge();
@@ -665,6 +676,7 @@ function wirePerson(card, st, groups) {
 const PS = { q: '', area: '', group: '', status: 'activo' };
 let EMP_CACHE = [];
 async function viewPersonal() {
+  if (S.view === 'expediente' && EXP.id) return viewExpediente(EXP.id);   // tras editar desde el perfil, se queda en el perfil
   const v = $('#view');
   const [emps, faltas] = await Promise.all([
     db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,puesto,area_id,group_id,status,fecha_ingreso,fecha_baja,requested_by,requested_at,origen').get(),
@@ -747,76 +759,323 @@ async function deleteEmployeeForm(e) {
       if (v.conf.trim().toUpperCase() !== 'ELIMINAR') throw new Error('Escribe ELIMINAR para confirmar.');
       try { await storageRemove('evidencias', files.map((x) => x.path)); } catch { /* si falla, los archivos quedan huérfanos pero inaccesibles */ }
       try { await storageRemove('documentos', docs.map((x) => x.firmado_path).filter(Boolean)); } catch { /* idem */ }
+      try { const ex = await db('expediente_archivos').select('path').eq('employee_id', e.id).get(); await storageRemove(EXP_BUCKET, ex.map((x) => x.path)); } catch { /* idem */ }
       const r = await db('employees').eq('id', e.id).remove();
       if (!r || !r.length) throw new Error('No se pudo eliminar.');
       $$('.modal-bg').forEach((x) => x.remove());
-      toast('Eliminado'); viewPersonal();
+      toast('Eliminado'); if (S.view === 'expediente') { location.hash = '#/personal'; } else viewPersonal();
     } }] });
 }
+// ───────────────────────── Perfil y expediente del trabajador ─────────────────────────
+// Página completa con pestañas. Expediente completo: Daniel, Dirección y RH de su área.
+// Nómina ve el perfil laboral, pago, asistencia y su historial de nómina. Supervisión y TL solo una tarjeta breve.
+const EXP_BUCKET = 'expedientes';
+const EXP_DOCS = [
+  ['ine', 'INE (identificación oficial)'], ['curp', 'CURP'], ['acta_nacimiento', 'Acta de nacimiento'],
+  ['comprobante_domicilio', 'Comprobante de domicilio'], ['nss', 'Número de Seguridad Social (NSS)'],
+  ['rfc', 'Constancia de situación fiscal (RFC)'], ['estudios', 'Comprobante de estudios'], ['cv', 'CV / solicitud de empleo']
+];
+const EXP_LABEL = Object.fromEntries([...EXP_DOCS, ['foto', 'Foto'], ['otro', 'Otro']]);
+const EXP = { id: null, tab: 'resumen', mes: null };
+const canSeeExp = () => is('developer', 'director', 'rh_general', 'rh_area');
+const canEditExp = (e) => is('developer') || (is('rh_general', 'rh_area') && S.myAreas.includes(e.area_id));
+function antiguedad(desde, hasta) {
+  if (!desde) return '—';
+  const [y1, m1, d1] = desde.split('-').map(Number); const [y2, m2, d2] = (hasta || todayMX()).split('-').map(Number);
+  let meses = (y2 - y1) * 12 + (m2 - m1) - (d2 < d1 ? 1 : 0);
+  if (meses < 0) return 'Aún no ingresa';
+  const a = Math.floor(meses / 12); meses %= 12;
+  if (!a && !meses) { const dias = Math.round((Date.parse((hasta || todayMX()) + 'T12:00:00Z') - Date.parse(desde + 'T12:00:00Z')) / 86400000); return `${dias} día${dias === 1 ? '' : 's'}`; }
+  return [a && `${a} año${a === 1 ? '' : 's'}`, meses && `${meses} mes${meses === 1 ? '' : 'es'}`].filter(Boolean).join(' y ');
+}
+const edad = (n) => { if (!n) return ''; const [y, m, d] = n.split('-').map(Number); const [ty, tm, td] = todayMX().split('-').map(Number); return ty - y - ((tm < m || (tm === m && td < d)) ? 1 : 0); };
+const iniciales = (e) => ((e.nombre || '')[0] || '') + ((e.apellido_paterno || '')[0] || '');
+
+// Punto de entrada desde Personal, Casos, Documentos y Reclutamiento
 async function openEmployee(id, fx = {}) {
+  if (canSeeExp() || is('nomina')) {
+    if (location.hash === '#/expediente/' + id) { $$('.modal-bg').forEach((x) => x.remove()); return viewExpediente(id); }
+    location.hash = '#/expediente/' + id; return;
+  }
   const [e] = await db('employees').eq('id', id).get();
   if (!e) return toast('No encontrado o sin permiso', true);
+  const g = S.groups.find((x) => x.id === e.group_id);
+  const canMove = is('supervisor') && S.myAreas.includes(e.area_id) && ['activo', 'alta_pendiente'].includes(e.status);
+  modal({
+    title: fullName(e), body: `<div class="row">${statusBadge(e.status)} ${faltasBadge(fx[e.id])}</div>
+      <div class="kv" style="margin-top:10px"><span>No. empleado</span><span>${esc(e.num_empleado || '—')}</span><span>Puesto</span><span>${esc(e.puesto || '—')}</span>
+      <span>Área</span><span>${esc(areaName(e.area_id))}</span><span>Grupo</span><span>${esc(groupName(e.group_id))}${g && g.tl_id ? ' · TL ' + esc(profName(g.tl_id)) : ''}</span>
+      <span>Ingreso</span><span>${fmtDate(e.fecha_ingreso)}${e.fecha_ingreso ? ' · ' + esc(antiguedad(e.fecha_ingreso)) : ''}</span></div>`,
+    actions: [{ label: 'Cerrar' }, ...(canMove ? [{ label: 'Cambiar grupo', cls: 'primary', run: () => { setTimeout(() => moveGroup(e), 0); } }] : [])]
+  });
+}
+
+async function viewExpediente(id) {
+  const v = $('#view');
+  if (EXP.id !== id) Object.assign(EXP, { id, tab: 'resumen', mes: null });
+  const [e] = await db('employees').eq('id', id).get();
+  if (!e) { v.innerHTML = `<div class="card empty">No se encontró a la persona o no tienes permiso.<br><br><a class="btn" href="#/personal">← Personal</a></div>`; return; }
+  const full = canSeeExp(); const edit = canEditExp(e);
+  const seesNomina = is('developer', 'director', 'nomina');
   const since = addDays(todayMX(), -29);
   const metrics = metricsOf(e.area_id);
-  const seesCases = is('developer', 'director', 'rh_general', 'rh_area', 'supervisor');
-  const [priv, att, acts, corrs, cases, edocs] = await Promise.all([
+  const [priv, att30, archivos, docs, cases, cand, acts30] = await Promise.all([
     canSeePrivate(e) ? db('employee_private').eq('employee_id', id).get() : Promise.resolve([]),
-    db('attendance').eq('employee_id', id).gte('fecha', since).order('fecha', false).get(),
-    metrics.length ? db('activity_daily').eq('employee_id', id).gte('fecha', since).get() : Promise.resolve([]),
-    is('nomina') ? Promise.resolve([]) : db('corrections').eq('employee_id', id).gte('fecha', since).get(),
-    seesCases ? db('cases').select('id,folio,status,fecha_hechos,decision,kind,hechos').eq('employee_id', id).order('created_at', false).get() : Promise.resolve([]),
-    db('documents').select('id,folio,tipo,fecha,estado').eq('employee_id', id).order('created_at', false).get().catch(() => [])
+    db('attendance').select('fecha,turno,status,incidencia').eq('employee_id', id).gte('fecha', since).get().catch(() => []),
+    full ? db('expediente_archivos').eq('employee_id', id).order('created_at', false).get().catch(() => []) : Promise.resolve([]),
+    full ? db('documents').select('id,folio,tipo,fecha,estado,datos,firmado_path').eq('employee_id', id).order('created_at', false).get().catch(() => []) : Promise.resolve([]),
+    full ? db('cases').select('id,folio,status,fecha_hechos,decision,kind,hechos').eq('employee_id', id).order('created_at', false).get().catch(() => []) : Promise.resolve([]),
+    full ? db('candidatos').select('id,folio,fuente,contrato_tipo,fecha_ingreso').eq('employee_id', id).get().catch(() => []) : Promise.resolve([]),
+    metrics.length ? db('activity_daily').eq('employee_id', id).gte('fecha', since).get().catch(() => []) : Promise.resolve([])
   ]);
-  const p = priv[0] || null;
-  const c = attCounts(); att.forEach((a) => countAtt(c, a));
+  const p = priv[0] || {};
+  const g = S.groups.find((x) => x.id === e.group_id);
+  const foto = archivos.find((a) => a.tipo === 'foto');
+  const contrato = docs.find((d) => d.tipo === 'contrato' && d.estado !== 'anulado');
+  const c30 = attCounts(); att30.filter((a) => a.turno !== 'tarde').forEach((a) => countAtt(c30, a));
+  const faltan = EXP_DOCS.filter(([k]) => !archivos.some((a) => a.tipo === k));
+  const tabs = [['resumen', 'Resumen'], ['asistencia', 'Asistencia'], ...(full ? [['incidencias', 'Casos y actas'], ['documentos', 'Documentos'], ['expediente', `Expediente${faltan.length ? ` (${EXP_DOCS.length - faltan.length}/${EXP_DOCS.length})` : ' ✓'}`]] : []),
+    ...(seesNomina ? [['nomina', 'Nómina']] : []), ...(full ? [['historial', 'Historial']] : [])];
+  if (!tabs.some(([k]) => k === EXP.tab)) EXP.tab = 'resumen';
+
+  // Acciones (las mismas reglas que antes)
   const inMyArea = seesAllAreas() || S.myAreas.includes(e.area_id);
-  const canMove = (is('developer') || (is('rh_general', 'rh_area', 'supervisor') && inMyArea)) && ['activo', 'alta_pendiente'].includes(e.status);
-  const canEdit = is('developer') || (is('rh_general', 'rh_area') && inMyArea && e.status === 'alta_pendiente');
-  const canEditPriv = is('developer') || (is('rh_general', 'rh_area') && inMyArea);
-  const body = `
-    <div class="row">${statusBadge(e.status)} ${faltasBadge(c.falta)}</div>
-    ${e.origen === 'lider' && e.status === 'alta_pendiente' ? `<div class="notice n-warn">Agregado al pase de lista por ${esc(profName(e.requested_by))} el ${fmtDateTime(e.requested_at)}. RH debe completar datos y Daniel confirmar el alta.</div>` : ''}
-    <div class="kv">
-      <span>No. empleado</span><span>${esc(e.num_empleado || '—')}</span>
-      <span>Puesto</span><span>${esc(e.puesto || '—')}</span>
-      <span>Área</span><span>${esc(areaName(e.area_id))}</span>
-      <span>Grupo</span><span>${esc(groupName(e.group_id))}${e.group_id && (S.groups.find((g) => g.id === e.group_id) || {}).tl_id ? ' · TL ' + esc(profName(S.groups.find((g) => g.id === e.group_id).tl_id)) : ''}</span>
-      <span>Ingreso</span><span>${fmtDate(e.fecha_ingreso)}</span>
-      ${e.fecha_baja ? `<span>Baja</span><span>${fmtDate(e.fecha_baja)}</span>` : ''}
-      <span>Solicitó alta</span><span>${esc(profName(e.requested_by))} · ${fmtDateTime(e.requested_at)}</span>
-      ${e.approved_at ? `<span>Aprobó alta</span><span>${esc(profName(e.approved_by))} · ${fmtDateTime(e.approved_at)}</span>` : ''}
-    </div>
-    ${canSeePrivate(e) ? `<div class="card pad" style="background:var(--soft)"><div class="eyebrow" style="margin-bottom:8px">Datos sensibles · solo RH</div>${p ? `<div class="kv">
-      ${PRIV_FIELDS.map((f) => `<span>${esc(f.label)}</span><span>${f.type === 'number' ? money(p[f.k]) : f.type === 'date' ? fmtDate(p[f.k]) : esc(p[f.k] || '—')}</span>`).join('')}
-      ${e.status === 'baja' ? `<span>Motivo de baja</span><span>${esc(p.motivo_baja || '—')}</span><span>Recontratable</span><span>${p.recontratable === false ? '<b style="color:var(--bad)">No</b>' : p.recontratable ? 'Sí' : '—'}</span>` : ''}
-    </div>` : '<span class="muted small">Sin datos capturados.</span>'}</div>` : ''}
-    <div><div class="eyebrow" style="margin-bottom:6px">Asistencia · últimos 30 días</div>
-      <div class="row small"><span class="badge b-ok">${c.asistio} asistencias</span><span class="badge b-bad">${c.falta} faltas</span><span class="badge b-warn">${c.retardo} retardos</span></div>
-      ${att.length ? `<div class="scrollx" style="margin-top:8px"><table class="tbl"><tbody>${att.slice(0, 12).map((a) => `<tr><td class="mono">${fmtDate(a.fecha)}${a.turno === 'tarde' ? ' <span class="small muted">tarde</span>' : ''}</td><td>${esc(attLabel(a))}</td><td class="small muted">${esc([...(a.incidencias || []), a.comentario].filter(Boolean).join(' · '))}</td></tr>`).join('')}</tbody></table></div>` : ''}
-    </div>
-    ${metrics.length ? `<div><div class="eyebrow" style="margin-bottom:6px">Métricas · últimos 30 días (${acts.length} días capturados)</div>${acts.length ? `<div class="scrollx"><table class="tbl"><thead><tr><th>Métrica</th><th>Promedio diario</th><th>Meta</th><th>Días bajo meta</th></tr></thead><tbody>${metrics.map((m) => { const xs = acts.map((x) => (x.valores || {})[m.key]).filter((x) => x != null); const avg = xs.length ? Math.round(xs.reduce((s2, x) => s2 + x, 0) / xs.length) : null; const under = xs.filter((x) => x < Number(m.daily_goal)).length; return `<tr><td>${esc(m.label)}</td><td class="mono" style="color:${avg == null ? 'inherit' : avg >= Number(m.daily_goal) ? 'var(--ok)' : 'var(--bad)'}">${avg ?? '—'}</td><td class="mono">${Number(m.daily_goal)}</td><td class="mono">${under}</td></tr>`; }).join('')}</tbody></table></div>` : '<span class="small muted">Sin actividad capturada.</span>'}</div>` : ''}
-    ${!is('nomina') && corrs.length ? `<div><div class="eyebrow" style="margin-bottom:6px">Correcciones operativas · últimos 30 días</div><div class="row small"><span class="badge b-mut">${corrs.length} correcciones</span><span class="badge b-ok">${corrs.filter((x) => x.resultado === 'corrigio').length} corrigió</span><span class="badge b-bad">${corrs.filter((x) => x.resultado === 'no_corrigio').length} no corrigió</span></div></div>` : ''}
-    ${seesCases ? `<div><div class="eyebrow" style="margin-bottom:6px">Casos</div>${cases.length ? `<div class="list">${cases.map((k) => `<button type="button" class="item" data-opencase="${k.id}" style="padding:8px 12px"><span class="mono small muted">#${k.folio}</span><span class="grow small">${fmtDate(k.fecha_hechos)} · ${esc(k.hechos.slice(0, 60))}${k.decision ? ' · ' + esc(MEDIDAS[k.decision]) : ''}</span>${caseBadge(k.status)}</button>`).join('')}</div>` : '<span class="small muted">Sin casos.</span>'}</div>` : ''}
-    ${edocs.length || is('developer') ? `<div><div class="eyebrow" style="margin-bottom:6px;display:flex;align-items:center;gap:8px">Documentos${edocs.length && is('developer', 'director', 'rh_general', 'rh_area') ? '<button type="button" class="btn sm" id="expzip" style="margin-left:auto;min-height:32px">Descargar expediente (ZIP)</button>' : ''}</div>${docListHtml(edocs)}</div>` : ''}`;
-  const actions = [];
-  if (is('developer') && e.status === 'alta_pendiente') {
-    actions.push({ label: 'Rechazar alta', cls: 'danger', run: async () => { if (!(await confirmBox('Rechazar alta', `¿Rechazar la solicitud de <b>${esc(fullName(e))}</b>?`, { danger: true, okLabel: 'Rechazar' }))) return false; await mustUpdate(db('employees').eq('id', id).update({ status: 'rechazado' })); toast('Alta rechazada'); viewPersonal(); } });
-    actions.push({ label: 'Aceptar alta', cls: 'primary', run: () => { setTimeout(() => aceptarAlta(e), 0); } });
-  }
-  if (canEdit || canEditPriv) actions.push({ label: 'Editar datos', run: () => { setTimeout(() => editEmployee(e, p, { basic: canEdit, priv: canEditPriv }), 0); } });
-  if (canMove) actions.push({ label: 'Cambiar grupo', run: () => { setTimeout(() => moveGroup(e), 0); } });
-  if (is('nomina') && e.status === 'activo') actions.push({ label: 'Datos bancarios', run: () => { setTimeout(() => bancoForm(e, p), 0); } });
+  const acts = [];
+  if (is('developer') && e.status === 'alta_pendiente') { acts.push(['rechazar', 'Rechazar alta', 'danger']); acts.push(['aceptar', 'Aceptar alta', 'primary']); }
+  if (is('developer') || (is('rh_general', 'rh_area') && inMyArea)) acts.push(['editar', 'Editar datos', '']);
+  if ((is('developer') || (is('rh_general', 'rh_area') && inMyArea)) && ['activo', 'alta_pendiente'].includes(e.status)) acts.push(['grupo', 'Cambiar grupo', '']);
+  if (is('nomina') && e.status === 'activo') acts.push(['banco', 'Datos bancarios', '']);
   if (is('developer')) {
-    if (e.status === 'activo') actions.push({ label: 'Cambiar área', run: () => { setTimeout(() => moveArea(e), 0); } });
-    if (['activo', 'baja', 'alta_pendiente'].includes(e.status)) actions.push({ label: 'Generar documento', run: () => { setTimeout(() => e.status === 'baja' ? docForm({ tipo: 'constancia_baja', employee: e }) : newDocPicker({ employee: e }), 0); } });
-    if (e.status === 'activo') actions.push({ label: 'Dar de baja', cls: 'danger', run: () => { setTimeout(() => bajaForm(e, p), 0); } });
-    actions.push({ label: 'Eliminar', cls: 'danger', run: () => { setTimeout(() => deleteEmployeeForm(e), 0); } });
+    if (e.status === 'activo') acts.push(['area', 'Cambiar área', '']);
+    if (['activo', 'baja', 'alta_pendiente'].includes(e.status)) acts.push(['doc', 'Generar documento', '']);
+    if (e.status === 'activo') acts.push(['baja', 'Dar de baja', 'danger']);
+    acts.push(['eliminar', 'Eliminar', 'danger']);
   }
-  const m = modal({ title: fullName(e), body, actions, wide: true });
-  $$('[data-opencase]', m.el).forEach((b) => b.onclick = () => { m.close(); openCase(b.dataset.opencase); });
-  $$('[data-opendoc]', m.el).forEach((b) => b.onclick = () => { m.close(); openDocument(b.dataset.opendoc); });
-  const xz = $('#expzip', m.el); if (xz) xz.onclick = async () => { xz.disabled = true; try { await exportDocsZip({ employeeId: e.id, titulo: 'Expediente ' + fullName(e) }, xz); } catch (er) { toast(er.message, true); } finally { xz.disabled = false; xz.textContent = 'Descargar expediente (ZIP)'; } };
+
+  v.innerHTML = `
+    <div class="row" style="margin-bottom:10px"><a class="btn sm" href="#/personal" id="ex_back">← Personal</a></div>
+    <div class="card pad ex-head">
+      <div class="ex-ava" id="ex_ava">${esc(iniciales(e).toUpperCase())}${edit ? '<button type="button" class="ex-cam" id="ex_foto" title="Cambiar foto" aria-label="Cambiar foto">📷</button>' : ''}</div>
+      <div class="grow" style="min-width:0">
+        <h1 style="margin:0;font-size:22px">${esc(fullName(e))}</h1>
+        <div class="muted small" style="margin-top:2px">${esc(e.puesto || 'Sin puesto')} · ${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))}${g && g.tl_id ? ' · TL ' + esc(profName(g.tl_id)) : ''}</div>
+        <div class="row" style="gap:6px;margin-top:8px">${statusBadge(e.status)}${e.num_empleado ? `<span class="badge b-mut mono">${esc(e.num_empleado)}</span>` : ''}
+          <span class="badge b-acc">${e.fecha_ingreso ? 'Ingreso ' + fmtDate(e.fecha_ingreso) + ' · ' + esc(antiguedad(e.fecha_ingreso, e.status === 'baja' ? e.fecha_baja : null)) : 'Sin fecha de ingreso'}</span>
+          ${contrato && contrato.datos ? `<span class="badge b-mut">${esc(CONTRATOS[contrato.datos.contrato_tipo] || 'Contrato')}${contrato.datos.fecha_fin ? ' · hasta ' + fmtDate(contrato.datos.fecha_fin) : ''}</span>` : ''}
+          ${faltasBadge(c30.falta)}</div>
+      </div>
+      ${acts.length ? `<div class="row ex-acts" style="gap:6px">${acts.map(([k, l, c]) => `<button type="button" class="btn sm ${c}" data-act="${k}">${esc(l)}</button>`).join('')}</div>` : ''}
+    </div>
+    ${e.origen === 'lider' && e.status === 'alta_pendiente' ? `<div class="notice n-warn" style="margin-bottom:12px">Agregado al pase de lista por ${esc(profName(e.requested_by))} el ${fmtDateTime(e.requested_at)}. RH debe completar datos y Daniel confirmar el alta.</div>` : ''}
+    <div class="ex-tabs" role="tablist">${tabs.map(([k, l]) => `<button type="button" role="tab" data-tab="${k}" class="${EXP.tab === k ? 'on' : ''}">${esc(l)}</button>`).join('')}</div>
+    <div id="ex_body"><div class="empty">Cargando…</div></div>
+    <input type="file" id="ex_file" accept="image/*,application/pdf" hidden>`;
+  if (foto) storageUrl(EXP_BUCKET, foto.path).then((u) => { const a = $('#ex_ava'); if (a) { a.style.backgroundImage = `url("${u}")`; a.classList.add('img'); } }).catch(() => {});
+  $('#ex_back').onclick = (ev) => { if (history.length > 1 && document.referrer !== '' && S.prevView === 'personal') { ev.preventDefault(); history.back(); } };
+  $$('[data-tab]').forEach((b) => b.onclick = () => { EXP.tab = b.dataset.tab; viewExpediente(id); });
+  const ctx = { e, p, g, full, edit, archivos, docs, cases, cand, c30, faltan, contrato, metrics, acts30 };
+  $$('[data-act]').forEach((b) => b.onclick = () => expAction(b.dataset.act, ctx));
+  const fb = $('#ex_foto'); if (fb) fb.onclick = () => pickFile('image/*', (f) => subirArchivo(e, 'foto', f, {}));
+  const body = $('#ex_body');
+  try { await EXP_TABS[EXP.tab](body, ctx); } catch (er) { body.innerHTML = `<div class="notice n-bad">${esc(er.message)}</div>`; }
 }
+
+async function expAction(k, { e, p }) {
+  const done = () => viewExpediente(e.id);
+  if (k === 'aceptar') return aceptarAlta(e);
+  if (k === 'rechazar') { if (!(await confirmBox('Rechazar alta', `¿Rechazar la solicitud de <b>${esc(fullName(e))}</b>?`, { danger: true, okLabel: 'Rechazar' }))) return; await mustUpdate(db('employees').eq('id', e.id).update({ status: 'rechazado' })); toast('Alta rechazada'); return done(); }
+  if (k === 'editar') return editEmployee(e, priv0(p), { basic: is('developer') || (is('rh_general', 'rh_area') && e.status === 'alta_pendiente'), priv: true });
+  if (k === 'grupo') return moveGroup(e);
+  if (k === 'banco') return bancoForm(e, priv0(p));
+  if (k === 'area') return moveArea(e);
+  if (k === 'doc') return e.status === 'baja' ? docForm({ tipo: 'constancia_baja', employee: e }) : newDocPicker({ employee: e });
+  if (k === 'baja') return bajaForm(e, priv0(p));
+  if (k === 'eliminar') return deleteEmployeeForm(e);
+}
+const priv0 = (p) => (p && Object.keys(p).length ? p : null);
+
+function pickFile(accept, cb) {
+  const i = $('#ex_file'); i.accept = accept; i.value = '';
+  i.onchange = () => { const f = i.files[0]; if (f) cb(f); };
+  i.click();
+}
+async function subirArchivo(e, tipo, f, { nombre = null, fecha = null, nota = null } = {}) {
+  const mime = mimeOf(f);
+  if (f.size > 10 * 1024 * 1024) return toast('El archivo pasa de 10 MB', true);
+  if (!/^image\/|^application\/pdf$/.test(mime)) return toast('Solo fotos o PDF', true);
+  if (tipo === 'foto' && !/^image\//.test(mime)) return toast('La foto debe ser una imagen', true);
+  const ext = (f.name.match(/\.([a-z0-9]{1,6})$/i) || [])[1];
+  const key = `${e.id}/${tipo}_${newId()}${ext ? '.' + ext.toLowerCase() : ''}`;
+  toast('Subiendo…');
+  try {
+    await storageUpload(EXP_BUCKET, key, f);
+    try { await db('expediente_archivos').insert([{ employee_id: e.id, tipo, nombre, fecha, nota, archivo: f.name.slice(0, 200), path: key, mime, tamano: f.size }]); }
+    catch (er) { await storageRemove(EXP_BUCKET, [key]).catch(() => {}); throw er; }
+    toast(tipo === 'foto' ? 'Foto actualizada' : 'Archivo guardado');
+    viewExpediente(e.id);
+  } catch (er) { toast('No se pudo subir: ' + er.message, true); }
+}
+async function verArchivo(path, bucket = EXP_BUCKET) {
+  const w = window.open('about:blank', '_blank');
+  try { const u = await storageUrl(bucket, path); if (w) w.location = u; else location.href = u; }
+  catch (er) { if (w) w.close(); toast(er.message, true); }
+}
+async function quitarArchivo(a, e) {
+  if (!(await confirmBox('Quitar archivo', `¿Quitar <b>${esc(a.nombre || EXP_LABEL[a.tipo])}</b> (${esc(a.archivo)}) del expediente?`, { danger: true, okLabel: 'Quitar' }))) return;
+  try { await db('expediente_archivos').eq('id', a.id).remove(); await storageRemove(EXP_BUCKET, [a.path]).catch(() => {}); toast('Archivo quitado'); viewExpediente(e.id); }
+  catch (er) { toast(er.message, true); }
+}
+
+const card = (title, html, extra = '') => `<div class="card pad ex-card"><div class="eyebrow" style="margin-bottom:8px;display:flex;align-items:center;gap:8px">${title}${extra}</div>${html}</div>`;
+const kvRows = (rows) => `<div class="kv">${rows.filter((r) => r).map(([k, val]) => `<span>${esc(k)}</span><span>${val == null || val === '' ? '—' : val}</span>`).join('')}</div>`;
+
+const EXP_TABS = {
+  async resumen(body, { e, p, g, full, cand, c30, faltan, contrato, cases, docs, archivos, metrics, acts30 }) {
+    const pagos = canSeePrivate(e);
+    const abiertos = cases.filter((k) => k.status !== 'cerrado').length;
+    const porFirmar = docs.filter((d) => ['emitido', 'con_lider'].includes(d.estado)).length;
+    body.innerHTML = `<div class="ex-grid">
+      ${card('Perfil laboral', kvRows([
+        ['No. empleado', esc(e.num_empleado || '')], ['Puesto', esc(e.puesto || '')], ['Área', esc(areaName(e.area_id))],
+        ['Grupo', esc(groupName(e.group_id))], ['Líder (TL)', g && g.tl_id ? esc(profName(g.tl_id)) : ''],
+        ['Fecha de ingreso', fmtDate(e.fecha_ingreso)], ['Antigüedad', esc(antiguedad(e.fecha_ingreso, e.status === 'baja' ? e.fecha_baja : null))],
+        contrato && contrato.datos ? ['Contrato', esc(CONTRATOS[contrato.datos.contrato_tipo] || '—') + (contrato.datos.fecha_fin ? ' · periodo a prueba hasta ' + fmtDate(contrato.datos.fecha_fin) : '')] : null,
+        cand[0] ? ['Reclutamiento', `Candidato #${cand[0].folio}${cand[0].fuente ? ' · ' + esc(cand[0].fuente) : ''}`] : null,
+        ['Estatus', statusBadge(e.status)], e.fecha_baja ? ['Fecha de baja', fmtDate(e.fecha_baja)] : null,
+        ['Solicitó alta', esc(profName(e.requested_by)) + ' · ' + fmtDateTime(e.requested_at)], e.approved_at ? ['Aprobó alta', esc(profName(e.approved_by)) + ' · ' + fmtDateTime(e.approved_at)] : null]))}
+      ${full ? card('Datos personales', kvRows([
+        ['CURP', `<span class="mono">${esc(p.curp || '')}</span>`], ['RFC', `<span class="mono">${esc(p.rfc || '')}</span>`], ['NSS', `<span class="mono">${esc(p.nss || '')}</span>`],
+        ['Nacimiento', p.fecha_nacimiento ? `${fmtDate(p.fecha_nacimiento)} · ${edad(p.fecha_nacimiento)} años` : ''], ['Teléfono', esc(p.telefono || '')],
+        ['Correo', esc(p.correo || '')], ['Domicilio', esc(p.domicilio || '')],
+        e.status === 'baja' && (is('developer', 'director')) ? ['Motivo de baja', esc(p.motivo_baja || '')] : null,
+        e.status === 'baja' && (is('developer', 'director')) ? ['Recontratable', p.recontratable === false ? '<b style="color:var(--bad)">No</b>' : p.recontratable ? 'Sí' : '—'] : null])) : ''}
+      ${pagos ? card('Pago', kvRows([['Salario diario', money(p.salario_diario)], ['Salario mensual', money(p.salario_mensual)],
+        ['CLABE', `<span class="mono">${esc(p.clabe || '')}</span>`], ['Banco', esc(p.banco || '')], ['Beneficiario', esc(p.beneficiario || (p.clabe ? 'El trabajador' : ''))]])) : ''}
+      ${card('Últimos 30 días', `<div class="row small" style="gap:6px"><span class="badge b-ok">${c30.asistio} asistencias</span><span class="badge b-bad">${c30.falta} faltas</span><span class="badge b-warn">${c30.retardo} retardos</span>${c30.permiso ? `<span class="badge b-acc">${c30.permiso} permisos</span>` : ''}</div>
+        ${metrics.length ? `<div class="small" style="margin-top:10px">${acts30.length} días con actividad capturada</div><div class="scrollx"><table class="tbl sub" style="margin-top:6px"><thead><tr><th>Métrica</th><th>Promedio diario</th><th>Meta</th><th>Días bajo meta</th></tr></thead><tbody>${metrics.map((m) => { const xs = acts30.map((x) => (x.valores || {})[m.key]).filter((x) => x != null); const avg = xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null; return `<tr><td>${esc(m.label)}</td><td class="mono" style="color:${avg == null ? 'inherit' : avg >= Number(m.daily_goal) ? 'var(--ok)' : 'var(--bad)'}">${avg ?? '—'}</td><td class="mono">${Number(m.daily_goal)}</td><td class="mono">${xs.filter((x) => x < Number(m.daily_goal)).length}</td></tr>`; }).join('')}</tbody></table></div>` : ''}
+        ${full ? `<div class="row small" style="gap:6px;margin-top:8px">${abiertos ? `<span class="badge b-warn">${abiertos} casos abiertos</span>` : '<span class="badge b-mut">Sin casos abiertos</span>'}${porFirmar ? `<span class="badge b-warn">${porFirmar} documentos por firmar</span>` : ''}</div>` : ''}`)}
+      ${full ? card('Expediente digital', `<div class="ex-bar"><span style="width:${Math.round((EXP_DOCS.length - faltan.length) / EXP_DOCS.length * 100)}%"></span></div>
+        <div class="small" style="margin:6px 0">${EXP_DOCS.length - faltan.length} de ${EXP_DOCS.length} documentos personales · ${archivos.filter((a) => a.tipo === 'otro').length} archivos adicionales</div>
+        ${faltan.length ? `<div class="row" style="gap:4px">${faltan.map(([, l]) => `<span class="badge b-warn">Falta: ${esc(l)}</span>`).join('')}</div>` : '<span class="badge b-ok">Completo</span>'}
+        <button type="button" class="btn sm" style="margin-top:10px" data-goto="expediente">Ver expediente</button>`) : ''}
+    </div>`;
+    $$('[data-goto]', body).forEach((b) => b.onclick = () => { EXP.tab = b.dataset.goto; viewExpediente(e.id); });
+  },
+
+  async asistencia(body, { e }) {
+    const mes = EXP.mes || todayMX().slice(0, 7);
+    const [y, m] = mes.split('-').map(Number); const ini = `${mes}-01`, fin = `${mes}-${String(lastDay(y, m)).padStart(2, '0')}`;
+    const att = await db('attendance').select('fecha,turno,status,incidencia,aviso,comentario').eq('employee_id', e.id).gte('fecha', ini).lte('fecha', fin).order('fecha').get();
+    const byDay = {}; att.forEach((a) => (byDay[a.fecha] = byDay[a.fecha] || []).push(a));
+    const c = attCounts(); att.filter((a) => a.turno !== 'tarde').forEach((a) => countAtt(c, a));
+    const firstDow = (new Date(Date.UTC(y, m - 1, 1)).getUTCDay() + 6) % 7;   // lunes = 0
+    const cells = []; for (let i = 0; i < firstDow; i++) cells.push('<div></div>');
+    for (let d = 1; d <= lastDay(y, m); d++) {
+      const f = `${mes}-${String(d).padStart(2, '0')}`; const xs = byDay[f] || [];
+      const am = xs.find((a) => a.turno !== 'tarde'), pm = xs.find((a) => a.turno === 'tarde');
+      const k = am ? attKey(am) : null;
+      const fuera = (e.fecha_ingreso && f < e.fecha_ingreso) || (e.fecha_baja && f > e.fecha_baja) || f > todayMX();
+      cells.push(`<div class="ex-day${f === todayMX() ? ' hoy' : ''}${fuera ? ' off' : ''}" style="${k ? `background:${ATT_COLOR[k]};color:#fff` : ''}" title="${esc([am && attLabel(am), pm && pm.status && 'Tarde: ' + attLabel(pm), am && am.comentario].filter(Boolean).join(' · '))}">
+        <span>${d}</span><b>${am ? esc(attShort(am)) : ''}${pm && pm.status && pm.status !== 'asistio' ? '<i>ᵗ</i>' : ''}</b></div>`);
+    }
+    const notas = att.filter((a) => a.incidencia || a.aviso || (a.turno === 'tarde' && a.status && a.status !== 'asistio'));
+    body.innerHTML = card(`Asistencia · ${MESES[m - 1]} ${y}`, `
+      <div class="row" style="gap:6px;margin-bottom:10px"><button type="button" class="btn sm" id="ex_prev">‹ Anterior</button><input type="month" class="inp" id="ex_mes" value="${mes}" max="${todayMX().slice(0, 7)}" style="max-width:170px"><button type="button" class="btn sm" id="ex_next"${mes >= todayMX().slice(0, 7) ? ' disabled' : ''}>Siguiente ›</button></div>
+      <div class="row small" style="gap:6px;margin-bottom:10px"><span class="badge b-ok">${c.asistio} asistencias</span><span class="badge b-bad">${c.falta} faltas</span><span class="badge b-warn">${c.retardo} retardos</span><span class="badge b-acc">${c.permiso || 0} permisos</span><span class="badge b-mut">${c.descanso || 0} descansos</span></div>
+      <div class="ex-cal">${['L', 'M', 'M', 'J', 'V', 'S', 'D'].map((d) => `<div class="ex-dow">${d}</div>`).join('')}${cells.join('')}</div>
+      <div class="small muted" style="margin-top:8px">A asistió · F falta · R retardo · P permiso · D descanso · I inactividad · ᵗ incidencia en el pase de la tarde</div>
+      ${notas.length ? `<div class="scrollx" style="margin-top:12px"><table class="tbl sub"><tbody>${notas.map((a) => `<tr><td class="mono small">${fmtDate(a.fecha)}${a.turno === 'tarde' ? ' tarde' : ''}</td><td class="small">${attBadges(a)}</td><td class="small muted">${esc(a.comentario || '')}</td></tr>`).join('')}</tbody></table></div>` : ''}`);
+    const go = (n) => { const d = new Date(Date.UTC(y, m - 1 + n, 1)); EXP.mes = d.toISOString().slice(0, 7); viewExpediente(e.id); };
+    $('#ex_prev').onclick = () => go(-1); $('#ex_next').onclick = () => go(1);
+    $('#ex_mes').onchange = (ev) => { if (ev.target.value) { EXP.mes = ev.target.value; viewExpediente(e.id); } };
+  },
+
+  async incidencias(body, { cases, docs }) {
+    const actas = docs.filter((d) => ['acta', 'advertencia'].includes(d.tipo));
+    body.innerHTML = card(`Casos (${cases.length})`, cases.length ? `<div class="list">${cases.map((k) => `<button type="button" class="item" data-opencase="${k.id}" style="padding:8px 12px"><span class="mono small muted">#${k.folio}</span><span class="grow small">${fmtDate(k.fecha_hechos)} · ${esc((k.hechos || '').slice(0, 90))}${k.decision ? ' · ' + esc(MEDIDAS[k.decision]) : ''}</span>${caseBadge(k.status)}</button>`).join('')}</div>` : '<span class="small muted">Sin casos.</span>')
+      + card(`Actas administrativas y cartas de advertencia (${actas.length})`, docListHtml(actas));
+    $$('[data-opencase]', body).forEach((b) => b.onclick = () => openCase(b.dataset.opencase));
+    $$('[data-opendoc]', body).forEach((b) => b.onclick = () => openDocument(b.dataset.opendoc));
+  },
+
+  async documentos(body, { e, docs }) {
+    body.innerHTML = card(`Documentos laborales (${docs.length})`, docListHtml(docs),
+      `${docs.length ? '<button type="button" class="btn sm" id="ex_zip" style="margin-left:auto">Descargar todo (ZIP)</button>' : ''}${is('developer') && ['activo', 'baja', 'alta_pendiente'].includes(e.status) ? `<button type="button" class="btn sm primary" id="ex_newdoc"${docs.length ? '' : ' style="margin-left:auto"'}>+ Generar</button>` : ''}`);
+    $$('[data-opendoc]', body).forEach((b) => b.onclick = () => openDocument(b.dataset.opendoc));
+    const z = $('#ex_zip', body); if (z) z.onclick = async () => { z.disabled = true; try { await exportDocsZip({ employeeId: e.id, titulo: 'Expediente ' + fullName(e) }, z); } catch (er) { toast(er.message, true); } finally { z.disabled = false; z.textContent = 'Descargar todo (ZIP)'; } };
+    const n = $('#ex_newdoc', body); if (n) n.onclick = () => (e.status === 'baja' ? docForm({ tipo: 'constancia_baja', employee: e }) : newDocPicker({ employee: e }));
+  },
+
+  async expediente(body, { e, edit, archivos, docs }) {
+    const ult = (t) => archivos.filter((a) => a.tipo === t);
+    const fila = (a, label) => `<div class="ex-file"><span class="ex-ic ok">✓</span><span class="grow"><b>${esc(label)}</b><br><span class="small muted">${esc(a.archivo)} · ${fmtDate(a.created_at)} · ${esc(profName(a.created_by))}${a.fecha ? ' · fecha del documento ' + fmtDate(a.fecha) : ''}${a.nota ? ' · ' + esc(a.nota) : ''}</span></span>
+      <button type="button" class="btn sm" data-ver="${a.id}">Ver</button>${edit ? `<button type="button" class="btn sm ghost" data-quitar="${a.id}" aria-label="Quitar">✕</button>` : ''}</div>`;
+    const contr = ['contrato', 'reglamento', 'confidencialidad'].map((t) => [t, docs.find((d) => d.tipo === t && d.estado !== 'anulado')]);
+    const otros = ult('otro');
+    body.innerHTML = card('Documentos personales', EXP_DOCS.map(([t, label]) => {
+      const xs = ult(t);
+      return xs.length ? fila(xs[0], label) + (xs.length > 1 ? `<div class="small muted" style="margin:-4px 0 8px 40px">${xs.length - 1} versión(es) anterior(es): ${xs.slice(1).map((a) => `<a href="#" data-ver="${a.id}">${fmtDate(a.created_at)}</a>`).join(', ')}</div>` : '') + (edit ? `<div style="margin:-4px 0 8px 40px"><button type="button" class="btn sm ghost" data-subir="${t}">Reemplazar</button></div>` : '')
+        : `<div class="ex-file"><span class="ex-ic">○</span><span class="grow"><b>${esc(label)}</b><br><span class="small" style="color:var(--warn)">Falta</span></span>${edit ? `<button type="button" class="btn sm primary" data-subir="${t}">Subir</button>` : ''}</div>`;
+    }).join(''), `<span class="badge ${EXP_DOCS.every(([t]) => ult(t).length) ? 'b-ok' : 'b-warn'}" style="margin-left:auto">${EXP_DOCS.filter(([t]) => ult(t).length).length}/${EXP_DOCS.length}</span>`)
+      + card('Contratación', contr.map(([t, d]) => `<div class="ex-file"><span class="ex-ic${d && d.estado === 'firmado' ? ' ok' : ''}">${d && d.estado === 'firmado' ? '✓' : '○'}</span><span class="grow"><b>${esc(DOC_TIPOS[t].label)}</b><br><span class="small muted">${d ? esc(docFolio(d)) + ' · ' + fmtDate(d.fecha) : 'No generado'}</span></span>
+          ${d ? docBadge(d.estado) : ''}${d && d.firmado_path ? `<button type="button" class="btn sm" data-verdoc="${esc(d.firmado_path)}">Ver firmado</button>` : ''}${d ? `<button type="button" class="btn sm ghost" data-opendoc="${d.id}">Abrir</button>` : ''}</div>`).join(''))
+      + card(`Otros archivos (${otros.length})`, (otros.length ? otros.map((a) => fila(a, a.nombre)).join('') : '<span class="small muted">Constancias, incapacidades, recetas, cartas, etc.</span>'),
+        edit ? '<button type="button" class="btn sm primary" id="ex_otro" style="margin-left:auto">+ Agregar archivo</button>' : '')
+      + (edit ? '<div class="small muted">Fotos o PDF de hasta 10 MB. Solo RH de su área, Dirección y Daniel ven este expediente.</div>' : '');
+    $$('[data-ver]', body).forEach((b) => b.onclick = (ev) => { ev.preventDefault(); const a = archivos.find((x) => x.id === b.dataset.ver); if (a) verArchivo(a.path); });
+    $$('[data-verdoc]', body).forEach((b) => b.onclick = () => verArchivo(b.dataset.verdoc, 'documentos'));
+    $$('[data-opendoc]', body).forEach((b) => b.onclick = () => openDocument(b.dataset.opendoc));
+    $$('[data-quitar]', body).forEach((b) => b.onclick = () => quitarArchivo(archivos.find((x) => x.id === b.dataset.quitar), e));
+    $$('[data-subir]', body).forEach((b) => b.onclick = () => pickFile('image/*,application/pdf', (f) => subirArchivo(e, b.dataset.subir, f)));
+    const o = $('#ex_otro', body); if (o) o.onclick = () => {
+      const fields = [{ k: 'nombre', label: '¿Qué documento es?', req: true, full: true, hint: 'Ej. Incapacidad IMSS, constancia de estudios, receta médica' }, { k: 'fecha', label: 'Fecha del documento', type: 'date' }, { k: 'nota', label: 'Nota', full: true }];
+      modal({ title: 'Agregar archivo', body: fieldsHtml(fields) + '<label class="field" style="margin-top:10px">Archivo (foto o PDF) *<input type="file" id="ao_f" accept="image/*,application/pdf"></label>',
+        actions: [{ label: 'Cancelar' }, { label: 'Subir', cls: 'primary', run: async ({ el }) => { const v = readFields(el, fields); const f = $('#ao_f', el).files[0]; if (!f) throw new Error('Elige el archivo.'); await subirArchivo(e, 'otro', f, v); } }] });
+    };
+  },
+
+  async nomina(body, { e }) {
+    const ls = await db('nomina_lineas').select('periodo_id,dias_pagados,salario_diario,nomina,total_percepciones,faltas,faltas_monto,otras_deducciones,permisos_monto,multas_disciplina,multas_retardo,neto,ajustados,notas').eq('employee_id', e.id).get();
+    const ps = ls.length ? await db('nomina_periodos').select('id,numero,fecha_inicio,fecha_fin,estado').in('id', [...new Set(ls.map((l) => l.periodo_id))]).get() : [];
+    const pm = Object.fromEntries(ps.map((x) => [x.id, x]));
+    const rows = ls.filter((l) => pm[l.periodo_id]).sort((a, b) => pm[b.periodo_id].fecha_inicio.localeCompare(pm[a.periodo_id].fecha_inicio));
+    const tot = rows.filter((l) => pm[l.periodo_id].estado === 'autorizado').reduce((s, l) => s + num(l.neto), 0);
+    body.innerHTML = card(`Historial de nómina (${rows.length})`, rows.length ? `<div class="scrollx"><table class="tbl"><thead><tr><th>Periodo</th><th>Estado</th><th style="text-align:right">Días</th><th style="text-align:right">Sal. diario</th><th style="text-align:right">Percepciones</th><th style="text-align:right">Deducciones</th><th style="text-align:right">Neto</th></tr></thead><tbody>
+      ${rows.map((l) => { const p = pm[l.periodo_id]; const ded = r2(num(l.faltas_monto) + num(l.otras_deducciones) + num(l.permisos_monto) + num(l.multas_disciplina) + num(l.multas_retardo));
+        return `<tr><td class="small">${esc(periodoTitulo(p))}${(l.ajustados || []).length ? ' <span class="badge b-acc">ajustado</span>' : ''}${l.notas ? `<br><span class="muted">${esc(l.notas)}</span>` : ''}</td><td>${p.estado === 'autorizado' ? '<span class="badge b-ok">Autorizada</span>' : '<span class="badge b-warn">Borrador</span>'}</td>
+          <td class="mono" style="text-align:right">${l.dias_pagados}</td><td class="mono" style="text-align:right">${money(l.salario_diario)}</td><td class="mono" style="text-align:right">${money(l.total_percepciones)}</td><td class="mono" style="text-align:right">${ded ? money(ded) : ''}</td><td class="mono" style="text-align:right"><b>${money(l.neto)}</b></td></tr>`; }).join('')}
+      </tbody></table></div><div class="small muted" style="margin-top:8px">Total neto en pre-nóminas autorizadas: <b>${money(r2(tot))}</b></div>` : '<span class="small muted">Todavía no aparece en ninguna pre-nómina.</span>');
+  },
+
+  async historial(body, { e }) {
+    const hs = await rpc('empleado_historial', { p_emp: e.id });
+    const ST = (s) => (STATUS[s] || [s])[0];
+    const desc = (h) => {
+      const b = h.before || {}, a = h.after || {}, out = [];
+      if (h.entity === 'employees' && h.action === 'insert') return [a.status === 'activo' ? 'Alta directa' : 'Solicitud de alta registrada'];
+      if (h.entity === 'employees' && h.action === 'delete') return ['Registro eliminado'];
+      if (h.entity === 'employee_private' && h.action === 'insert') return ['Datos personales capturados'];
+      for (const k of Object.keys(a)) {
+        if (k === 'status') out.push(a.status === 'activo' && b.status === 'alta_pendiente' ? 'Alta aceptada' : a.status === 'baja' ? 'Baja' : a.status === 'activo' && b.status === 'baja' ? 'Reingreso' : `Estatus: ${ST(b.status)} → ${ST(a.status)}`);
+        else if (k === 'group_id') out.push(`Cambio de grupo: ${groupName(b.group_id)} → ${groupName(a.group_id)}`);
+        else if (k === 'area_id') out.push(`Cambio de área: ${areaName(b.area_id)} → ${areaName(a.area_id)}`);
+        else if (k === 'puesto') out.push(`Puesto: ${b.puesto || '—'} → ${a.puesto || '—'}`);
+        else if (k === 'fecha_ingreso') out.push(`Fecha de ingreso: ${fmtDate(b.fecha_ingreso)} → ${fmtDate(a.fecha_ingreso)}`);
+        else if (k === 'fecha_baja' && a.fecha_baja) out.push(`Fecha de baja: ${fmtDate(a.fecha_baja)}`);
+        else if (k === 'num_empleado') out.push(`Número de empleado: ${b.num_empleado || '—'} → ${a.num_empleado || '—'}`);
+        else if (k === 'salario_diario') out.push(`Salario diario: ${money(b.salario_diario)} → ${money(a.salario_diario)}`);
+        else if (k === 'salario_mensual') out.push(`Salario mensual: ${money(b.salario_mensual)} → ${money(a.salario_mensual)}`);
+        else if (['nombre', 'apellido_paterno', 'apellido_materno'].includes(k)) { if (!out.includes('Nombre corregido')) out.push('Nombre corregido'); }
+        else if (['clabe', 'banco', 'beneficiario'].includes(k)) { if (!out.includes('Datos bancarios actualizados')) out.push('Datos bancarios actualizados'); }
+        else if (k === 'motivo_baja' && is('developer', 'director')) out.push('Motivo de baja: ' + (a.motivo_baja || '—'));
+        else if (['curp', 'rfc', 'nss', 'fecha_nacimiento', 'telefono', 'correo', 'domicilio'].includes(k)) { if (!out.includes('Datos personales actualizados')) out.push('Datos personales actualizados'); }
+      }
+      return out;
+    };
+    const items = hs.map((h) => ({ h, d: desc(h) })).filter((x) => x.d.length);
+    body.innerHTML = card(`Historial de movimientos (${items.length})`, items.length ? `<div class="ex-tl">${items.map(({ h, d }) => `<div class="ex-ev"><div class="small muted">${fmtDateTime(h.at)} · ${esc(h.user_name || 'Sistema')}${h.user_role ? ' (' + esc(ROLES[h.user_role] || h.user_role) + ')' : ''}</div>${d.map((x) => `<div>${esc(x)}</div>`).join('')}</div>`).join('')}</div>` : '<span class="small muted">Sin movimientos registrados.</span>');
+  }
+};
 
 async function aceptarAlta(e) {
   const fields = [
@@ -1664,6 +1923,7 @@ function caseForm({ employee, fecha, existing, onDone }) {
 
 const CS = { tab: 'pend', q: '' };
 async function viewCasos() {
+  if (S.view === 'expediente' && EXP.id) return viewExpediente(EXP.id);
   const v = $('#view');
   const [cases, emps] = await Promise.all([db('cases').order('created_at', false).limit(500).get(), db('employees').select('id,nombre,apellido_paterno,apellido_materno,area_id,group_id,status').get()]);
   const empById = Object.fromEntries(emps.map((e) => [e.id, e]));
@@ -2181,6 +2441,7 @@ function printDoc(d, extra) {
 const DS = { tab: null, q: '', tipo: '' };
 const docPending = (d) => is('developer') ? d.estado === 'emitido' : is('tl', 'supervisor') ? d.estado === 'con_lider' : false;
 async function viewDocumentos() {
+  if (S.view === 'expediente' && EXP.id) return viewExpediente(EXP.id);
   const v = $('#view');
   const [docs, emps] = await Promise.all([
     db('documents').select('id,folio,tipo,employee_id,area_id,group_id,case_id,fecha,estado,snapshot,enviado_at,entregado_at,baja_aplicada').order('created_at', false).getAll(),
@@ -2526,6 +2787,7 @@ const etapaBadge = (e) => `<span class="badge ${ETAPAS[e][1]}">${ETAPAS[e][0]}</
 const vacLabel = (v) => v ? `#${v.folio} ${v.puesto} · ${areaName(v.area_id)}` : 'Sin vacante';
 
 async function viewReclutamiento() {
+  if (S.view === 'expediente' && EXP.id) return viewExpediente(EXP.id);
   const v = $('#view');
   if (is('developer') && !viewReclutamiento._tpl) { viewReclutamiento._tpl = true; ensureBaseTemplates().catch(() => {}); }
   const [vacs, cands] = await Promise.all([
