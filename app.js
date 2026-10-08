@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.11.1';
+const APP_VERSION = '0.11.2';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -331,7 +331,7 @@ const VIEWS = {
   documentos: { label: 'Documentos', short: 'Docs', ic: '📄', grupo: 'Personal', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewDocumentos() },
   operacion: { label: 'Actividad', ic: '◔', grupo: 'Operación', roles: ['developer', 'supervisor'], render: () => viewOperacion() },
   asistencia: { label: 'Asistencia', ic: '▦', grupo: 'Operación', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor'], render: () => viewAsistencia() },
-  prenomina: { label: 'Pre-nómina', short: 'Nómina', ic: '$', grupo: 'Nómina', roles: ['director', 'nomina'], render: () => viewPrenomina() },
+  prenomina: { label: 'Pre-nómina', short: 'Nómina', ic: '$', grupo: 'Nómina', roles: ['developer', 'director', 'nomina'], render: () => viewPrenomina() },
   usuarios: { label: 'Usuarios', ic: '🔑', grupo: 'Administración', roles: ['developer'], render: () => viewUsuarios() },
   catalogos: { label: 'Áreas y grupos', ic: '⌂', grupo: 'Administración', roles: ['developer'], render: () => viewCatalogos() },
   plantillas: { label: 'Plantillas', ic: '✎', grupo: 'Administración', roles: ['developer'], render: () => viewPlantillas() },
@@ -2903,7 +2903,7 @@ async function purgeCandidatos(cands) {
 }
 
 // ───────────────────────── Pre-nómina ─────────────────────────
-// Nómina arma el periodo y lo autoriza; Dirección (Wendy y Emma) solo consulta.
+// Nómina arma el periodo y lo autoriza; Daniel y Dirección (Wendy y Emma) solo consultan.
 // Base: salario diario × días pagados. Faltas, retardos, permisos y festivos trabajados salen del pase de lista.
 // Todos los importes los calcula la base de datos; aquí solo se capturan y se muestran.
 const BANCOS = {
