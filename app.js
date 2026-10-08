@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.12.0';
+const APP_VERSION = '0.13.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -331,6 +331,7 @@ const VIEWS = {
   documentos: { label: 'Documentos', short: 'Docs', ic: '📄', grupo: 'Personal', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewDocumentos() },
   operacion: { label: 'Actividad', ic: '◔', grupo: 'Operación', roles: ['developer', 'supervisor'], render: () => viewOperacion() },
   asistencia: { label: 'Asistencia', ic: '▦', grupo: 'Operación', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor'], render: () => viewAsistencia() },
+  chat: { label: 'Mensajes', short: 'Chat', ic: '💬', grupo: 'Comunicación', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewChat() },
   prenomina: { label: 'Pre-nómina', short: 'Nómina', ic: '$', grupo: 'Nómina', roles: ['developer', 'director', 'nomina'], render: () => viewPrenomina() },
   usuarios: { label: 'Usuarios', ic: '🔑', grupo: 'Administración', roles: ['developer'], render: () => viewUsuarios() },
   catalogos: { label: 'Áreas y grupos', ic: '⌂', grupo: 'Administración', roles: ['developer'], render: () => viewCatalogos() },
@@ -353,6 +354,7 @@ const ICONS = {
   plantillas: '<path d="M6 3h8l4 4v6"/><path d="M6 3v18h6"/><path d="M14 3v4h4"/><path d="M14.5 21l1-3.5 5-5 2.5 2.5-5 5z"/>',
   buzon: '<path d="M3 13l2.5-7h13L21 13v6H3z"/><path d="M3 13h5l1.5 2.5h5L16 13h5"/>',
   bitacora: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  chat: '<path d="M4 5.5h16v10.5H10l-4.5 3.5V16H4z"/><path d="M8 9.5h8M8 12.5h5"/>',
   prenomina: '<rect x="3" y="6" width="18" height="12" rx="2.5"/><circle cx="12" cy="12" r="2.6"/><path d="M6.5 9.5v5M17.5 9.5v5"/>',
   mas: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
   fb: '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/>',
@@ -360,9 +362,11 @@ const ICONS = {
 };
 const icon = (k, sz = 22) => `<svg viewBox="0 0 24 24" width="${sz}" height="${sz}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[k] || ''}</svg>`;
 // En el celular: máximo 4 secciones abajo + "Más" (el resto en un panel agrupado)
-const TAB_PRIO = ['lista', 'personal', 'casos', 'documentos', 'reclutamiento', 'asistencia', 'prenomina', 'operacion', 'buzon', 'usuarios', 'catalogos', 'plantillas', 'bitacora'];
+const TAB_PRIO = ['lista', 'personal', 'chat', 'casos', 'documentos', 'reclutamiento', 'asistencia', 'prenomina', 'operacion', 'buzon', 'usuarios', 'catalogos', 'plantillas', 'bitacora'];
 // Supervisión: su trabajo diario es la lista y la actividad; documentos va en "Más"
-const TAB_PRIO_SUP = ['lista', 'personal', 'casos', 'operacion', 'asistencia', 'reclutamiento', 'documentos'];
+const TAB_PRIO_SUP = ['lista', 'personal', 'casos', 'operacion', 'chat', 'asistencia', 'reclutamiento', 'documentos'];
+// Nómina: su trabajo diario es la pre-nómina
+const TAB_PRIO_NOM = ['lista', 'prenomina', 'chat', 'personal', 'asistencia', 'documentos'];
 const navCount = (k) => Number(($(`.nav a[data-v="${k}"] .cnt`) || {}).textContent || 0);
 function refreshMoreBadge() {
   const t = $('#tabMore'); if (!t) return;
@@ -384,7 +388,7 @@ function openMore() {
 }
 function renderShell() {
   const nav = myViews().map(([k, v]) => `<a href="#/${k}" data-v="${k}">${icon(k, 20)}${esc(v.label)}</a>`).join('');
-  const prio = is('supervisor') ? TAB_PRIO_SUP : TAB_PRIO;
+  const prio = is('supervisor') ? TAB_PRIO_SUP : is('nomina') ? TAB_PRIO_NOM : TAB_PRIO;
   const byPrio = myViews().sort((a, b) => prio.indexOf(a[0]) - prio.indexOf(b[0]));
   const primary = byPrio.length <= 5 ? byPrio : byPrio.slice(0, 4);
   S.moreKeys = byPrio.length <= 5 ? [] : byPrio.slice(4).map(([k]) => k);
@@ -436,6 +440,7 @@ function route() {
   if (k !== 'casos') refreshCaseBadge();
   if (k !== 'documentos') refreshDocBadge();
   if (k !== 'buzon') refreshBuzonBadge();
+  if (k !== 'chat') refreshChatBadge();
 }
 window.addEventListener('hashchange', () => { if (S.me) route(); });
 
@@ -3587,6 +3592,271 @@ async function exportPrenomina(p, lineas) {
   document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
   toast('Excel listo');
 }
+
+// ───────────────────────── Mensajes internos ─────────────────────────
+// Directos (cualquiera con cualquiera), grupos por área (automáticos) y grupos manuales.
+// Los mensajes no se editan ni se borran; solo Daniel puede ocultar uno. Se actualiza solo cada pocos segundos.
+const CHAT_BUCKET = 'chat';
+const CH = { conv: null, info: null, msgs: [], members: [], lastId: 0, synced: false, timer: null, unread: null, list: [], q: '' };
+const canCreateGroup = () => is('developer', 'director', 'rh_general', 'rh_area', 'supervisor');
+const convName = (c) => c.tipo === 'directo' ? profName(c.otro_id) : c.nombre || 'Grupo';
+const convIcon = (c) => c.tipo === 'directo' ? `<span class="ch-av">${esc(initialsOf(profName(c.otro_id)))}</span>` : `<span class="ch-av grp">${c.tipo === 'area' ? '⌂' : '👥'}</span>`;
+const initialsOf = (n) => String(n || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+const hora = (ts) => fmtTime(ts);
+const diaChat = (ts) => { const d = new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date(ts)); return d === todayMX() ? 'Hoy' : d === addDays(todayMX(), -1) ? 'Ayer' : dayLabel(d); };
+const cuando = (ts) => { if (!ts) return ''; const d = new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date(ts)); return d === todayMX() ? hora(ts) : d === addDays(todayMX(), -1) ? 'Ayer' : fmtDate(d).slice(0, 5); };
+
+async function viewChat() {
+  const v = $('#view');
+  const id = (location.hash.match(/^#\/chat\/([0-9a-f-]{36})/i) || [])[1] || null;
+  if (!CH.synced) { try { await rpc('chat_sync_areas'); } catch { /* sin conexión */ } CH.synced = true; }
+  CH.conv = id; CH.msgs = []; CH.lastId = 0; CH.info = null;
+  v.innerHTML = `<div class="chat${id ? ' has-conv' : ''}">
+    <aside class="ch-list">
+      <div class="ch-lh"><b style="font-size:18px">Mensajes</b><span class="grow"></span>
+        ${'Notification' in window && Notification.permission === 'default' ? '<button type="button" class="btn sm" id="ch_notif" title="Recibir aviso cuando llegue un mensaje">🔔 Avisos</button>' : ''}
+        <button type="button" class="btn sm primary" id="ch_new">+ Nuevo</button></div>
+      <input class="inp" id="ch_q" type="search" placeholder="Buscar conversación" value="${esc(CH.q)}" aria-label="Buscar conversación" style="margin:0 12px 8px">
+      <div id="ch_items" class="ch-items"><div class="empty">Cargando…</div></div>
+    </aside>
+    <section class="ch-main" id="ch_main">${id ? '<div class="empty">Cargando…</div>' : '<div class="ch-empty"><div style="font-size:40px">💬</div><b>Elige una conversación</b><span class="muted small">o empieza una nueva con “+ Nuevo”.</span></div>'}</section>
+  </div>`;
+  $('#ch_new').onclick = () => nuevoChat();
+  $('#ch_q').oninput = (e) => { CH.q = e.target.value; pintarLista(); };
+  const nb = $('#ch_notif'); if (nb) nb.onclick = async () => { try { await Notification.requestPermission(); } catch { /* */ } nb.remove(); if (Notification.permission === 'granted') toast('Avisos activados'); };
+  await cargarLista();
+  if (id) await abrirConv(id);
+  clearInterval(CH.timer);
+  let n = 0;
+  CH.timer = setInterval(async () => {
+    if (S.view !== 'chat' || !$('#ch_items')) { clearInterval(CH.timer); return; }
+    if (document.hidden) return;
+    n++;
+    try { if (CH.conv) await nuevosMensajes(); if (n % 3 === 0 || !CH.conv) await cargarLista(); } catch { /* reintenta */ }
+  }, 3000);
+}
+
+async function cargarLista() {
+  CH.list = await rpc('chat_resumen');
+  pintarLista();
+  updateChatBadge(CH.list.reduce((s, c) => s + (c.no_leidos || 0), 0));
+}
+function pintarLista() {
+  const box = $('#ch_items'); if (!box) return;
+  const q = norm(CH.q);
+  const xs = CH.list.filter((c) => !q || norm(convName(c)).includes(q));
+  box.innerHTML = xs.length ? xs.map((c) => `<a class="ch-item${c.id === CH.conv ? ' on' : ''}" href="#/chat/${c.id}">
+      ${convIcon(c)}
+      <span class="grow" style="min-width:0"><span class="row" style="gap:6px;flex-wrap:nowrap"><b class="ch-nm">${esc(convName(c))}</b><span class="small muted" style="margin-left:auto;flex-shrink:0">${cuando(c.last_msg_at)}</span></span>
+      <span class="row" style="gap:6px;flex-wrap:nowrap"><span class="small muted ch-prev">${c.tipo === 'area' ? '<span class="badge b-mut" style="font-size:10px;padding:0 5px">Área</span> ' : c.tipo === 'grupo' ? `<span class="badge b-mut" style="font-size:10px;padding:0 5px">${c.miembros}</span> ` : ''}${c.ultimo_texto ? (c.ultimo_autor === S.me.id ? 'Tú: ' : c.tipo !== 'directo' && c.ultimo_autor ? esc(profName(c.ultimo_autor).split(' ')[0]) + ': ' : '') + esc(c.ultimo_texto) : '<i>Sin mensajes</i>'}</span>
+      ${c.no_leidos ? `<span class="cnt badge b-bad" style="margin-left:auto">${c.no_leidos}</span>` : ''}</span></span></a>`).join('')
+    : `<div class="empty small">${CH.list.length ? 'Nada coincide.' : 'Aún no tienes conversaciones. Toca “+ Nuevo”.'}</div>`;
+}
+
+async function abrirConv(id) {
+  const main = $('#ch_main');
+  const [info] = CH.list.filter((c) => c.id === id);
+  if (!info) { main.innerHTML = '<div class="ch-empty"><b>No encontrada</b><span class="muted small">Ya no participas en esta conversación.</span><a class="btn sm" href="#/chat">Volver</a></div>'; return; }
+  CH.info = info;
+  const sub = info.tipo === 'directo' ? esc(ROLES[(S.profiles.find((p) => p.id === info.otro_id) || {}).role] || '') : `${info.miembros} integrantes${info.tipo === 'area' ? ' · grupo del área (automático)' : ''}`;
+  main.innerHTML = `<header class="ch-head"><a class="btn sm ch-back" href="#/chat" aria-label="Volver">‹</a>${convIcon(info)}
+      <div class="grow" style="min-width:0"><b class="ch-nm">${esc(convName(info))}</b><div class="small muted">${sub}</div></div>
+      <button type="button" class="btn sm" id="ch_info">${info.tipo === 'directo' ? 'Info' : 'Integrantes'}</button></header>
+    <div class="ch-msgs" id="ch_msgs"><div class="empty">Cargando…</div></div>
+    <form class="ch-comp" id="ch_form" autocomplete="off">
+      <button type="button" class="btn sm ch-clip" id="ch_att" title="Adjuntar foto o PDF" aria-label="Adjuntar">📎</button>
+      <textarea id="ch_txt" rows="1" maxlength="4000" placeholder="Escribe un mensaje" aria-label="Mensaje"></textarea>
+      <button type="submit" class="btn primary" id="ch_send" aria-label="Enviar">Enviar</button>
+      <input type="file" id="ch_file" accept="image/*,application/pdf" hidden>
+    </form>`;
+  $('#ch_info').onclick = () => infoConv(info);
+  const ta = $('#ch_txt');
+  ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'; });
+  ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && matchMedia('(pointer: fine)').matches) { e.preventDefault(); $('#ch_form').requestSubmit(); } });
+  $('#ch_form').onsubmit = async (e) => { e.preventDefault(); await enviar(id, ta.value); };
+  $('#ch_att').onclick = () => $('#ch_file').click();
+  $('#ch_file').onchange = async (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) await enviarArchivo(id, f); };
+  const [msgs, members] = await Promise.all([
+    db('chat_mensajes').eq('conversacion_id', id).order('id', false).limit(200).get(),
+    db('chat_miembros').eq('conversacion_id', id).eq('activo', true).get()
+  ]);
+  CH.msgs = msgs.reverse(); CH.members = members; CH.lastId = CH.msgs.length ? CH.msgs[CH.msgs.length - 1].id : 0;
+  pintarMensajes(true);
+  if (matchMedia('(pointer: fine)').matches) ta.focus();
+  if (info.no_leidos) { await rpc('chat_marcar_leido', { p_conv: id }).catch(() => {}); info.no_leidos = 0; pintarLista(); refreshChatBadge(); }
+}
+
+async function nuevosMensajes() {
+  const id = CH.conv; if (!id || !$('#ch_msgs')) return;
+  const [nuevos, members] = await Promise.all([
+    db('chat_mensajes').eq('conversacion_id', id).gte('id', CH.lastId + 1).order('id').get(),
+    db('chat_miembros').eq('conversacion_id', id).eq('activo', true).get()
+  ]);
+  if (id !== CH.conv) return;
+  const vistoAntes = JSON.stringify(CH.members.map((m) => [m.user_id, m.last_read_at]));
+  CH.members = members;
+  if (nuevos.length) {
+    CH.msgs.push(...nuevos.filter((m) => !CH.msgs.some((x) => x.id === m.id))); CH.lastId = CH.msgs[CH.msgs.length - 1].id;
+    pintarMensajes(false);
+    if (nuevos.some((m) => m.user_id !== S.me.id) && !document.hidden) { await rpc('chat_marcar_leido', { p_conv: id }).catch(() => {}); }
+  } else if (vistoAntes !== JSON.stringify(members.map((m) => [m.user_id, m.last_read_at]))) pintarMensajes(false);
+}
+
+function pintarMensajes(forceBottom) {
+  const box = $('#ch_msgs'); if (!box) return;
+  const nearBottom = forceBottom || box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+  const info = CH.info; const others = CH.members.filter((m) => m.user_id !== S.me.id);
+  let lastDay = null, lastUser = null; const out = [];
+  if (!CH.msgs.length) out.push(`<div class="ch-empty"><span class="muted small">${info.tipo === 'directo' ? 'Escribe el primer mensaje.' : 'Nadie ha escrito en este grupo.'}</span><span class="muted small">Los mensajes no se pueden borrar.</span></div>`);
+  CH.msgs.forEach((m, i) => {
+    const d = diaChat(m.created_at);
+    if (d !== lastDay) { out.push(`<div class="ch-day"><span>${esc(d)}</span></div>`); lastDay = d; lastUser = null; }
+    const mine = m.user_id === S.me.id;
+    const showName = !mine && info.tipo !== 'directo' && lastUser !== m.user_id;
+    lastUser = m.user_id;
+    let estado = '';
+    if (mine) {
+      const vistos = others.filter((o) => o.last_read_at && new Date(o.last_read_at) >= new Date(m.created_at)).length;
+      estado = info.tipo === 'directo' ? (vistos ? '<span class="ch-tick seen" title="Visto">✓✓</span>' : '<span class="ch-tick" title="Enviado">✓</span>')
+        : (i === CH.msgs.length - 1 || CH.msgs.slice(i + 1).every((x) => x.user_id !== S.me.id)) ? `<span class="ch-tick${vistos ? ' seen' : ''}">${vistos ? `Visto por ${vistos}${vistos === others.length ? ' (todos)' : ''}` : '✓'}</span>` : '';
+    }
+    const body = m.oculto
+      ? `<i class="muted">Mensaje oculto por ${esc(profName(m.oculto_por))}${m.oculto_motivo ? ': ' + esc(m.oculto_motivo) : ''}</i>${is('developer') && m.texto ? `<div class="small muted" style="text-decoration:line-through">${esc(m.texto)}</div>` : ''}`
+      : `${m.adjunto_path ? (/^image\//.test(m.adjunto_tipo || '') ? `<button type="button" class="ch-img" data-img="${esc(m.adjunto_path)}" aria-label="Ver imagen"><span class="small muted">Cargando imagen…</span></button>` : `<button type="button" class="ch-file" data-file="${esc(m.adjunto_path)}">📄 ${esc(m.adjunto_nombre || 'archivo')}</button>`) : ''}${m.texto ? `<div class="ch-txt">${linkify(esc(m.texto))}</div>` : ''}`;
+    out.push(`<div class="ch-row${mine ? ' me' : ''}" data-mid="${m.id}"><div class="ch-bub${m.oculto ? ' hid' : ''}">${showName ? `<div class="ch-who">${esc(profName(m.user_id))}</div>` : ''}${body}
+      <div class="ch-meta">${hora(m.created_at)} ${estado}${is('developer') && !m.oculto ? ` <button type="button" class="ch-hide" data-hide="${m.id}" title="Ocultar mensaje">ocultar</button>` : ''}</div></div></div>`);
+  });
+  box.innerHTML = out.join('');
+  $$('[data-img]', box).forEach((b) => { storageUrl(CHAT_BUCKET, b.dataset.img).then((u) => { b.innerHTML = `<img src="${u}" alt="Imagen adjunta" loading="lazy">`; b.onclick = () => window.open(u, '_blank'); }).catch(() => { b.innerHTML = '<span class="small muted">No se pudo cargar la imagen</span>'; }); });
+  $$('[data-file]', box).forEach((b) => b.onclick = async () => { const w = window.open('about:blank', '_blank'); try { const u = await storageUrl(CHAT_BUCKET, b.dataset.file); if (w) w.location = u; else location.href = u; } catch (e) { if (w) w.close(); toast(e.message, true); } });
+  $$('[data-hide]', box).forEach((b) => b.onclick = () => ocultarMensaje(Number(b.dataset.hide)));
+  if (nearBottom) box.scrollTop = box.scrollHeight;
+}
+const linkify = (h) => h.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>').replace(/\n/g, '<br>');
+
+async function enviar(id, texto) {
+  const t = String(texto || '').trim(); if (!t) return;
+  const btn = $('#ch_send'); btn.disabled = true;
+  try {
+    await db('chat_mensajes').insert([{ conversacion_id: id, texto: t }]);
+    const ta = $('#ch_txt'); if (ta) { ta.value = ''; ta.style.height = 'auto'; }
+    await nuevosMensajes(); const box = $('#ch_msgs'); if (box) box.scrollTop = box.scrollHeight;
+    cargarLista().catch(() => {});
+  } catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; }
+}
+async function enviarArchivo(id, f) {
+  const mime = mimeOf(f);
+  if (f.size > 10 * 1024 * 1024) return toast('El archivo pasa de 10 MB', true);
+  if (!/^image\/|^application\/pdf$/.test(mime)) return toast('Solo fotos o PDF', true);
+  const ext = (f.name.match(/\.([a-z0-9]{1,6})$/i) || [])[1];
+  const key = `${id}/${newId()}${ext ? '.' + ext.toLowerCase() : ''}`;
+  const ta = $('#ch_txt'); const texto = ta ? ta.value.trim() : '';
+  toast('Enviando archivo…');
+  try {
+    await storageUpload(CHAT_BUCKET, key, f);
+    await db('chat_mensajes').insert([{ conversacion_id: id, texto: texto || null, adjunto_path: key, adjunto_nombre: f.name.slice(0, 200), adjunto_tipo: mime, adjunto_tamano: f.size }]);
+    if (ta) ta.value = '';
+    await nuevosMensajes(); cargarLista().catch(() => {});
+    toast('Archivo enviado');
+  } catch (e) { toast('No se pudo enviar: ' + e.message, true); }
+}
+function ocultarMensaje(mid) {
+  const f = [{ k: 'motivo', label: 'Motivo', req: true, full: true, hint: 'El mensaje no se borra: queda oculto con quién y por qué.' }];
+  modal({ title: 'Ocultar mensaje', body: fieldsHtml(f), actions: [{ label: 'Cancelar' }, { label: 'Ocultar', cls: 'danger', run: async ({ el }) => {
+    const v = readFields(el, f); await rpc('chat_ocultar', { p_msg: mid, p_motivo: v.motivo });
+    const m = CH.msgs.find((x) => x.id === mid); if (m) Object.assign(m, { oculto: true, oculto_por: S.me.id, oculto_motivo: v.motivo });
+    pintarMensajes(false); toast('Mensaje oculto');
+  } }] });
+}
+
+const personasActivas = () => S.profiles.filter((p) => p.active && p.role && p.id !== S.me.id).sort((a, b) => a.full_name.localeCompare(b.full_name, 'es'));
+function selectorPersonas(xs, { multi, pre = [] } = {}) {
+  return `<input class="inp" id="sp_q" type="search" placeholder="Buscar persona" style="width:100%;margin-bottom:8px">
+    <div class="list" id="sp_l" style="max-height:46vh;overflow:auto">${xs.map((p) => `<label class="item sp-it" data-n="${esc(norm(p.full_name + ' ' + (ROLES[p.role] || '')))}" style="gap:10px">
+      ${multi ? `<input type="checkbox" value="${p.id}"${pre.includes(p.id) ? ' checked' : ''}>` : ''}<span class="ch-av">${esc(initialsOf(p.full_name))}</span>
+      <span class="grow"><span class="nm">${esc(p.full_name)}</span><br><span class="small muted">${esc(ROLES[p.role] || '')}</span></span>${multi ? '' : `<button type="button" class="btn sm primary" data-dm="${p.id}">Escribir</button>`}</label>`).join('') || '<div class="empty small">Nadie disponible.</div>'}</div>`;
+}
+function filtrarSelector(el) { const i = $('#sp_q', el); if (i) i.oninput = () => { const q = norm(i.value); $$('.sp-it', el).forEach((x) => { x.style.display = !q || x.dataset.n.includes(q) ? '' : 'none'; }); }; }
+
+async function nuevoChat() {
+  const m = modal({ title: 'Nueva conversación', body: `${canCreateGroup() ? '<div class="seg" style="margin-bottom:10px"><button type="button" class="on" data-nt="dm">Mensaje directo</button><button type="button" data-nt="grp">Nuevo grupo</button></div>' : ''}<div id="nc_b"></div>` });
+  const dm = () => {
+    $('#nc_b', m.el).innerHTML = selectorPersonas(personasActivas());
+    filtrarSelector(m.el);
+    $$('[data-dm]', m.el).forEach((b) => b.onclick = async () => { b.disabled = true; try { const id = await rpc('chat_directo', { p_user: b.dataset.dm }); m.close(); CH.list = []; location.hash = '#/chat/' + id; } catch (e) { toast(e.message, true); b.disabled = false; } });
+  };
+  const grp = async () => {
+    const ok = new Set(await rpc('chat_agregables').then((r) => r.map((x) => (typeof x === 'string' ? x : x.chat_agregables || Object.values(x)[0]))));
+    $('#nc_b', m.el).innerHTML = fieldsHtml([{ k: 'nombre', label: 'Nombre del grupo', req: true, full: true }]) + `<div class="eyebrow" style="margin:10px 0 6px">Integrantes</div>` + selectorPersonas(personasActivas().filter((p) => ok.has(p.id)), { multi: true })
+      + `<div class="small muted" style="margin-top:6px">${is('developer', 'director') ? 'Puedes agregar a cualquier persona.' : 'Puedes agregar a gente de tus áreas, a Daniel y a Dirección.'}</div>
+      <div class="row" style="justify-content:flex-end;margin-top:10px"><button type="button" class="btn primary" id="nc_ok">Crear grupo</button></div>`;
+    filtrarSelector(m.el);
+    $('#nc_ok', m.el).onclick = async (ev) => {
+      const b = ev.currentTarget; b.disabled = true;
+      try {
+        const { nombre } = readFields(m.el, [{ k: 'nombre', label: 'Nombre del grupo', req: true }]);
+        const ids = $$('#sp_l input:checked', m.el).map((c) => c.value);
+        if (!ids.length) throw new Error('Elige al menos a una persona.');
+        const id = await rpc('chat_crear_grupo', { p_nombre: nombre, p_miembros: ids });
+        m.close(); location.hash = '#/chat/' + id;
+      } catch (e) { showErr(m.el, e); b.disabled = false; }
+    };
+  };
+  $$('[data-nt]', m.el).forEach((b) => b.onclick = () => { $$('[data-nt]', m.el).forEach((x) => x.classList.toggle('on', x === b)); (b.dataset.nt === 'dm' ? dm : grp)(); });
+  dm();
+}
+
+async function infoConv(info) {
+  const members = await db('chat_miembros').eq('conversacion_id', info.id).eq('activo', true).get();
+  const admin = info.tipo === 'grupo' && (info.admin || is('developer'));
+  const lista = members.map((x) => S.profiles.find((p) => p.id === x.user_id) || { id: x.user_id, full_name: profName(x.user_id) }).sort((a, b) => a.full_name.localeCompare(b.full_name, 'es'));
+  const m = modal({
+    title: convName(info), wide: false, body: `
+      ${info.tipo === 'area' ? '<div class="notice n-info">Grupo automático del área: entran y salen solos Supervisión, TL y RH asignados al área.</div>' : ''}
+      ${admin ? fieldsHtml([{ k: 'nombre', label: 'Nombre del grupo', val: info.nombre, full: true }]) : ''}
+      <div class="eyebrow" style="margin:10px 0 6px">${lista.length} integrantes</div>
+      <div class="list">${lista.map((p) => { const mm = members.find((x) => x.user_id === p.id); return `<div class="item" style="gap:10px"><span class="ch-av">${esc(initialsOf(p.full_name))}</span>
+        <span class="grow"><span class="nm">${esc(p.full_name)}${p.id === S.me.id ? ' (tú)' : ''}</span><br><span class="small muted">${esc(ROLES[p.role] || '')}${mm && mm.admin ? ' · creó el grupo' : ''}</span></span>
+        ${p.id !== S.me.id && info.tipo !== 'directo' ? `<button type="button" class="btn sm" data-dm="${p.id}">Escribir</button>` : ''}
+        ${admin && mm && !mm.admin ? `<button type="button" class="btn sm ghost" data-rm="${p.id}" aria-label="Quitar">✕</button>` : ''}</div>`; }).join('')}</div>`,
+    actions: [
+      ...(info.tipo === 'grupo' ? [{ label: 'Salir del grupo', cls: 'danger', run: async () => { if (!(await confirmBox('Salir del grupo', `¿Salir de <b>${esc(convName(info))}</b>?`, { danger: true, okLabel: 'Salir' }))) return false; await rpc('chat_salir', { p_conv: info.id }); location.hash = '#/chat'; } }] : []),
+      ...(admin ? [{ label: 'Agregar personas', run: () => { setTimeout(() => agregarAGrupo(info, members), 0); } }, { label: 'Guardar nombre', cls: 'primary', run: async ({ el }) => { const { nombre } = readFields(el, [{ k: 'nombre', label: 'Nombre', req: true }]); await rpc('chat_editar_grupo', { p_conv: info.id, p_nombre: nombre, p_agregar: [], p_quitar: [] }); toast('Guardado'); viewChat(); } }] : [{ label: 'Cerrar' }])
+    ]
+  });
+  $$('[data-dm]', m.el).forEach((b) => b.onclick = async () => { try { const id = await rpc('chat_directo', { p_user: b.dataset.dm }); m.close(); location.hash = '#/chat/' + id; } catch (e) { toast(e.message, true); } });
+  $$('[data-rm]', m.el).forEach((b) => b.onclick = async () => { if (!(await confirmBox('Quitar del grupo', `¿Quitar a <b>${esc(profName(b.dataset.rm))}</b>?`, { danger: true, okLabel: 'Quitar' }))) return; try { await rpc('chat_editar_grupo', { p_conv: info.id, p_nombre: null, p_agregar: [], p_quitar: [b.dataset.rm] }); m.close(); toast('Quitado'); viewChat(); } catch (e) { toast(e.message, true); } });
+}
+async function agregarAGrupo(info, members) {
+  const ok = new Set(await rpc('chat_agregables').then((r) => r.map((x) => (typeof x === 'string' ? x : x.chat_agregables || Object.values(x)[0]))));
+  const ya = new Set(members.map((x) => x.user_id));
+  modal({ title: 'Agregar a ' + convName(info), body: selectorPersonas(personasActivas().filter((p) => ok.has(p.id) && !ya.has(p.id)), { multi: true }),
+    actions: [{ label: 'Cancelar' }, { label: 'Agregar', cls: 'primary', run: async ({ el }) => { const ids = $$('#sp_l input:checked', el).map((c) => c.value); if (!ids.length) throw new Error('Elige al menos a una persona.'); await rpc('chat_editar_grupo', { p_conv: info.id, p_nombre: null, p_agregar: ids, p_quitar: [] }); toast('Agregados'); viewChat(); } }] });
+  setTimeout(() => filtrarSelector($$('.modal-bg').pop()), 0);
+}
+
+// Contador de no leídos en el menú y aviso del sistema (si la persona lo activó)
+function updateChatBadge(n) {
+  $$('[data-v="chat"]').forEach((a) => {
+    let b = a.querySelector('.cnt'); if (!b) { b = document.createElement('span'); b.className = 'cnt badge b-bad'; b.style.marginLeft = 'auto'; a.appendChild(b); }
+    b.textContent = n; b.style.display = n ? '' : 'none';
+  });
+  refreshMoreBadge();
+  if (CH.unread != null && n > CH.unread && (document.hidden || S.view !== 'chat')) avisoMensaje(n - CH.unread);
+  CH.unread = n;
+}
+async function refreshChatBadge() {
+  if (!S.me || !VIEWS.chat || !VIEWS.chat.roles.includes(role())) return;
+  try { updateChatBadge(await rpc('chat_no_leidos')); } catch { /* sin conexión */ }
+}
+async function avisoMensaje(n) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const title = n === 1 ? 'Nuevo mensaje' : `${n} mensajes nuevos`;
+  const opt = { body: 'Enterprise HR · Mensajes', icon: 'icon-192.png', badge: 'icon-192.png', tag: 'ehr-chat', renotify: true, data: { url: location.pathname + '#/chat' } };
+  try { const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration(); if (reg) await reg.showNotification(title, opt); else new Notification(title, opt); } catch { /* sin permiso */ }
+}
+setInterval(() => { if (S.me && S.view !== 'chat') refreshChatBadge(); }, 20000);
 
 // ───────────────────────── PWA ─────────────────────────
 if ('serviceWorker' in navigator && location.protocol === 'https:' && !CFG.demo) {
