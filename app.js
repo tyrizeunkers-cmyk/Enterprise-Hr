@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.13.0';
+const APP_VERSION = '0.14.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -3189,7 +3189,7 @@ const NOM_PERC = [['chips', 'Pago de chips'], ['pendiente', 'Pendiente de pago']
   ['com_asesores', 'Comisión asesores'], ['com_lideres', 'Comisión líderes'], ['hrs_dobles', 'Horas dobles'], ['horas_extras', 'Horas extras']];
 const NOM_DED = [['otras_deducciones', 'Otras deducciones'], ['multas_disciplina', 'Multas por disciplina'], ['multas_retardo', 'Multas por retardo']];
 const NOM_AUTO = { salario_diario: 'Salario diario', dias_no_lab: 'Días no laborados', faltas: 'Faltas', festivo: 'Pago día festivo', clabe: 'CLABE', banco: 'Banco', beneficiario: 'Beneficiario' };
-const NS = { periodo: null, q: '', filtro: '' };
+const NS = { periodo: null, q: '', filtro: '', tab: null };
 const num = (n) => Number(n || 0);
 const r2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
 const hhmm = (min) => { const m = num(min); return m ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}` : ''; };
@@ -3251,7 +3251,165 @@ function lineaAlertas(l) {
 const ALERTA_FILTROS = [['sinsal', 'Sin salario'], ['sinclabe', 'Sin CLABE'], ['tercero', 'Cuenta de tercero'], ['sining', 'Sin fecha de ingreso'], ['parcial', 'Ingreso/baja en el periodo'], ['faltas', 'Más de 3 faltas'], ['ajuste', 'Ajustes manuales'], ['neto', 'Neto en cero']];
 const nivelBadge = { bad: 'b-bad', warn: 'b-warn', info: 'b-acc' };
 
+// ───── Pre-nómina al día: calendario de la quincena con lo devengado en tiempo real ─────
+// Devengado por día = salario diario × (días a pagar ÷ días del periodo); una falta del pase de lista descuenta el
+// salario diario; un día festivo trabajado suma el doble. Hoy hacia atrás es real; mañana en adelante es proyección.
+const kMoney = (v) => { const a = Math.abs(num(v)), sg = num(v) < 0 ? '−' : ''; return a >= 1e6 ? `${sg}$${(a / 1e6).toFixed(2)} M` : a >= 1e3 ? `${sg}$${(a / 1e3).toFixed(a >= 1e5 ? 0 : 1)}k` : `${sg}$${Math.round(a)}`; };
+const AD = { ini: null, area: '', grupo: '', timer: null, sel: null };
+function quincenaDe(iso) {
+  const [y, m, d] = iso.split('-').map(Number); const mm = String(m).padStart(2, '0');
+  return d <= 15 ? { ini: `${y}-${mm}-01`, fin: `${y}-${mm}-15` } : { ini: `${y}-${mm}-16`, fin: `${y}-${mm}-${lastDay(y, m)}` };
+}
+function quincenaMover(ini, n) {
+  const [y, m, d] = ini.split('-').map(Number);
+  let k = (y * 12 + (m - 1)) * 2 + (d > 15 ? 1 : 0) + n;
+  const yy = Math.floor(k / 24); k -= yy * 24; const mm = Math.floor(k / 2) + 1; const half = k % 2;
+  return quincenaDe(`${yy}-${String(mm).padStart(2, '0')}-${half ? '16' : '01'}`).ini;
+}
+const prnTabs = (on) => `<div class="ex-tabs" role="tablist" style="margin-bottom:14px"><button type="button" role="tab" data-ptab="dia" class="${on === 'dia' ? 'on' : ''}">Al día</button><button type="button" role="tab" data-ptab="periodos" class="${on === 'periodos' ? 'on' : ''}">Periodos y autorización</button></div>`;
+function bindPrnTabs() { $$('[data-ptab]').forEach((b) => b.onclick = () => { NS.tab = b.dataset.ptab; viewPrenomina(); }); }
 async function viewPrenomina() {
+  clearInterval(AD.timer);
+  if ((NS.tab || 'dia') === 'periodos') { await viewPrenominaPeriodos(); $('#view').insertAdjacentHTML('afterbegin', prnTabs('periodos')); bindPrnTabs(); return; }
+  return viewPrenominaDia();
+}
+
+function calcAlDia(rows, ini, fin) {
+  const hoy = todayMX();
+  const dias = []; for (let d = ini; d <= fin; d = addDays(d, 1)) dias.push(d);
+  const factor = 15 / dias.length;                 // la quincena se paga a 15 días
+  const fest = new Set(festivosEn(ini, fin).map(([d]) => d));
+  const porDia = dias.map((d) => ({ d, real: d <= hoy, monto: 0, faltas: [], altas: [], bajas: [], festivoLab: 0, activos: 0 }));
+  const personas = rows.map((r) => {
+    const sal = num(r.salario_diario), fs = new Set(r.faltas || []), as = new Set(r.asistencias || []);
+    let acum = 0, proy = 0, faltasHoy = 0, diasTrans = 0, ahorro = 0;
+    dias.forEach((d, i) => {
+      const activo = (!r.fecha_ingreso || d >= r.fecha_ingreso) && (!r.fecha_baja || d <= r.fecha_baja);
+      const pd = porDia[i];
+      if (r.fecha_ingreso === d) pd.altas.push(r.nombre);
+      if (r.fecha_baja === d) pd.bajas.push(r.nombre);
+      if (!activo) return;
+      pd.activos++;
+      let m = sal * factor;
+      if (pd.real) {
+        diasTrans++;
+        if (fs.has(d) && !fest.has(d)) { m -= sal; ahorro += sal; faltasHoy++; pd.faltas.push(r.nombre); }
+        if (fest.has(d) && as.has(d)) { m += sal * 2; pd.festivoLab++; }
+        acum += m;
+      }
+      proy += m;
+      pd.monto += m;
+    });
+    return { ...r, sal, acum: r2(acum), proy: r2(proy), faltasHoy, diasTrans, ahorro: r2(ahorro) };
+  });
+  let run = 0; porDia.forEach((p) => { p.monto = r2(p.monto); run += p.monto; p.acum = r2(run); });
+  const real = porDia.filter((p) => p.real);
+  return { dias, porDia, personas, factor, fest, hoy,
+    acumulado: real.length ? real[real.length - 1].acum : 0, proyeccion: porDia.length ? porDia[porDia.length - 1].acum : 0,
+    ahorro: r2(personas.reduce((s, p) => s + p.ahorro, 0)), faltas: personas.reduce((s, p) => s + p.faltasHoy, 0),
+    sinSalario: personas.filter((p) => !p.sal).length };
+}
+
+async function viewPrenominaDia() {
+  const v = $('#view');
+  if (!AD.ini) AD.ini = quincenaDe(todayMX()).ini;
+  const { ini, fin } = quincenaDe(AD.ini);
+  const all = await rpc('nomina_al_dia', { p_ini: ini, p_fin: fin });
+  const rows = all.filter((r) => (!AD.area || r.area_id === AD.area) && (!AD.grupo || (AD.grupo === 'none' ? !r.group_id : r.group_id === AD.grupo)));
+  const c = calcAlDia(rows, ini, fin);
+  const enCurso = ini <= c.hoy && c.hoy <= fin, pasada = fin < c.hoy;
+  const areas = [...new Set(all.map((r) => r.area_id))].map((id) => [id, areaName(id)]).sort((a, b) => a[1].localeCompare(b[1], 'es'));
+  const grupos = S.groups.filter((g) => all.some((r) => r.group_id === g.id) && (!AD.area || g.area_id === AD.area));
+  const DOW = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+  const pad = (new Date(ini + 'T12:00:00Z').getUTCDay() + 6) % 7;
+  const titulo = periodoTitulo({ fecha_inicio: ini, fecha_fin: fin });
+  v.innerHTML = prnTabs('dia') + `
+    <div class="pagehead"><div><h1>Pre-nómina al día</h1><div class="muted small">${esc(titulo)} · ${enCurso ? `al ${fmtDate(c.hoy)}, se actualiza sola cada minuto` : pasada ? 'quincena cerrada' : 'quincena por iniciar (todo es proyección)'}</div></div>
+      <div class="row" style="gap:6px"><button type="button" class="btn sm" id="ad_prev">‹ Anterior</button>${enCurso ? '' : '<button type="button" class="btn sm" id="ad_hoy">Quincena actual</button>'}<button type="button" class="btn sm" id="ad_next">Siguiente ›</button></div></div>
+    <div class="card pad" style="margin-bottom:12px">
+      <div class="row" style="gap:8px;margin-bottom:12px">
+        ${areas.length > 1 ? `<select class="inp" id="ad_area" aria-label="Área"><option value="">Todas las áreas</option>${areas.map(([id, n]) => `<option value="${id}"${AD.area === id ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>` : ''}
+        <select class="inp" id="ad_grupo" aria-label="Grupo"><option value="">Todos los grupos</option>${grupos.map((g) => `<option value="${g.id}"${AD.grupo === g.id ? ' selected' : ''}>${!AD.area && areas.length > 1 ? esc(areaName(g.area_id)) + ' · ' : ''}${esc(g.name)}</option>`).join('')}<option value="none"${AD.grupo === 'none' ? ' selected' : ''}>Sin grupo</option></select>
+        <span class="small muted grow" style="text-align:right">${rows.length} personas</span>
+      </div>
+      <div class="ad-kpis">
+        <div><div class="eyebrow">Acumulado a hoy</div><div class="ad-big">${money(c.acumulado)}</div><div class="small muted">${c.porDia.filter((p) => p.real).length} de ${c.dias.length} días</div></div>
+        <div><div class="eyebrow">Proyección al cierre</div><div class="ad-big" style="color:var(--muted)">${money(c.proyeccion)}</div><div class="small muted">si nadie falta más</div></div>
+        <div><div class="eyebrow">Descontado por faltas</div><div class="ad-big" style="color:var(--bad)">${money(c.ahorro)}</div><div class="small muted">${c.faltas} falta${c.faltas === 1 ? '' : 's'} a hoy</div></div>
+      </div>
+      ${c.sinSalario ? `<div class="notice n-warn" style="margin-top:10px">${c.sinSalario} persona${c.sinSalario === 1 ? '' : 's'} sin salario diario en su ficha: no suman al acumulado.</div>` : ''}
+    </div>
+    <div class="card pad" style="margin-bottom:12px"><div class="eyebrow" style="margin-bottom:8px">Avance del acumulado</div><div id="ad_chart"></div></div>
+    <div class="card pad" style="margin-bottom:12px">
+      <div class="eyebrow" style="margin-bottom:8px">Calendario · toca un día para ver el detalle</div>
+      <div class="ad-cal">${DOW.map((d) => `<div class="ex-dow">${d}</div>`).join('')}${'<div></div>'.repeat(pad)}
+        ${c.porDia.map((p) => `<button type="button" class="ad-day${p.real ? '' : ' fut'}${p.d === c.hoy ? ' hoy' : ''}" data-day="${p.d}">
+          <span class="row" style="justify-content:space-between;flex-wrap:nowrap"><b>${Number(p.d.slice(8))}</b>${c.fest.has(p.d) ? '<span title="Día festivo">★</span>' : ''}${p.faltas.length ? `<span class="ad-f" title="Faltas">${p.faltas.length} F</span>` : ''}</span>
+          <span class="ad-m" title="Generado ese día: ${esc(money(p.monto))}">${kMoney(p.monto)}</span><span class="ad-a" title="Acumulado: ${esc(money(p.acum))}">Σ ${kMoney(p.acum)}</span></button>`).join('')}</div>
+      <div class="small muted" style="margin-top:8px">Cada día: lo generado ese día y el acumulado (Σ), en miles (k = mil pesos). Los días después de hoy son proyección. ${c.factor !== 1 ? `Esta quincena tiene ${c.dias.length} días y se paga a 15: cada día vale ${(c.factor).toFixed(3)} del salario diario.` : ''}</div>
+    </div>
+    <div class="card scrollx"><table class="tbl" id="ad_tbl"><thead><tr><th>Nombre</th><th>Depto.</th><th style="text-align:right">Sal. diario</th><th style="text-align:right">Días</th><th style="text-align:right">Faltas</th><th style="text-align:right">Acumulado</th><th style="text-align:right">Proyección</th></tr></thead><tbody>
+      ${c.personas.slice().sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')).map((p) => `<tr><td style="min-width:170px"><b>${esc(p.nombre)}</b>${p.fecha_ingreso && p.fecha_ingreso >= ini ? `<br><span class="small muted">Ingresó ${fmtDate(p.fecha_ingreso)}</span>` : ''}${p.fecha_baja ? `<br><span class="small" style="color:var(--bad)">Baja ${fmtDate(p.fecha_baja)}</span>` : ''}</td>
+        <td class="small">${esc(p.departamento || '')}</td><td class="mono" style="text-align:right">${p.sal ? money(p.sal) : '<span style="color:var(--warn)">Sin salario</span>'}</td>
+        <td class="mono" style="text-align:right">${p.diasTrans}</td><td class="mono" style="text-align:right;${p.faltasHoy ? 'color:var(--bad);font-weight:700' : ''}">${p.faltasHoy || ''}</td>
+        <td class="mono" style="text-align:right"><b>${money(p.acum)}</b></td><td class="mono muted" style="text-align:right">${money(p.proy)}</td></tr>`).join('')}
+      <tr class="ad-tot"><td colspan="5"><b>Total</b></td><td class="mono" style="text-align:right"><b>${money(c.acumulado)}</b></td><td class="mono" style="text-align:right">${money(c.proyeccion)}</td></tr>
+      </tbody></table></div>`;
+  bindPrnTabs();
+  dibujarAvance($('#ad_chart'), c);
+  $('#ad_prev').onclick = () => { AD.ini = quincenaMover(ini, -1); viewPrenomina(); };
+  $('#ad_next').onclick = () => { AD.ini = quincenaMover(ini, 1); viewPrenomina(); };
+  const h = $('#ad_hoy'); if (h) h.onclick = () => { AD.ini = null; viewPrenomina(); };
+  const sa = $('#ad_area'); if (sa) sa.onchange = (e) => { AD.area = e.target.value; AD.grupo = ''; viewPrenomina(); };
+  $('#ad_grupo').onchange = (e) => { AD.grupo = e.target.value; viewPrenomina(); };
+  $$('[data-day]').forEach((b) => b.onclick = () => detalleDia(c, c.porDia.find((p) => p.d === b.dataset.day)));
+  if (enCurso) AD.timer = setInterval(() => { if (S.view !== 'prenomina' || (NS.tab || 'dia') !== 'dia' || !$('#ad_tbl')) { clearInterval(AD.timer); return; } if (!document.hidden && !$('.modal-bg')) viewPrenominaDia().catch(() => {}); }, 60000);
+}
+
+function detalleDia(c, p) {
+  modal({ title: `${dayLabel(p.d)}${c.fest.has(p.d) ? ' · ' + festivoNombre(p.d) : ''}`, body: `
+    <div class="kv"><span>Estado</span><span>${p.real ? (p.d === c.hoy ? 'Hoy' : 'Día transcurrido') : 'Proyección'}</span>
+      <span>Personas activas</span><span>${p.activos}</span><span>Generado ese día</span><span class="mono">${money(p.monto)}</span><span>Acumulado</span><span class="mono"><b>${money(p.acum)}</b></span>
+      ${p.festivoLab ? `<span>Festivo trabajado</span><span>${p.festivoLab} personas (pago doble)</span>` : ''}</div>
+    ${p.faltas.length ? `<div class="eyebrow" style="margin:12px 0 6px">Faltas (${p.faltas.length})</div><div class="list">${p.faltas.map((n) => `<div class="item small">${esc(n)}</div>`).join('')}</div>` : p.real ? '<div class="small muted" style="margin-top:10px">Sin faltas registradas ese día.</div>' : ''}
+    ${p.altas.length ? `<div class="eyebrow" style="margin:12px 0 6px">Ingresos</div><div class="small">${p.altas.map(esc).join(', ')}</div>` : ''}
+    ${p.bajas.length ? `<div class="eyebrow" style="margin:12px 0 6px">Último día (baja)</div><div class="small">${p.bajas.map(esc).join(', ')}</div>` : ''}`,
+    actions: [{ label: 'Cerrar' }] });
+}
+
+// Gráfica: acumulado real (línea sólida) y proyección (punteada), un solo eje de pesos, con detalle al pasar el dedo/ratón
+function dibujarAvance(box, c) {
+  if (!box || !c.porDia.length) return;
+  const W = Math.max(280, box.clientWidth || 600), H = 190, L = 64, R = 14, T = 12, B = 26;
+  const max = Math.max(1, ...c.porDia.map((p) => p.acum)) * 1.08;
+  const n = c.porDia.length, x = (i) => L + (n === 1 ? 0 : i * (W - L - R) / (n - 1)), y = (v) => T + (H - T - B) * (1 - v / max);
+  const realIdx = c.porDia.map((p, i) => (p.real ? i : -1)).filter((i) => i >= 0); const last = realIdx.length ? realIdx[realIdx.length - 1] : -1;
+  const path = (idx) => idx.map((i, k) => `${k ? 'L' : 'M'}${x(i).toFixed(1)},${y(c.porDia[i].acum).toFixed(1)}`).join(' ');
+  const proyIdx = c.porDia.map((_, i) => i).filter((i) => i >= Math.max(last, 0));
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => max / 1.08 * f);
+  const kfmt = (v) => v >= 1e6 ? '$' + (v / 1e6).toFixed(1) + ' M' : v >= 1e3 ? '$' + Math.round(v / 1e3) + ' mil' : '$' + Math.round(v);
+  box.innerHTML = `<div class="row small" style="gap:14px;margin-bottom:6px"><span><i class="ad-lg real"></i> Acumulado real</span><span><i class="ad-lg proy"></i> Proyección</span></div>
+    <svg width="100%" viewBox="0 0 ${W} ${H}" role="img" aria-label="Acumulado de la quincena: ${money(c.acumulado)} a hoy, proyección ${money(c.proyeccion)}" style="display:block;overflow:visible">
+    ${ticks.map((t) => `<line x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}" stroke="var(--line)" stroke-width="1"/><text x="${L - 8}" y="${y(t) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${kfmt(t)}</text>`).join('')}
+    ${c.porDia.map((p, i) => (i % Math.ceil(n / 8) === 0 || i === n - 1) ? `<text x="${x(i)}" y="${H - 6}" text-anchor="middle" font-size="11" fill="var(--muted)">${Number(p.d.slice(8))}</text>` : '').join('')}
+    ${proyIdx.length > 1 ? `<path d="${path(proyIdx)}" fill="none" stroke="var(--muted)" stroke-width="2" stroke-dasharray="5 4"/>` : ''}
+    ${realIdx.length ? `<path d="${path(realIdx)}" fill="none" stroke="var(--accent)" stroke-width="2.5"/><circle cx="${x(last)}" cy="${y(c.porDia[last].acum)}" r="5" fill="var(--accent)" stroke="var(--card)" stroke-width="2"/>` : ''}
+    <line id="ad_x" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="var(--line2)" stroke-width="1" visibility="hidden"/>
+    <rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent" id="ad_hit"/></svg><div class="ad-tip" id="ad_tip" hidden></div>`;
+  const hit = $('#ad_hit', box), tip = $('#ad_tip', box), cx = $('#ad_x', box), svg = $('svg', box);
+  const show = (ev) => {
+    const r = svg.getBoundingClientRect(); const px = (ev.clientX - r.left) * W / r.width;
+    const i = Math.max(0, Math.min(n - 1, Math.round((px - L) / ((W - L - R) / Math.max(1, n - 1)))));
+    const p = c.porDia[i];
+    cx.setAttribute('x1', x(i)); cx.setAttribute('x2', x(i)); cx.setAttribute('visibility', 'visible');
+    tip.hidden = false; tip.innerHTML = `<b>${esc(dayLabel(p.d))}</b>${p.real ? '' : ' · proyección'}<br>Acumulado <b>${money(p.acum)}</b><br>Ese día ${money(p.monto)}${p.faltas.length ? ` · ${p.faltas.length} faltas` : ''}`;
+    const left = Math.min(r.width - 170, Math.max(0, x(i) * r.width / W - 80)); tip.style.left = left + 'px';
+  };
+  hit.addEventListener('pointermove', show); hit.addEventListener('pointerdown', show);
+  hit.addEventListener('pointerleave', () => { tip.hidden = true; cx.setAttribute('visibility', 'hidden'); });
+}
+
+async function viewPrenominaPeriodos() {
   const v = $('#view');
   const periodos = await db('nomina_periodos').order('fecha_inicio', false).get();
   const canEdit = is('nomina');

@@ -283,6 +283,23 @@ details.card summary{cursor:pointer}
   .chat.has-conv .ch-list{display:none}.chat:not(.has-conv) .ch-main{display:none}
   .ch-back{display:inline-flex}
 }
+.ad-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.ad-big{font-size:26px;font-weight:700;font-family:var(--mono);letter-spacing:-.02em;margin:2px 0}
+.ad-cal{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.ad-day{border:1px solid var(--line);border-radius:10px;background:#fff;padding:6px 7px;text-align:left;display:flex;flex-direction:column;gap:2px;min-height:74px;cursor:pointer;font:inherit;color:inherit;min-width:0}
+.ad-day:hover{border-color:var(--accent)}
+.ad-day.fut{background:var(--soft);color:var(--muted);border-style:dashed}
+.ad-day.hoy{outline:2px solid var(--accent);outline-offset:-1px}
+.ad-m{font-family:var(--mono);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ad-a{font-family:var(--mono);font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ad-day:not(.fut) .ad-a{color:var(--accent);font-weight:700}
+.ad-f{font-size:10px;font-weight:700;color:var(--bad);background:var(--bad-t);border-radius:6px;padding:0 4px}
+.ad-tot td{border-top:2px solid var(--ink);background:var(--soft)}
+.ad-lg{display:inline-block;width:18px;height:0;border-top:3px solid var(--accent);vertical-align:middle;margin-right:4px}
+.ad-lg.proy{border-top:2px dashed var(--muted)}
+#ad_chart{position:relative}
+.ad-tip{position:absolute;top:28px;background:var(--ink);color:#fff;font-size:12px;padding:6px 9px;border-radius:8px;pointer-events:none;width:160px;line-height:1.4}
+@media (max-width:640px){.ad-kpis{grid-template-columns:1fr}.ad-big{font-size:22px}.ad-cal{gap:3px}.ad-day{min-height:58px;padding:4px}.ad-m{font-size:10px}.ad-a{font-size:9.5px}}
 .kv{display:grid;grid-template-columns:140px 1fr;gap:6px 10px;font-size:14px}
 .kv>span:nth-child(odd){color:var(--muted)}
 @media (max-width:560px){.kv{grid-template-columns:110px 1fr}}
@@ -315,7 +332,7 @@ details.card summary{cursor:pointer}
 </head>
 <body>
 <div id="app"><div class="login"><div class="muted">Cargando…</div></div></div>
-<script src="config.js?v=0.13.0"></script>
-<script src="app.js?v=0.13.0"></script>
+<script src="config.js?v=0.14.0"></script>
+<script src="app.js?v=0.14.0"></script>
 </body>
 </html>
