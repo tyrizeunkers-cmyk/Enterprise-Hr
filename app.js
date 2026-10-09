@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.15.0';
+const APP_VERSION = '0.16.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -36,10 +36,11 @@ const ATT_PM = { asistio: 'Presente', falta: 'Ausente', salida: 'Salida anticipa
 const TURNO = { manana: 'Mañana · Entrada', tarde: 'Tarde · Cierre' };
 const stLabel = (a) => a && a.status ? (a.turno === 'tarde' ? ATT_PM : ATT)[a.status] : null;
 const AVISO = { nuevo_ingreso: 'Nuevo ingreso', baja: 'Baja' };
-const INC = { permiso: 'Permiso', descanso: 'Descanso', inactividad: 'Inactividad' };
-const ATT_SHORT = { asistio: 'A', falta: 'F', retardo: 'R', salida: 'S', permiso: 'P', descanso: 'D', inactividad: 'I' };
-const ATT_COLOR = { asistio: 'var(--ok)', falta: 'var(--bad)', retardo: 'var(--warn)', salida: 'var(--warn)', permiso: '#4453A8', descanso: '#6B7785', inactividad: '#B23A0A' };
-const ATT_BADGE = { asistio: 'b-ok', falta: 'b-bad', retardo: 'b-warn', salida: 'b-warn', permiso: 'b-acc', descanso: 'b-mut', inactividad: 'b-warn', nuevo_ingreso: 'b-acc', baja: 'b-mut' };
+const INC = { permiso: 'Permiso', descanso: 'Descanso', inactividad: 'Inactividad', vacaciones: 'Vacaciones' };
+const INC_TL = ['permiso', 'descanso', 'inactividad'];   // las vacaciones las registra RH
+const ATT_SHORT = { asistio: 'A', falta: 'F', retardo: 'R', salida: 'S', permiso: 'P', descanso: 'D', inactividad: 'I', vacaciones: 'V' };
+const ATT_COLOR = { asistio: 'var(--ok)', falta: 'var(--bad)', retardo: 'var(--warn)', salida: 'var(--warn)', permiso: '#4453A8', descanso: '#6B7785', inactividad: '#B23A0A', vacaciones: '#0E7C86' };
+const ATT_BADGE = { asistio: 'b-ok', falta: 'b-bad', retardo: 'b-warn', salida: 'b-warn', permiso: 'b-acc', descanso: 'b-mut', inactividad: 'b-warn', vacaciones: 'b-ok', nuevo_ingreso: 'b-acc', baja: 'b-mut' };
 const attCounts = () => Object.fromEntries([...Object.keys(ATT), 'salida', ...Object.keys(INC), ...Object.keys(AVISO)].map((k) => [k, 0]));
 // Asistencia/Falta/Retardo cuentan solo en la mañana; en la tarde solo cuenta la salida anticipada
 const countAtt = (c, a) => { if (!a) return; if (a.status && (a.turno !== 'tarde' || a.status === 'salida')) c[a.status]++; if (a.incidencia) c[a.incidencia]++; if (a.aviso) c[a.aviso]++; };
@@ -495,7 +496,14 @@ async function viewLista() {
   // Turno inicial: la tarde si la mañana ya se envió y el cierre está habilitado
   if (!LS.turno) LS.turno = d.sent_at && !d.sent_pm_at && pmOpen(g.area_id, LS.fecha) ? 'tarde' : (d.sent_pm_at ? 'tarde' : 'manana');
   const lockedDay = !!d.reviewed_at && !is('developer', 'nomina');
-  renderLista({ emps, recM, recT, fx, d, lockedDay, g }, groups);
+  // Vacaciones aprobadas que cubren este día: se registran solas (mañana) y no se pueden cambiar
+  const vacs = ids.length ? await db('vacaciones').select('employee_id,fechas').in('employee_id', ids).eq('estado', 'aprobada').eq('tipo', 'disfrute').get().catch(() => []) : [];
+  const vac = new Set(vacs.filter((x) => (x.fechas || []).includes(LS.fecha)).map((x) => x.employee_id));
+  const falta = [...vac].filter((id) => !recM[id]);
+  if (falta.length && !lockedDay && LS.fecha <= todayMX()) {
+    try { (await db('attendance').insert(falta.map((id) => ({ employee_id: id, fecha: LS.fecha, turno: 'manana', status: null, aviso: null, incidencia: 'vacaciones', comentario: 'Vacaciones autorizadas por RH', incidencias: [] })), { onConflict: 'employee_id,fecha,turno' })).forEach((r) => { recM[r.employee_id] = r; }); } catch { /* lo registra el pase normal */ }
+  }
+  renderLista({ emps, recM, recT, fx, d, lockedDay, g, vac }, groups);
 }
 function renderLista(st, groups) {
   const v = $('#view');
@@ -526,7 +534,7 @@ function renderLista(st, groups) {
   ${tarde && !open ? `<div class="notice n-info" style="margin-bottom:10px">El pase de la tarde (cierre) se habilita a partir de las <b>${areaCierre(g.area_id)}</b>.</div>` : ''}
   ${tarde && open && diffs ? `<div class="notice n-warn" style="margin-bottom:10px"><b>${diffs}</b> ${diffs === 1 ? 'persona no coincide' : 'personas no coinciden'} con el pase de la mañana. Revísalas antes de enviar el cierre.</div>` : ''}
   ${total && !locked ? `<div class="row" style="margin-bottom:10px"><button class="btn ghost grow" id="allok"${done === total ? ' disabled' : ''}>${tarde ? 'Marcar pendientes igual que en la mañana' : 'Marcar pendientes como “Asistencia”'}</button></div>` : ''}
-  <div class="list" id="people">${total ? emps.map((e) => personCard(e, rec[e.id], fx[e.id], locked, tarde ? recM[e.id] : null)).join('') : `<div class="card empty">${lider ? 'Aún no hay líderes en este grupo. Asígnalos desde Personal (grupo “Líderes”).' : 'No hay personal activo en este grupo.'}</div>`}</div>
+  <div class="list" id="people">${total ? emps.map((e) => personCard(e, rec[e.id], fx[e.id], locked, tarde ? recM[e.id] : null, st.vac && st.vac.has(e.id))).join('') : `<div class="card empty">${lider ? 'Aún no hay líderes en este grupo. Asígnalos desde Personal (grupo “Líderes”).' : 'No hay personal activo en este grupo.'}</div>`}</div>
   ${canAddToList(g) && !lockedDay ? '<button type="button" class="btn ghost add-person" id="addPerson">+ Agregar persona que no aparece en la lista</button>' : ''}
   ${total ? `<div class="stickybar">
     <button class="btn primary" id="send" ${done < total || locked ? 'disabled' : ''} style="${sentAt && done === total ? 'background:var(--ok);border-color:var(--ok)' : ''}">${done < total ? `Faltan ${total - done} por registrar` : sentAt ? `${tarde ? 'Cierre enviado' : 'Entrada enviada'} ✓ · reenviar` : tarde ? 'Enviar cierre (tarde)' : 'Enviar entrada (mañana)'}</button>
@@ -578,7 +586,8 @@ function addPersonForm(g, onDone) {
     } }] });
 }
 const pendBadge = (e) => e.status === 'alta_pendiente' ? `<span class="badge b-warn">${e.origen === 'lider' ? 'Agregado por líder · falta alta' : 'Alta pendiente'}</span>` : '';
-function personCard(e, r, faltas, locked, morning) {
+function personCard(e, r, faltas, locked, morning, vac) {
+  if (vac) locked = true;   // vacaciones aprobadas por RH: el día queda fijo
   const open = LS.open === e.id;
   const col = r ? ATT_COLOR[attKey(r)] : null;
   const summary = r ? attLabel(r) : 'Sin registrar';
@@ -593,10 +602,11 @@ function personCard(e, r, faltas, locked, morning) {
     <button type="button" class="ph" aria-expanded="${open}">
       <span class="dot" style="${col ? `background:${col};border-color:${col}` : ''}"></span>
       <span class="grow"><span style="display:block;font-weight:600">${esc(fullName(e))}</span><span class="small muted">${esc(summary.length > 90 ? summary.slice(0, 90) + '…' : summary)}</span></span>
-      ${pendBadge(e)}${diff ? '<span class="badge b-warn">No coincide</span>' : ''}${faltasBadge(faltas)}<span class="more" aria-hidden="true">${open ? 'Cerrar ▴' : 'Detalle ▾'}</span>
+      ${vac ? '<span class="badge b-ok">Vacaciones</span>' : ''}${pendBadge(e)}${diff ? '<span class="badge b-warn">No coincide</span>' : ''}${faltasBadge(faltas)}<span class="more" aria-hidden="true">${open ? 'Cerrar ▴' : 'Detalle ▾'}</span>
     </button>
     ${open ? '' : `<div class="quick" role="group" aria-label="Asistencia rápida de ${esc(fullName(e))}">${Object.keys(ST).map((k) => `<button type="button" class="${k}${r && r.status === k ? ' on' : ''}" data-att="${k}" aria-pressed="${!!(r && r.status === k)}"${dis}>${k === 'salida' ? 'Salida' : ST[k]}</button>`).join('')}</div>`}
     ${open ? `<div class="body">
+      ${vac ? '<div class="notice n-info">De vacaciones autorizadas por RH. El día queda registrado como Vacaciones y no cuenta como falta.</div>' : ''}
       ${tarde ? `<div class="morning-ref${diff ? ' diff' : ''}"><span class="small muted">En la mañana</span><span>${morning ? attBadges(morning) : '<span class="badge b-mut">Sin registro</span>'}</span>${diff ? `<span class="small" style="color:var(--warn);font-weight:600">${esc(diff)}</span>` : ''}</div>` : ''}
       <section class="fbox">
         <header>${tarde ? 'Asistencia al cierre' : 'Asistencia'}</header>
@@ -608,7 +618,7 @@ function personCard(e, r, faltas, locked, morning) {
       <section class="fbox">
         <header>Incidencias del día</header>
         <div class="fbody">
-          <div class="att3">${Object.keys(INC).map(incBtn).join('')}</div>
+          <div class="att3">${INC_TL.map(incBtn).join('')}</div>
           ${r && r.incidencia ? `<div class="inc-note"><div class="small muted">Comentarios</div><div>${esc(r.comentario || '')}</div>${locked ? '' : '<button type="button" class="btn sm ghost" data-inc-edit>Editar comentario</button>'}</div>` : '<div class="small muted">Si eliges una incidencia se pide un comentario obligatorio.</div>'}
         </div>
       </section>
@@ -840,7 +850,7 @@ async function viewExpediente(id) {
   const c30 = attCounts(); att30.filter((a) => a.turno !== 'tarde').forEach((a) => countAtt(c30, a));
   const faltan = EXP_DOCS.filter(([k]) => !archivos.some((a) => a.tipo === k));
   const tabs = [['resumen', 'Resumen'], ['asistencia', 'Asistencia'], ...(full ? [['incidencias', 'Casos y actas'], ['documentos', 'Documentos'], ['expediente', `Expediente${faltan.length ? ` (${EXP_DOCS.length - faltan.length}/${EXP_DOCS.length})` : ' ✓'}`]] : []),
-    ...(seesNomina ? [['nomina', 'Nómina']] : []), ...(full ? [['historial', 'Historial']] : [])];
+    ...(seesNomina ? [['nomina', 'Nómina']] : []), ...(full || seesNomina ? [['vacaciones', 'Vacaciones']] : []), ...(full ? [['historial', 'Historial']] : [])];
   if (!tabs.some(([k]) => k === EXP.tab)) EXP.tab = 'resumen';
 
   // Acciones (las mismas reglas que antes)
@@ -850,6 +860,7 @@ async function viewExpediente(id) {
   if (is('developer') || (is('rh_general', 'rh_area') && inMyArea)) acts.push(['editar', 'Editar datos', '']);
   if ((is('developer') || (is('rh_general', 'rh_area') && inMyArea)) && ['activo', 'alta_pendiente'].includes(e.status)) acts.push(['grupo', 'Cambiar grupo', '']);
   if (is('nomina') && e.status === 'activo') acts.push(['banco', 'Datos bancarios', '']);
+  if (!is('developer') && canDocFin(e.area_id) && ['activo', 'baja'].includes(e.status)) acts.push(['finiq', 'Finiquito / liquidación', '']);
   if (is('developer')) {
     if (e.status === 'activo') acts.push(['area', 'Cambiar área', '']);
     if (['activo', 'baja', 'alta_pendiente'].includes(e.status)) acts.push(['doc', 'Generar documento', '']);
@@ -893,7 +904,8 @@ async function expAction(k, { e, p }) {
   if (k === 'grupo') return moveGroup(e);
   if (k === 'banco') return bancoForm(e, priv0(p));
   if (k === 'area') return moveArea(e);
-  if (k === 'doc') return e.status === 'baja' ? docForm({ tipo: 'constancia_baja', employee: e }) : newDocPicker({ employee: e });
+  if (k === 'doc') return newDocPicker({ employee: e });
+  if (k === 'finiq') return newDocPicker({ employee: e });
   if (k === 'baja') return bajaForm(e, priv0(p));
   if (k === 'eliminar') return deleteEmployeeForm(e);
 }
@@ -935,6 +947,14 @@ const card = (title, html, extra = '') => `<div class="card pad ex-card"><div cl
 const kvRows = (rows) => `<div class="kv">${rows.filter((r) => r).map(([k, val]) => `<span>${esc(k)}</span><span>${val == null || val === '' ? '—' : val}</span>`).join('')}</div>`;
 
 const EXP_TABS = {
+  async vacaciones(body, { e }) {
+    const [s, hist] = await Promise.all([rpc('vacaciones_saldo', { p_emp: e.id }), db('vacaciones').eq('employee_id', e.id).order('fecha_inicio', false).get()]);
+    body.innerHTML = `<div class="card pad">${canEditVac(e) && e.status === 'activo' ? '<div class="row" style="justify-content:flex-end;margin-bottom:8px"><button class="btn sm primary" id="ex_vac">+ Registrar vacaciones</button></div>' : ''}${vacSaldoHtml(s)}</div>
+      <div class="eyebrow" style="margin:14px 0 8px">Registros (${hist.length})</div><div class="list">${hist.length ? hist.map((x) => `<button type="button" class="item" data-vh="${x.id}"><span class="grow small">${esc(vacRango(x))}${x.nota ? ' · ' + esc(x.nota) : ''}</span>${x.estado === 'cancelada' ? '<span class="badge b-mut">Cancelada</span>' : `<span class="badge ${x.tipo === 'ajuste' ? 'b-mut' : 'b-ok'}">${num(x.dias)} días</span>`}</button>`).join('') : '<div class="card empty small">Sin vacaciones registradas.</div>'}</div>`;
+    const re = () => viewExpediente(e.id);
+    const b = $('#ex_vac', body); if (b) b.onclick = () => vacForm({ emps: [e], employee: e, onDone: re });
+    $$('[data-vh]', body).forEach((x) => x.onclick = () => vacDetalle(hist.find((y) => y.id === x.dataset.vh), e, re));
+  },
   async resumen(body, { e, p, g, full, cand, c30, faltan, contrato, cases, docs, archivos, metrics, acts30 }) {
     const pagos = canSeePrivate(e);
     const abiertos = cases.filter((k) => k.status !== 'cerrado').length;
@@ -1238,9 +1258,137 @@ function bajaForm(e, p) {
 }
 
 // ───────────────────────── Asistencia (revisión, alertas, exportación) ─────────────────────────
-const AS = { fecha: null, area: '', open: null };
+// ───── Vacaciones: RH registra, se marcan solas en el pase de lista y se descuentan del saldo (Art. 76 LFT) ─────
+const VS = { q: '', area: '', ver: 'actuales' };
+const canEditVac = (e) => is('developer') || (is('rh_general', 'rh_area') && e && S.myAreas.includes(e.area_id));
+const canSaldoVac = (e) => canEditVac(e) || is('director', 'nomina');
+const DOW_L = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+const dowOf = (iso) => new Date(iso + 'T12:00:00Z').getUTCDay();
+const vacRango = (x) => x.tipo === 'ajuste' ? `Ajuste · ${fmtDate(x.fecha_inicio)}` : x.fecha_inicio === x.fecha_fin ? fmtDate(x.fecha_inicio) : `${fmtDate(x.fecha_inicio)} al ${fmtDate(x.fecha_fin)}`;
+function vacSaldoHtml(s, { compact } = {}) {
+  if (!s) return '';
+  const disp = num(s.disponibles);
+  const chips = `<div class="row" style="gap:16px;flex-wrap:wrap">
+    <div><div class="eyebrow">Disponibles</div><b style="font-size:22px;color:${disp < 0 ? 'var(--bad)' : 'var(--ok)'}">${disp}</b> <span class="small muted">días</span></div>
+    <div><div class="eyebrow">Derecho (${s.anios_cumplidos} año${s.anios_cumplidos === 1 ? '' : 's'})</div><b style="font-size:18px">${num(s.derecho)}</b></div>
+    <div><div class="eyebrow">Tomados</div><b style="font-size:18px">${num(s.tomados)}</b></div>
+    <div><div class="eyebrow">Programados</div><b style="font-size:18px">${num(s.programados)}</b></div>
+    <div><div class="eyebrow">Año en curso (${s.anio_actual || 1}º)</div><b style="font-size:18px">${num(s.proporcional).toFixed(2)}</b> <span class="small muted">de ${s.dias_anio_actual} · se generan completos el ${fmtDate(s.aniversario)}</span></div></div>
+    ${num(s.adelantados) > 0 ? `<div class="notice n-warn" style="margin-top:8px">${num(s.adelantados)} días adelantados: se tomaron antes de generarse.</div>` : ''}`;
+  if (compact || !(s.anios || []).length) return chips + (s.ingreso ? '' : '<div class="notice n-warn" style="margin-top:8px">Sin fecha de ingreso: no se puede calcular el saldo.</div>');
+  return chips + `<div class="scrollx" style="margin-top:10px"><table class="tbl sub"><thead><tr><th>Año</th><th>Periodo</th><th style="text-align:right">Días de ley</th><th style="text-align:right">Tomados</th><th style="text-align:right">Disponibles</th></tr></thead><tbody>
+    ${s.anios.map((a) => `<tr><td>${a.anio}º</td><td class="small">${fmtDate(a.desde)} – ${fmtDate(a.hasta)}</td><td class="mono" style="text-align:right">${a.dias}</td><td class="mono" style="text-align:right">${num(a.tomados)}</td><td class="mono" style="text-align:right"><b>${num(a.disponibles)}</b></td></tr>`).join('')}
+  </tbody></table></div><div class="small muted" style="margin-top:6px">Los días tomados se descuentan primero del año más antiguo. Tabla del Art. 76 LFT: 12 días el primer año, +2 por año hasta 20, y +2 cada 5 años.</div>`;
+}
+async function vacEmpleados() {
+  return (await db('employees').select('id,nombre,apellido_paterno,apellido_materno,num_empleado,area_id,group_id,status,fecha_ingreso').eq('status', 'activo').get()).sort(sortName);
+}
+async function viewVacaciones(v) {
+  const hoy = todayMX();
+  const [vacs, emps] = await Promise.all([db('vacaciones').eq('estado', 'aprobada').order('fecha_inicio', false).getAll(), vacEmpleados()]);
+  const empById = Object.fromEntries(emps.map((e) => [e.id, e]));
+  const areas = visibleAreas();
+  const q = norm(VS.q);
+  const vis = vacs.filter((x) => empById[x.employee_id] && (!VS.area || empById[x.employee_id].area_id === VS.area) && (!q || norm(fullName(empById[x.employee_id]) + ' ' + (empById[x.employee_id].num_empleado || '')).includes(q)));
+  const hoyV = vis.filter((x) => x.tipo === 'disfrute' && (x.fechas || []).includes(hoy));
+  const prox = vis.filter((x) => x.tipo === 'disfrute' && x.fecha_inicio > hoy).sort((a, b) => a.fecha_inicio.localeCompare(b.fecha_inicio));
+  const pas = vis.filter((x) => !hoyV.includes(x) && !prox.includes(x));
+  const puede = is('developer', 'rh_general', 'rh_area');
+  const row = (x) => { const e = empById[x.employee_id];
+    return `<button type="button" class="item" data-vac="${x.id}"><span class="grow"><span class="nm">${esc(fullName(e))}</span><br><span class="small muted">${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))} · ${esc(vacRango(x))}${x.nota ? ' · ' + esc(x.nota) : ''}</span></span>
+      ${x.adelanto ? '<span class="badge b-warn">Adelanto</span>' : ''}<span class="badge ${x.tipo === 'ajuste' ? 'b-mut' : 'b-ok'}">${num(x.dias)} día${num(x.dias) === 1 ? '' : 's'}</span></button>`; };
+  const sec = (t, xs, empty) => `<div class="eyebrow" style="margin:14px 0 8px">${t} (${xs.length})</div><div class="list">${xs.length ? xs.map(row).join('') : `<div class="card empty small">${empty}</div>`}</div>`;
+  v.insertAdjacentHTML('beforeend', `
+    <div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:6px">
+      <div class="row" style="gap:8px"><input class="inp grow" id="vq" type="search" placeholder="Buscar persona" value="${esc(VS.q)}" aria-label="Buscar">
+        ${areas.length > 1 ? `<select class="inp" id="varea" aria-label="Área" style="max-width:220px"><option value="">Todas las áreas</option>${areas.map((a) => `<option value="${a.id}"${VS.area === a.id ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}</select>` : ''}
+        <button class="btn" id="vsaldo">Ver saldo de una persona</button>${puede ? '<button class="btn primary" id="vnew">+ Registrar vacaciones</button>' : ''}</div>
+      <div class="small muted">RH registra las vacaciones aprobadas. Esos días aparecen solos como <b>Vacaciones</b> en el pase de lista, no cuentan como falta, se pagan normal y suman prima vacacional del 25 % en la pre-nómina.</div>
+    </div>
+    ${sec('De vacaciones hoy', hoyV, 'Nadie está de vacaciones hoy.')}
+    ${sec('Próximas', prox, 'Sin vacaciones programadas.')}
+    ${sec('Anteriores y ajustes', pas.slice(0, 60), 'Sin registros.')}`);
+  const re = () => viewAsistencia();
+  $('#vq').oninput = (e) => { VS.q = e.target.value; clearTimeout(viewVacaciones._t); viewVacaciones._t = setTimeout(() => re().then(() => { const i = $('#vq'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }), 300); };
+  if ($('#varea')) $('#varea').onchange = (e) => { VS.area = e.target.value; re(); };
+  if ($('#vnew')) $('#vnew').onclick = () => vacForm({ emps: emps.filter((e) => canEditVac(e)), onDone: re });
+  $('#vsaldo').onclick = () => elegirPersona('Saldo de vacaciones · ¿de quién?', emps.filter(canSaldoVac).map((e) => ({ ...e, nombre: fullName(e), sub: `${areaName(e.area_id)} · ingreso ${fmtDate(e.fecha_ingreso)}` })), '', async (e, m) => { m.close(); vacSaldoModal(empById[e.id], re); });
+  $$('[data-vac]').forEach((b) => b.onclick = () => { const x = vacs.find((y) => y.id === b.dataset.vac); vacDetalle(x, empById[x.employee_id], re); });
+}
+async function vacSaldoModal(e, onDone) {
+  const [s, hist] = await Promise.all([rpc('vacaciones_saldo', { p_emp: e.id }), db('vacaciones').eq('employee_id', e.id).order('fecha_inicio', false).get()]);
+  const m = modal({ title: 'Vacaciones · ' + fullName(e), wide: true, body: `${vacSaldoHtml(s)}
+    <div class="eyebrow" style="margin:14px 0 8px">Registros</div><div class="list">${hist.length ? hist.map((x) => `<button type="button" class="item" data-vh="${x.id}"><span class="grow small">${esc(vacRango(x))}${x.nota ? ' · ' + esc(x.nota) : ''}</span>${x.estado === 'cancelada' ? '<span class="badge b-mut">Cancelada</span>' : `<span class="badge ${x.tipo === 'ajuste' ? 'b-mut' : 'b-ok'}">${num(x.dias)} días</span>`}</button>`).join('') : '<div class="card empty small">Sin registros.</div>'}</div>`,
+    actions: canEditVac(e) && e.status === 'activo' ? [{ label: 'Cerrar' }, { label: '+ Registrar vacaciones', cls: 'primary', run: () => { setTimeout(() => vacForm({ emps: [e], employee: e, onDone }), 0); } }] : [{ label: 'Cerrar' }] });
+  $$('[data-vh]', m.el).forEach((b) => b.onclick = () => { const x = hist.find((y) => y.id === b.dataset.vh); m.close(); vacDetalle(x, e, onDone); });
+}
+function vacDetalle(x, e, onDone) {
+  const hoy = todayMX(), fut = (x.fechas || []).filter((f) => f > hoy).length;
+  const puede = canEditVac(e) && x.estado === 'aprobada' && (x.tipo === 'ajuste' || fut > 0);
+  modal({ title: (x.tipo === 'ajuste' ? 'Ajuste de saldo · ' : 'Vacaciones · ') + fullName(e), wide: true,
+    body: `<div class="kv"><span>Estado</span><span>${x.estado === 'aprobada' ? '<span class="badge b-ok">Aprobada</span>' : '<span class="badge b-mut">Cancelada</span>'}</span>
+      <span>${x.tipo === 'ajuste' ? 'Fecha del ajuste' : 'Periodo'}</span><span>${esc(vacRango(x))}</span><span>Días</span><span class="mono">${num(x.dias)}${x.adelanto ? ' · adelantados' : ''}</span>
+      ${x.nota ? `<span>Nota</span><span>${esc(x.nota)}</span>` : ''}<span>Registró</span><span>${esc(profName(x.created_by))} · ${fmtDateTime(x.created_at)}</span>
+      ${x.cancelado_motivo ? `<span>Cancelación</span><span>${esc(x.cancelado_motivo)} · ${esc(profName(x.cancelado_by))}</span>` : ''}</div>
+      ${x.tipo === 'disfrute' ? `<div class="row" style="gap:4px;margin-top:10px;flex-wrap:wrap">${(x.fechas || []).map((f) => `<span class="badge ${f <= hoy ? 'b-mut' : 'b-ok'}">${DOW_L[dowOf(f)]} ${fmtDate(f)}</span>`).join('')}</div>` : ''}
+      ${puede && x.tipo === 'disfrute' && fut < (x.fechas || []).length ? `<div class="notice n-info" style="margin-top:10px">Ya empezaron: al cancelar solo se quitan los ${fut} días que faltan.</div>` : ''}`,
+    actions: puede ? [{ label: 'Cerrar' }, { label: x.tipo === 'ajuste' ? 'Cancelar ajuste' : 'Cancelar días que faltan', cls: 'danger', run: () => { setTimeout(() => simpleCaseAction('Cancelar vacaciones', [{ k: 'm', label: 'Motivo', type: 'textarea', req: true, full: true }],
+      async (v) => { const r = await rpc('vacaciones_cancelar', { p_id: x.id, p_motivo: v.m }); toast(r === 'recortada' ? 'Se quitaron los días que faltaban' : 'Vacaciones canceladas'); }, () => onDone && onDone(), 'Los días cancelados regresan al saldo.'), 0); } }] : [{ label: 'Cerrar' }] });
+}
+async function vacForm({ emps, employee, onDone }) {
+  if (!employee) {
+    if (!emps.length) return toast('No hay personal activo en tus áreas', true);
+    return elegirPersona('Registrar vacaciones · ¿para quién?', emps.map((e) => ({ ...e, nombre: fullName(e), sub: `${areaName(e.area_id)} · ${groupName(e.group_id)} · ingreso ${fmtDate(e.fecha_ingreso)}` })), '', async (e, m) => { m.close(); vacForm({ emps, employee: emps.find((x) => x.id === e.id), onDone }); });
+  }
+  const e = employee; const s = await rpc('vacaciones_saldo', { p_emp: e.id });
+  const t = todayMX();
+  const fs = [{ k: 'ini', label: 'Del', type: 'date', req: true, val: addDays(t, 1) }, { k: 'fin', label: 'Al', type: 'date', req: true, val: addDays(t, 5) }];
+  const m = modal({ title: 'Vacaciones · ' + fullName(e), wide: true,
+    body: `<div class="card pad" style="background:var(--soft);margin-bottom:12px">${vacSaldoHtml(s, { compact: true })}</div>
+      <div class="seg" role="group" aria-label="Tipo" style="margin-bottom:10px"><button type="button" data-vt="disfrute" class="on">Vacaciones</button><button type="button" data-vt="ajuste">Ajuste de saldo</button></div>
+      <div id="vt_disfrute">${fieldsHtml(fs)}<div class="eyebrow" style="margin:12px 0 6px">Días que se descuentan <span id="v_n"></span></div>
+        <div id="v_dias" class="row" style="gap:6px;flex-wrap:wrap"></div><div class="small muted" style="margin-top:6px">Los domingos y días festivos vienen sin marcar; toca un día para incluirlo o quitarlo.</div>
+        <label class="row small" style="gap:6px;margin-top:10px"><input type="checkbox" id="v_adel"> Adelantar días (la empresa autoriza tomar días que todavía no se generan)</label></div>
+      <div id="vt_ajuste" hidden>${fieldsHtml([{ k: 'adias', label: 'Días ya disfrutados', type: 'number' }, { k: 'afecha', label: 'Fecha de registro', type: 'date', val: t }])}
+        <div class="small muted" style="margin-top:6px">Para días que la persona ya disfrutó antes de registrar vacaciones en la app. Se restan de su saldo.</div></div>
+      ${fieldsHtml([{ k: 'nota', label: 'Nota', type: 'textarea', full: true, hint: 'Ej. "Aprobadas por su supervisor" o, en un ajuste, de qué periodo son los días.' }])}`,
+    actions: [{ label: 'Cancelar' }, { label: 'Registrar', cls: 'primary', run: async ({ el }) => {
+      const tipo = $('[data-vt].on', el).dataset.vt; const nota = $('#f_nota', el).value.trim() || null;
+      if (tipo === 'ajuste') {
+        const d = num($('#f_adias', el).value); if (!(d > 0)) throw new Error('Escribe cuántos días ya disfrutó.');
+        if (!nota) throw new Error('Escribe en la nota de qué periodo son esos días.');
+        await db('vacaciones').insert([{ employee_id: e.id, tipo: 'ajuste', dias: d, fecha_inicio: $('#f_afecha', el).value || t, nota }]);
+      } else {
+        const fechas = $$('[data-vd].on', el).map((b) => b.dataset.vd);
+        if (!fechas.length) throw new Error('Elige al menos un día.');
+        await db('vacaciones').insert([{ employee_id: e.id, tipo: 'disfrute', fechas, dias: fechas.length, adelanto: $('#v_adel', el).checked, nota }]);
+      }
+      toast('Vacaciones registradas'); onDone && onDone();
+    } }] });
+  const paint = () => {
+    const a = $('#f_ini', m.el).value, b = $('#f_fin', m.el).value; const box = $('#v_dias', m.el);
+    if (!a || !b || b < a) { box.innerHTML = '<span class="small muted">Elige el rango.</span>'; $('#v_n', m.el).textContent = ''; return; }
+    const prev = new Map($$('[data-vd]', m.el).map((x) => [x.dataset.vd, x.classList.contains('on')]));
+    const fest = new Set(festivosEn(a, b).map(([d]) => d)); const ds = [];
+    for (let d = a; d <= b && ds.length < 63; d = addDays(d, 1)) ds.push(d);
+    box.innerHTML = ds.map((d) => { const on = prev.has(d) ? prev.get(d) : !(dowOf(d) === 0 || fest.has(d)); return `<button type="button" class="btn sm${on ? ' on primary' : ''}" data-vd="${d}" style="min-height:34px">${DOW_L[dowOf(d)]} ${Number(d.slice(8))}/${Number(d.slice(5, 7))}${fest.has(d) ? ' ★' : ''}</button>`; }).join('');
+    $$('[data-vd]', m.el).forEach((x) => x.onclick = () => { x.classList.toggle('on'); x.classList.toggle('primary'); count(); });
+    count();
+  };
+  const count = () => { const n = $$('[data-vd].on', m.el).length; const disp = num(s.disponibles); $('#v_n', m.el).innerHTML = `· <b>${n}</b> día${n === 1 ? '' : 's'}${n > disp ? ` <span class="badge b-warn">pasa de ${Math.max(disp, 0)} disponibles</span>` : ''}`; };
+  $$('#f_ini,#f_fin', m.el).forEach((i) => i.addEventListener('change', paint)); paint();
+  $$('[data-vt]', m.el).forEach((b) => b.onclick = () => { $$('[data-vt]', m.el).forEach((x) => x.classList.toggle('on', x === b)); $('#vt_disfrute', m.el).hidden = b.dataset.vt !== 'disfrute'; $('#vt_ajuste', m.el).hidden = b.dataset.vt !== 'ajuste'; });
+}
+
+const AS = { fecha: null, area: '', open: null, tab: 'dia' };
+const asTabs = () => `<div class="seg" role="tablist" aria-label="Vista" style="margin-bottom:12px"><button type="button" data-astab="dia" class="${AS.tab === 'dia' ? 'on' : ''}">Pase del día</button><button type="button" data-astab="vac" class="${AS.tab === 'vac' ? 'on' : ''}">Vacaciones</button></div>`;
+const bindAsTabs = () => $$('[data-astab]').forEach((b) => b.onclick = () => { AS.tab = b.dataset.astab; viewAsistencia(); });
 async function viewAsistencia() {
   const v = $('#view');
+  if (AS.tab === 'vac') {
+    v.innerHTML = `<div class="pagehead"><div><h1>Asistencia</h1><div class="muted small">Vacaciones</div></div></div>${asTabs()}`;
+    bindAsTabs(); return viewVacaciones(v);
+  }
   if (!AS.fecha) AS.fecha = todayMX();
   const areas = visibleAreas();
   const groups = S.groups.filter((g) => g.active && (seesAllAreas() || S.myAreas.includes(g.area_id)) && (!AS.area || g.area_id === AS.area))
@@ -1267,6 +1415,7 @@ async function viewAsistencia() {
     <div class="row"><input type="date" class="inp mono" id="as_date" value="${AS.fecha}" max="${todayMX()}" aria-label="Fecha">
     ${areas.length > 1 ? `<select class="inp" id="as_area" aria-label="Área"><option value="">Todas las áreas</option>${areas.map((a) => `<option value="${a.id}"${AS.area === a.id ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}</select>` : ''}
     <button class="btn" id="as_exp">Exportar periodo</button></div></div>
+  ${asTabs()}
   ${alerts.length ? `<div class="card pad" style="margin-bottom:12px"><div class="eyebrow" style="margin-bottom:8px">Alertas · faltas en los últimos 30 días</div>
     <div class="list">${alerts.map((f) => { const e = empById[f.employee_id]; return `<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:8px"><span><b>${esc(fullName(e))}</b><br><span class="small muted">${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))}${f.retardos ? ` · ${f.retardos} retardos` : ''}</span></span>${faltasBadge(f.faltas)}</div>`; }).join('')}</div>
     <div class="small muted" style="margin-top:8px">Rojo: más de 3 faltas en 30 días (LFT art. 47 fr. X). Ámbar: 3 faltas.</div></div>` : ''}
@@ -1296,6 +1445,7 @@ async function viewAsistencia() {
   });
   $$('[data-goto]').forEach((b) => b.onclick = () => { LS.group = b.dataset.goto; LS.fecha = AS.fecha; location.hash = '#/lista'; });
   $('#as_exp').onclick = exportPeriod;
+  bindAsTabs();
 }
 
 function exportPeriod() {
@@ -1315,13 +1465,13 @@ function exportPeriod() {
       const per = {}, perT = {}; att.forEach((a) => { const m = a.turno === 'tarde' ? perT : per; (m[a.employee_id] = m[a.employee_id] || {})[a.fecha] = a; if (!per[a.employee_id]) per[a.employee_id] = {}; });
       const ids = Object.keys(per).sort((a, b) => sortName(empById[a] || { apellido_paterno: '', nombre: '' }, empById[b] || { apellido_paterno: '', nombre: '' }));
       const q = (s) => { let t = String(s ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
-      const lines = [['No.', 'Nombre', 'Área', 'Grupo', ...days.map(fmtDate), 'Asistencias', 'Faltas', 'Retardos', 'Salidas anticipadas', 'Permisos', 'Descansos', 'Inactividad', 'Diferencias mañana/tarde', 'Avisos', 'Comentarios'].map(q).join(',')];
+      const lines = [['No.', 'Nombre', 'Área', 'Grupo', ...days.map(fmtDate), 'Asistencias', 'Faltas', 'Retardos', 'Salidas anticipadas', 'Permisos', 'Descansos', 'Inactividad', 'Vacaciones', 'Diferencias mañana/tarde', 'Avisos', 'Comentarios'].map(q).join(',')];
       for (const id of ids) {
         const e = empById[id] || { nombre: '(sin acceso)', apellido_paterno: '' }; const r = per[id]; const rt = perT[id] || {}; let dif = 0;
         const c = attCounts(); const inc = [];
         const av = [];
         days.forEach((dd) => { for (const [a, tt] of [[r[dd], ''], [rt[dd], ' tarde']]) { if (!a) continue; countAtt(c, a); if (a.aviso) av.push(fmtDate(dd) + ': ' + AVISO[a.aviso]); if ((a.incidencias || []).length || a.comentario) inc.push(fmtDate(dd) + tt + ': ' + [INC[a.incidencia], ...(a.incidencias || []), a.comentario].filter(Boolean).join('/')); } if (attMismatch(r[dd], rt[dd])) dif++; });
-        lines.push([e.num_empleado, fullName(e), areaName(e.area_id), groupName(e.group_id), ...days.map((dd) => (r[dd] || rt[dd]) ? attShort(r[dd]) + '/' + attShort(rt[dd]) : ''), c.asistio, c.falta, c.retardo, c.salida, c.permiso, c.descanso, c.inactividad, dif, av.join(' | '), inc.join(' | ')].map(q).join(','));
+        lines.push([e.num_empleado, fullName(e), areaName(e.area_id), groupName(e.group_id), ...days.map((dd) => (r[dd] || rt[dd]) ? attShort(r[dd]) + '/' + attShort(rt[dd]) : ''), c.asistio, c.falta, c.retardo, c.salida, c.permiso, c.descanso, c.inactividad, c.vacaciones, dif, av.join(' | '), inc.join(' | ')].map(q).join(','));
       }
       if (CFG.demo) {
         setTimeout(() => modal({ title: 'Vista previa del CSV', wide: true, body: `<div class="notice n-info">En la demo no se descargan archivos. En la app real se descarga este CSV para abrirlo en Excel.</div><textarea class="inp mono" style="min-height:260px;font-size:12px;white-space:pre" readonly>${esc(lines.join('\n'))}</textarea>`, actions: [{ label: 'Cerrar', cls: 'primary' }] }), 0);
@@ -2064,12 +2214,17 @@ const DOC_TIPOS = {
   constancia_baja: { label: 'Constancia de baja', code: 'BAJ', grupo: 'Bajas', desc: 'Cierre administrativo de la baja, ligado al documento que la origina.' },
   contrato: { label: 'Contrato de trabajo', code: 'CON', grupo: 'Contratación', desc: '15 días, 30 días o tiempo indeterminado. Se genera solo al contratar desde Reclutamiento.' },
   reglamento: { label: 'Reglamento interior', code: 'RIT', grupo: 'Contratación', desc: 'Reglamento Interior de Trabajo con constancia de recepción.' },
-  confidencialidad: { label: 'Acuerdo de confidencialidad', code: 'ACF', grupo: 'Contratación', desc: 'Obligaciones de confidencialidad y manejo de información.' }
+  confidencialidad: { label: 'Acuerdo de confidencialidad', code: 'ACF', grupo: 'Contratación', desc: 'Obligaciones de confidencialidad y manejo de información.' },
+  finiquito: { label: 'Recibo de finiquito', code: 'FIN', grupo: 'Finiquitos', desc: 'Desglose del finiquito de la pre-nómina, total con letra, firma y huella; con carta de no adeudo.' },
+  liquidacion: { label: 'Recibo de liquidación', code: 'LIQ', grupo: 'Finiquitos', desc: 'Finiquito + indemnización de 3 meses, 20 días por año y prima de antigüedad con salario integrado.' },
+  ratificacion: { label: 'Convenio para ratificar', code: 'RAT', grupo: 'Finiquitos', desc: 'Convenio de terminación para ratificarse ante el Centro de Conciliación (Art. 33 LFT).' }
 };
+const DOC_FIN = ['finiquito', 'liquidacion', 'ratificacion'];
+const canDocFin = (areaId) => is('developer', 'nomina') || (is('rh_general', 'rh_area') && S.myAreas.includes(areaId));
 const DOC_BAJA = ['renuncia', 'rescision', 'convenio'];
 const DOC_CONTRATA = ['contrato', 'reglamento', 'confidencialidad'];
 const CONTRATOS = { '15_dias': 'Periodo a prueba · 15 días', '30_dias': 'Periodo a prueba · 30 días', indeterminado: 'Tiempo indeterminado' };
-const docTipoBadge = (t) => t.grupo === 'Bajas' ? 'b-bad' : t.grupo === 'Contratación' ? 'b-ok' : 'b-acc';
+const docTipoBadge = (t) => t.grupo === 'Bajas' ? 'b-bad' : t.grupo === 'Contratación' ? 'b-ok' : t.grupo === 'Finiquitos' ? 'b-warn' : 'b-acc';
 const DOC_LIDER = ['acta', 'advertencia'];
 const DOC_ST = { emitido: ['Emitido', 'b-acc'], con_lider: ['Con el líder', 'b-warn'], firmado: ['Firmado', 'b-ok'], negativa: ['Negativa de firma', 'b-bad'], anulado: ['Anulado', 'b-mut'] };
 const docBadge = (s) => `<span class="badge ${DOC_ST[s][1]}">${DOC_ST[s][0]}</span>`;
@@ -2219,7 +2374,8 @@ const CIUDAD = 'Ciudad de México';
 const TPL_VARS = {
   empresa: 'Nombre de la empresa', ciudad: 'Ciudad de México', nombre: 'Nombre completo', num: 'No. de empleado', puesto: 'Puesto', area: 'Área', grupo: 'Equipo', lider: 'Líder del equipo',
   ingreso: 'Fecha de ingreso', fecha: 'Fecha del documento', fecha_efectiva: 'Fecha efectiva / último día', fecha_hechos: 'Fecha de los hechos', representante: 'Firma por la empresa', monto_letra: 'Monto con letra (convenio)', forma_pago: 'Forma de pago (convenio)',
-  fecha_ingreso: 'Fecha de ingreso (contrato)', fecha_fin: 'Fin del periodo a prueba (contrato)', sueldo: 'Sueldo mensual (contrato)', horario: 'Horario (contrato)', supervisor: 'Supervisor asignado'
+  fecha_ingreso: 'Fecha de ingreso (contrato)', fecha_fin: 'Fin del periodo a prueba (contrato)', sueldo: 'Sueldo mensual (contrato)', horario: 'Horario (contrato)', supervisor: 'Supervisor asignado',
+  salario_diario: 'Salario diario (finiquito)', sdi: 'Salario diario integrado (liquidación)', antiguedad: 'Antigüedad en años (finiquito)', causa: 'Causa de terminación (liquidación)', centro: 'Centro de Conciliación (convenio)'
 };
 const DOC_BLOCKS = {
   general: [
@@ -2280,6 +2436,27 @@ const DOC_BLOCKS = {
   confidencialidad: [
     { k: 'cuerpo', label: 'Texto del acuerdo (## para títulos, - para listas)', def: TXT_CONF }
   ],
+  finiquito: [
+    { k: 'titulo', label: 'Título', def: 'RECIBO DE FINIQUITO' },
+    { k: 'intro', label: 'Párrafo inicial', def: 'En {ciudad}, el {fecha}, yo, **{nombre}**, recibo de **{empresa}** la cantidad de **{monto_letra}**, mediante {forma_pago}, por concepto de finiquito con motivo de la terminación de mi relación de trabajo con efectos a partir del **{fecha_efectiva}**, conforme al siguiente desglose:' },
+    { k: 'declaracion', label: 'Declaración', def: 'Manifiesto que el cálculo de las cantidades anteriores me fue explicado y entregado por escrito, y que corresponden a las prestaciones devengadas a mi favor hasta la fecha de terminación, que recibo a mi entera satisfacción.\n\nEste recibo acredita el pago de los conceptos desglosados. Conforme al artículo 33 de la Ley Federal del Trabajo, no implica renuncia a derechos que no estén comprendidos en él.' },
+    { k: 'no_adeudo', label: 'Carta de no adeudo', def: 'En {ciudad}, el {fecha}, yo, **{nombre}**, manifiesto que con el pago recibido en esta fecha por la cantidad de **{monto_letra}**, {empresa} me cubrió los salarios devengados, las partes proporcionales de aguinaldo, vacaciones y prima vacacional, y las demás prestaciones generadas a mi favor durante la relación de trabajo que concluyó el {fecha_efectiva}, por lo que no tengo adeudo pendiente que reclamar por esos conceptos.\n\nFirmo este documento de manera libre y voluntaria, después de haberlo leído y comprendido.' }
+  ],
+  liquidacion: [
+    { k: 'titulo', label: 'Título', def: 'RECIBO DE LIQUIDACIÓN' },
+    { k: 'intro', label: 'Párrafo inicial', def: 'En {ciudad}, el {fecha}, yo, **{nombre}**, recibo de **{empresa}** la cantidad de **{monto_letra}**, mediante {forma_pago}, por concepto de liquidación con motivo de la terminación de mi relación de trabajo con efectos a partir del **{fecha_efectiva}** ({causa}), que comprende la indemnización y las prestaciones devengadas conforme al siguiente desglose:' },
+    { k: 'declaracion', label: 'Declaración', def: 'La indemnización se calculó con un salario diario integrado de {sdi} y una antigüedad de {antiguedad}, conforme a los artículos 48, 50, 84 y 89 de la Ley Federal del Trabajo; la prima de antigüedad, conforme a los artículos 162, 485 y 486 de la misma Ley.\n\nManifiesto que el cálculo me fue explicado y entregado por escrito y que recibo las cantidades a mi entera satisfacción. Conforme al artículo 33 de la Ley Federal del Trabajo, este recibo no implica renuncia a derechos que no estén comprendidos en él.' },
+    { k: 'no_adeudo', label: 'Carta de no adeudo', def: 'En {ciudad}, el {fecha}, yo, **{nombre}**, manifiesto que con el pago recibido en esta fecha por la cantidad de **{monto_letra}**, {empresa} me cubrió la indemnización, los salarios devengados, las partes proporcionales de aguinaldo, vacaciones y prima vacacional, la prima de antigüedad y las demás prestaciones generadas a mi favor durante la relación de trabajo que concluyó el {fecha_efectiva}, por lo que no tengo adeudo pendiente que reclamar por esos conceptos.\n\nFirmo este documento de manera libre y voluntaria, después de haberlo leído y comprendido.' }
+  ],
+  ratificacion: [
+    { k: 'titulo', label: 'Título', def: 'CONVENIO DE TERMINACIÓN DE LA RELACIÓN DE TRABAJO' },
+    { k: 'subtitulo', label: 'Subtítulo', def: 'Para su ratificación ante el Centro de Conciliación · Artículos 33 y 53 de la Ley Federal del Trabajo' },
+    { k: 'proemio', label: 'Comparecencia', def: 'En {ciudad}, el {fecha}, comparecen ante el **{centro}** por una parte **{empresa}**, representada en este acto por **{representante}** (en adelante "la Empresa"), y por la otra **{nombre}** (en adelante "la Persona Trabajadora"), quienes celebran el presente convenio al tenor de las siguientes declaraciones y cláusulas:' },
+    { k: 'declaraciones', label: 'Declaraciones', def: '**I.** La Persona Trabajadora declara que prestó sus servicios a la Empresa desde el {ingreso} en el puesto de {puesto}, con un salario diario de {salario_diario}, y que la relación de trabajo terminó el {fecha_efectiva}.\n\n**II.** Ambas partes declaran que es su voluntad celebrar el presente convenio, que contiene una relación circunstanciada de los hechos que lo motivan y de los derechos comprendidos en él, conforme al artículo 33 de la Ley Federal del Trabajo.' },
+    { k: 'primera', label: 'Cláusula primera', def: '**PRIMERA.** Las partes reconocen la terminación de la relación de trabajo con efectos a partir del **{fecha_efectiva}**.' },
+    { k: 'segunda', label: 'Cláusula segunda (antes del desglose)', def: '**SEGUNDA.** La Empresa entrega en este acto a la Persona Trabajadora la cantidad de **{monto_letra}**, mediante {forma_pago}, por los conceptos siguientes:' },
+    { k: 'resto', label: 'Cláusulas siguientes (después del desglose)', def: '**TERCERA.** La Persona Trabajadora recibe la cantidad señalada a su entera satisfacción y manifiesta que con ella le quedan cubiertos los conceptos desglosados en la cláusula anterior, cuyo cálculo le fue explicado.\n\n**CUARTA.** Las partes solicitan al Centro de Conciliación que apruebe el presente convenio por no contener renuncia de derechos de la Persona Trabajadora y que, una vez ratificado, le otorgue los efectos legales que correspondan conforme a la Ley Federal del Trabajo.\n\n**QUINTA.** Leído el presente convenio y enteradas las partes de su contenido y alcance, lo firman de conformidad.' }
+  ],
   constancia_baja: [
     { k: 'titulo', label: 'Título', def: 'CONSTANCIA ADMINISTRATIVA DE BAJA DE PERSONAL' },
     { k: 'constancia', label: 'Texto de la constancia', def: 'En {ciudad}, a {fecha}, se hace constar que Recursos Humanos registró administrativamente la baja de la persona trabajadora identificada en este documento, con efectos a partir del {fecha_efectiva}.\n\nLa presente constancia tiene exclusivamente fines de control, trazabilidad y cierre administrativo del expediente laboral. No sustituye la renuncia voluntaria, aviso de rescisión, convenio, recibo de finiquito, comprobante de pago o cualquier otro documento que resulte aplicable conforme a la naturaleza de la terminación.' }
@@ -2313,7 +2490,9 @@ function tplVars(d, B) {
   return { empresa: B.empresa, ciudad: CIUDAD, nombre: s.nombre, num: s.num || 's/n', puesto: s.puesto, area: s.area, grupo: s.grupo, lider: s.lider, ingreso: fechaLarga(s.ingreso),
     fecha: fechaLarga(d.fecha), fecha_efectiva: fechaLarga(x.fecha_efectiva), fecha_hechos: fechaLarga(x.fecha_hechos), representante: x.representante || x.rh_nombre || 'Recursos Humanos',
     monto_letra: x.monto != null ? montoLetras(x.monto) : '________', forma_pago: String(x.forma_pago || '________').toLowerCase(),
-    fecha_ingreso: fechaLarga(x.fecha_ingreso || s.ingreso), fecha_fin: fechaLarga(x.fecha_fin), sueldo: x.sueldo != null ? money(x.sueldo) + ' mensuales' : '________', horario: x.horario || 'el asignado por EL PATRÓN', supervisor: s.supervisor || s.lider || '' };
+    fecha_ingreso: fechaLarga(x.fecha_ingreso || s.ingreso), fecha_fin: fechaLarga(x.fecha_fin), sueldo: x.sueldo != null ? money(x.sueldo) + ' mensuales' : '________', horario: x.horario || 'el asignado por EL PATRÓN', supervisor: s.supervisor || s.lider || '',
+    salario_diario: x.salario_diario != null ? money(x.salario_diario) : '________', sdi: x.sdi != null ? money(x.sdi) : '________', antiguedad: x.antiguedad_anios != null ? num(x.antiguedad_anios).toFixed(2) + ' años' : '________',
+    causa: x.causa || '________', centro: x.centro || 'Centro de Conciliación competente' };
 }
 // Texto de bloque → HTML seguro: {campo} se sustituye, **negritas**, renglón en blanco = párrafo
 function fillInline(text, vars) {
@@ -2410,6 +2589,15 @@ function docHtml(d, extra = {}) {
   } else if (d.tipo === 'confidencialidad') {
     b = docHead(d, B, 'ACUERDO DE CONFIDENCIALIDAD') + empTable(s, [['Fecha', fechaLarga(d.fecha)]]) + P('cuerpo') +
       firmas([s.nombre, 'Nombre y firma de la persona trabajadora'], [x.representante || 'Recursos Humanos', 'Por ' + B.empresa]) + pie(d);
+  } else if (d.tipo === 'finiquito' || d.tipo === 'liquidacion') {
+    b = docHead(d, B, B.titulo) + empTable(s, [['Fecha de ingreso', fmtDate(s.ingreso), 'Fecha de terminación', fmtDate(x.fecha_efectiva)], ['Salario diario', money(x.salario_diario), x.sdi ? 'Salario diario integrado' : 'Antigüedad', x.sdi ? money(x.sdi) : num(x.antiguedad_anios).toFixed(2) + ' años']]) +
+      P('intro') + finConceptosTabla(x) + P('declaracion') + huella(s.nombre) +
+      firmas([x.representante || 'Representante de la empresa', 'Entrega por ' + B.empresa], ['Testigo', 'Nombre y firma']) +
+      (x.no_adeudo ? `<div style="page-break-before:always"></div>` + docHead(d, B, 'CARTA DE NO ADEUDO') + empTable(s, [['Fecha de terminación', fmtDate(x.fecha_efectiva), 'Monto recibido', money(x.monto)]]) + P('no_adeudo') + huella(s.nombre) : '') + pie(d);
+  } else if (d.tipo === 'ratificacion') {
+    b = docHead(d, B, B.titulo, B.subtitulo) + P('proemio') + empTable(s, [['Fecha de ingreso', fmtDate(s.ingreso), 'Fecha de terminación', fmtDate(x.fecha_efectiva)]]) +
+      h2('Declaraciones') + P('declaraciones') + h2('Cláusulas') + P('primera') + P('segunda') + finConceptosTabla(x) + P('resto') +
+      firmas([x.representante || 'Representante', 'Por ' + B.empresa], [s.nombre, 'Persona trabajadora']) + pie(d);
   } else if (d.tipo === 'constancia_baja') {
     const o = extra.origen;
     b = docHead(d, B, B.titulo) + empTable(s, [['Fecha de ingreso', fmtDate(s.ingreso), 'Equipo', s.grupo || '—']]) +
@@ -2458,7 +2646,7 @@ async function viewDocumentos() {
   const rows = (DS.tab === 'pend' ? pend : docs).filter((d) => (!DS.tipo || d.tipo === DS.tipo) && (!q || norm(`${d.snapshot.nombre} ${docFolio(d)} ${d.snapshot.num}`).includes(q)));
   const pendLabel = is('developer') ? 'Por firmar' : 'Por entregar';
   v.innerHTML = `<div class="pagehead"><div><h1>Documentos</h1><div class="muted small">${is('developer') ? `${pend.length} emitidos sin firma · ${docs.filter((d) => d.estado === 'con_lider').length} con el líder` : is('tl', 'supervisor') ? `${pend.length} por entregar` : `${docs.length} documentos`}</div></div>
-      <div class="row" style="gap:8px">${is('developer') ? '<button class="btn" id="zipall" title="ZIP con todos los documentos, copias firmadas e índice">Respaldo ZIP</button><button class="btn primary" id="newdoc">+ Nuevo documento</button>' : ''}</div></div>
+      <div class="row" style="gap:8px">${is('developer') ? '<button class="btn" id="zipall" title="ZIP con todos los documentos, copias firmadas e índice">Respaldo ZIP</button><button class="btn primary" id="newdoc">+ Nuevo documento</button>' : is('nomina', 'rh_general', 'rh_area') ? '<button class="btn primary" id="newdoc">+ Finiquito / liquidación</button>' : ''}</div></div>
     <div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
       ${is('developer', 'tl', 'supervisor') ? `<div class="seg" role="group" aria-label="Filtro"><button type="button" data-dt="pend" class="${DS.tab === 'pend' ? 'on' : ''}">${pendLabel} (${pend.length})</button><button type="button" data-dt="all" class="${DS.tab === 'all' ? 'on' : ''}">Todos</button></div>` : ''}
       <div class="row" style="gap:8px"><input class="inp grow" id="dq" type="search" placeholder="Buscar por nombre, número o folio" value="${esc(DS.q)}" aria-label="Buscar documentos">
@@ -2493,13 +2681,14 @@ async function refreshDocBadge() {
 function newDocPicker({ emps, employee, caseRow, tipo } = {}) {
   if (tipo) return pickEmployee({ tipo, emps, employee, caseRow });
   const groups = {};
-  const okFor = (k) => !employee || (employee.status === 'alta_pendiente' ? DOC_CONTRATA.includes(k) : employee.status === 'baja' ? k === 'constancia_baja' : k !== 'constancia_baja');
+  const okFor = (k) => (is('developer') || DOC_FIN.includes(k)) && (!employee || (employee.status === 'alta_pendiente' ? DOC_CONTRATA.includes(k) : employee.status === 'baja' ? k === 'constancia_baja' || DOC_FIN.includes(k) : k !== 'constancia_baja'));
   Object.entries(DOC_TIPOS).filter(([k]) => okFor(k)).forEach(([k, t]) => { (groups[t.grupo] = groups[t.grupo] || []).push([k, t]); });
   const m = modal({ title: employee ? 'Nuevo documento · ' + fullName(employee) : 'Nuevo documento', wide: true,
     body: Object.entries(groups).map(([g, items]) => `<div class="eyebrow" style="margin:4px 0 8px">${esc(g)}</div><div class="doc-tiles">${items.map(([k, t]) => `<button type="button" class="doc-tile" data-nt="${k}"><span class="dt-code">${t.code}</span><b>${esc(t.label)}</b><span class="small muted">${esc(t.desc)}</span></button>`).join('')}</div>`).join('') });
   $$('[data-nt]', m.el).forEach((b) => b.onclick = () => { m.close(); pickEmployee({ tipo: b.dataset.nt, emps, employee, caseRow }); });
 }
 async function pickEmployee({ tipo, emps, employee, caseRow }) {
+  if (DOC_FIN.includes(tipo)) return finPickEmployee(tipo, employee);
   if (employee) return docForm({ tipo, employee, caseRow });
   emps = emps || await db('employees').select('id,nombre,apellido_paterno,apellido_materno,num_empleado,puesto,area_id,group_id,status,fecha_ingreso').get();
   const pool = emps.filter((e) => tipo === 'constancia_baja' ? e.status === 'baja' : DOC_CONTRATA.includes(tipo) ? ['activo', 'alta_pendiente'].includes(e.status) : e.status === 'activo').sort(sortName);
@@ -2516,6 +2705,7 @@ async function pickEmployee({ tipo, emps, employee, caseRow }) {
 
 // Formulario del documento (nuevo o edición mientras no esté firmado)
 async function docForm({ tipo, employee, caseRow, existing }) {
+  if (DOC_FIN.includes(tipo)) return finDocForm({ tipo, employee, existing });
   const e = employee;
   let d0 = existing ? { ...existing.datos } : {};
   if (!existing && caseRow) {   // sugerencias desde el caso
@@ -2572,6 +2762,123 @@ async function docForm({ tipo, employee, caseRow, existing }) {
   }
 }
 
+// ───── Finiquito, liquidación y convenio para ratificar ─────
+// Los montos salen del finiquito de la pre-nómina (o del mismo cálculo al vuelo) y se pueden ajustar antes de emitir.
+// Liquidación: indemnización de 90 días y 20 días por año con salario diario integrado (Arts. 48, 50, 84 y 89 LFT)
+// y prima de antigüedad siempre (Art. 162, tope de 2 salarios mínimos).
+const CAUSAS_LIQ = ['Despido sin causa justificada (Art. 48 LFT)', 'Terminación sin responsabilidad para la persona trabajadora (Art. 51 LFT)', 'Terminación por causas ajenas a la persona trabajadora', 'Otra'];
+const CENTROS = ['Centro Federal de Conciliación y Registro Laboral', 'Centro de Conciliación Laboral del Estado de México', 'Centro de Conciliación Laboral de la Ciudad de México'];
+function finConceptos(data, { tipo, base, salPend, veinte }) {
+  const c = data.calculo || {}, sal = num(c.salario_diario), antig = num(c.antiguedad_anios);
+  const vacD = r2(num(c.vac_dias) + num(c.vac_pendientes) - num(c.vac_tomadas));
+  const liq = tipo === 'liquidacion' || (tipo === 'ratificacion' && base === 'liquidacion');
+  const sdi = r2(sal * (1 + (15 + num(data.vac_dias_anio) * 0.25) / 365));
+  const tope = Math.min(sal, r2(2 * num(data.salario_minimo)));
+  const rows = [];
+  if (salPend && data.linea) rows.push({ c: `Salarios devengados pendientes (${data.linea.dias_pagados} días, quincena del ${data.linea.periodo})`, m: r2(data.linea.neto) });
+  rows.push({ c: `Vacaciones (${Math.max(vacD, 0).toFixed(2)} días)`, m: r2(c.vacaciones) });
+  rows.push({ c: 'Prima vacacional 25 %', m: r2(c.prima_vacacional) });
+  rows.push({ c: `Aguinaldo proporcional (${num(c.aguinaldo_dias).toFixed(2)} días)`, m: r2(c.aguinaldo) });
+  if (liq) {
+    rows.push({ c: `Prima de antigüedad (12 días × ${antig.toFixed(3)} años × ${money(tope)})`, m: r2(12 * antig * tope) });
+    rows.push({ c: `Indemnización constitucional (90 días × SDI ${money(sdi)})`, m: r2(90 * sdi) });
+    if (veinte) rows.push({ c: `20 días por año de servicio (20 × ${antig.toFixed(3)} años × SDI ${money(sdi)})`, m: r2(20 * antig * sdi) });
+  } else if (c.prima_antig_aplica && num(c.prima_antiguedad)) rows.push({ c: `Prima de antigüedad (12 días × ${antig.toFixed(3)} años)`, m: r2(c.prima_antiguedad) });
+  if (num(c.otras_percepciones)) rows.push({ c: c.otras_percepciones_concepto || 'Otras percepciones', m: r2(c.otras_percepciones) });
+  if (num(c.deducciones)) rows.push({ c: (c.deducciones_concepto || 'Deducciones') + ' (deducción)', m: -r2(c.deducciones) });
+  return { rows: rows.filter((r) => r.m !== 0 || /Vacaciones|Aguinaldo/.test(r.c)), sdi };
+}
+async function finPickEmployee(tipo, employee) {
+  if (employee) return finDocForm({ tipo, employee });
+  const xs = (await rpc('finiquito_personas', {})).map((e) => ({ ...e, nombre_c: fullName(e) }));
+  elegirPersona(DOC_TIPOS[tipo].label + ' · ¿para quién?', xs.map((e) => ({ id: e.id, nombre: e.nombre_c, num_empleado: e.num_empleado, sub: `${areaName(e.area_id)}${e.status === 'baja' ? ' · baja ' + fmtDate(e.fecha_baja) : ' · activo'}`, badge: statusBadge(e.status) })),
+    'Normalmente es para personas ya dadas de baja; también puedes prepararlo para alguien activo con la fecha de terminación.', async (p, m) => { m.close(); finDocForm({ tipo, employee: { id: p.id } }); });
+}
+async function finDocForm({ tipo, employee, existing }) {
+  const x0 = existing ? existing.datos || {} : {};
+  let data = await rpc('finiquito_documento', { p_emp: employee.id, p_fecha: x0.fecha_efectiva || null });
+  const e = data.empleado; const baja = e.status === 'baja';
+  await loadTemplates(true);
+  const fields = [
+    { k: '_fecha', label: 'Fecha del documento', type: 'date', req: true, val: existing ? existing.fecha : todayMX() },
+    { k: 'fecha_efectiva', label: baja ? 'Fecha de baja' : 'Fecha de terminación', type: 'date', req: true, val: x0.fecha_efectiva || data.fecha_baja },
+    { k: 'forma_pago', label: 'Forma de pago', type: 'select', req: true, val: x0.forma_pago || 'Transferencia', options: opts(['Transferencia', 'Efectivo', 'Cheque']) },
+    { k: 'representante', label: 'Por la empresa', req: true, val: x0.representante || S.me.full_name || '' },
+    ...(tipo === 'liquidacion' ? [{ k: 'causa', label: 'Causa de la terminación', type: 'select', req: true, full: true, val: x0.causa || CAUSAS_LIQ[0], options: opts(CAUSAS_LIQ) }] : []),
+    ...(tipo === 'ratificacion' ? [{ k: 'base', label: 'Lo que se paga', type: 'select', req: true, val: x0.base || 'finiquito', options: [['finiquito', 'Finiquito'], ['liquidacion', 'Liquidación (con indemnización)']] },
+      { k: 'centro', label: 'Centro de Conciliación', req: true, full: true, val: x0.centro || CENTROS[0], hint: 'Federal si la actividad es de jurisdicción federal; si no, el del estado. Ej. ' + CENTROS.slice(1).join(' / ') }] : [])];
+  let rows = x0.conceptos_tabla ? x0.conceptos_tabla.map((r) => ({ ...r })) : null; let sdi = x0.sdi || null;
+  const liqLike = () => tipo === 'liquidacion' || (tipo === 'ratificacion' && ($('#f_base', m.el) || {}).value === 'liquidacion');
+  const m = modal({ title: (existing ? 'Editar · ' : '') + DOC_TIPOS[tipo].label + ' · ' + fullName(e), wide: true,
+    body: `<div class="notice n-info"><b>${esc(fullName(e))}</b> · ${esc(e.num_empleado || 's/n')} · ${esc(e.puesto || 'sin puesto')} · ${esc(e.area || '')} · ingreso ${fmtDate(e.fecha_ingreso)}${baja ? ' · baja ' + fmtDate(e.fecha_baja) : ''}<br>
+      <span id="fd_fuente"></span></div>
+      ${fieldsHtml(fields)}
+      <div class="row" style="gap:14px;flex-wrap:wrap;margin:10px 0">
+        <label class="row small" style="gap:6px"><input type="checkbox" id="fd_sal"${x0.sal_pend ? ' checked' : ''}> Incluir salarios devengados de la última quincena <span id="fd_sal_info" class="muted"></span></label>
+        <span id="fd_veinte_box"><label class="row small" style="gap:6px"><input type="checkbox" id="fd_veinte"${x0.veinte === false ? '' : ' checked'}> Incluir 20 días por año (Art. 50 fr. II)</label></span>
+        ${tipo !== 'ratificacion' ? `<label class="row small" style="gap:6px"><input type="checkbox" id="fd_noadeudo"${x0.no_adeudo === false ? '' : ' checked'}> Agregar carta de no adeudo</label>` : ''}
+      </div>
+      <div class="fbox"><header>Conceptos <span><button type="button" class="btn sm ghost" id="fd_recalc">Recalcular desde el finiquito</button></span></header>
+        <div class="fbody"><div id="fd_rows"></div><button type="button" class="btn sm" id="fd_add" style="margin-top:6px">+ Concepto</button>
+        <div class="small muted" style="margin-top:6px">Las deducciones van en negativo (ej. ISR retenido −850). El ISR lo calcula Nómina.</div></div></div>
+      <div class="card pad" style="margin-top:10px;background:var(--soft)" id="fd_tot"></div>`,
+    actions: [{ label: 'Cancelar' }, { label: 'Vista previa', run: async ({ el }) => { const doc = build(el); printDoc(doc, {}); return false; } },
+      { label: existing ? 'Guardar cambios' : 'Generar documento', cls: 'primary', run: async ({ el }) => {
+        const doc = build(el);
+        if (!(doc.datos.monto > 0)) throw new Error('El total a pagar debe ser mayor a cero.');
+        const row = { fecha: doc.fecha, datos: doc.datos, snapshot: doc.snapshot };
+        let id;
+        if (existing) { await mustUpdate(db('documents').eq('id', existing.id).update(row), 'el documento'); id = existing.id; }
+        else { const [r] = await db('documents').insert([{ ...row, plantilla: blockDefaults(tipo), tipo, employee_id: e.id }]); id = Array.isArray(r) ? r[0].id : r.id; }
+        toast(existing ? 'Documento actualizado' : 'Documento generado');
+        if (S.view === 'documentos') viewDocumentos().catch(() => {});
+        setTimeout(() => openDocument(id), 0);
+      } }] });
+  const fuente = () => { $('#fd_fuente', m.el).innerHTML = data.calculo.fuente === 'prenomina' ? `Montos del finiquito de la pre-nómina${data.calculo.periodo_id ? '' : ' (pendiente de quincena)'}.` : 'Aún no está en la pre-nómina: montos calculados con salario, ingreso y fecha de terminación.';
+    const li = data.linea; $('#fd_sal_info', m.el).textContent = li ? `(${li.dias_pagados} días · ${money(li.neto)})` : '(no hay línea en la pre-nómina)'; $('#fd_sal', m.el).disabled = !li; };
+  const recalc = () => { const r = finConceptos(data, { tipo, base: ($('#f_base', m.el) || {}).value, salPend: $('#fd_sal', m.el).checked, veinte: $('#fd_veinte', m.el).checked }); rows = r.rows; sdi = liqLike() ? r.sdi : null; paintRows(); };
+  const paintRows = () => {
+    $('#fd_veinte_box', m.el).hidden = !liqLike();
+    $('#fd_rows', m.el).innerHTML = rows.map((r, i) => `<div class="row" style="gap:6px;margin-bottom:6px"><input class="inp grow" data-rc="${i}" value="${esc(r.c)}" aria-label="Concepto"><input class="inp mono" data-rm="${i}" type="number" step="0.01" inputmode="decimal" value="${r.m}" style="width:130px;text-align:right" aria-label="Importe"><button type="button" class="btn sm ghost" data-rx="${i}" aria-label="Quitar">×</button></div>`).join('') || '<span class="small muted">Sin conceptos.</span>';
+    $$('[data-rc]', m.el).forEach((i) => i.oninput = () => { rows[i.dataset.rc].c = i.value; });
+    $$('[data-rm]', m.el).forEach((i) => i.oninput = () => { rows[i.dataset.rm].m = num(i.value); total(); });
+    $$('[data-rx]', m.el).forEach((b) => b.onclick = () => { rows.splice(Number(b.dataset.rx), 1); paintRows(); });
+    total();
+  };
+  const total = () => { const p = r2(rows.filter((r) => r.m > 0).reduce((s, r) => s + num(r.m), 0)), d = r2(rows.filter((r) => r.m < 0).reduce((s, r) => s - num(r.m), 0)), t = r2(p - d);
+    $('#fd_tot', m.el).innerHTML = `<div class="kv"><span>Percepciones</span><span class="mono">${money(p)}</span><span>Deducciones</span><span class="mono">−${money(d)}</span><span><b>Total a pagar</b></span><span class="mono"><b style="color:${t > 0 ? 'var(--ok)' : 'var(--bad)'}">${money(t)}</b></span>${sdi ? `<span>Salario diario integrado</span><span class="mono">${money(sdi)}</span>` : ''}</div><div class="small muted" style="margin-top:4px">${esc(montoLetras(t))}</div>`; };
+  $('#fd_add', m.el).onclick = () => { rows.push({ c: '', m: 0 }); paintRows(); const ins = $$('[data-rc]', m.el); if (ins.length) ins[ins.length - 1].focus(); };
+  $('#fd_recalc', m.el).onclick = recalc;
+  ['#fd_sal', '#fd_veinte'].forEach((s) => { const i = $(s, m.el); if (i) i.onchange = recalc; });
+  const fb = $('#f_base', m.el); if (fb) fb.onchange = recalc;
+  if (!baja) $('#f_fecha_efectiva', m.el).addEventListener('change', async (ev) => { try { data = await rpc('finiquito_documento', { p_emp: e.id, p_fecha: ev.target.value }); fuente(); recalc(); } catch (er) { toast(er.message, true); } });
+  else $('#f_fecha_efectiva', m.el).readOnly = true;
+  fuente();
+  if (rows) paintRows(); else recalc();
+  function build(el) {
+    const v = readFields(el, fields);
+    const datos = { fecha_efectiva: v.fecha_efectiva, forma_pago: v.forma_pago, representante: v.representante, causa: v.causa || null, base: v.base || null, centro: v.centro || null,
+      sal_pend: $('#fd_sal', el).checked, veinte: $('#fd_veinte', el).checked, no_adeudo: tipo === 'ratificacion' ? false : $('#fd_noadeudo', el).checked,
+      conceptos_tabla: rows.filter((r) => String(r.c || '').trim() && num(r.m) !== 0).map((r) => ({ c: String(r.c).trim(), m: r2(r.m) })),
+      salario_diario: num(data.calculo.salario_diario), sdi: liqLike() ? sdi : null, antiguedad_anios: num(data.calculo.antiguedad_anios), fuente: data.calculo.fuente };
+    if (rows.some((r) => !String(r.c || '').trim() && num(r.m))) throw new Error('Hay un importe sin concepto.');
+    datos.monto = r2(datos.conceptos_tabla.reduce((s, r) => s + r.m, 0));
+    const snap = { ...empSnapshot({ ...e, fecha_ingreso: e.fecha_ingreso }), area: e.area || areaName(e.area_id) };
+    const tv = latestTpl(tipo);
+    return { id: existing && existing.id, folio: existing ? existing.folio : 0, tipo, fecha: v._fecha, estado: existing ? existing.estado : 'emitido', datos, snapshot: existing ? { ...existing.snapshot, ...snap } : snap,
+      plantilla: existing ? existing.plantilla : currentPlantilla(tipo), plantilla_version: existing ? existing.plantilla_version : tv && tv.version };
+  }
+}
+function finConceptosTabla(x) {
+  const rs = x.conceptos_tabla || []; const per = rs.filter((r) => r.m > 0), ded = rs.filter((r) => r.m < 0);
+  const tr = (r) => `<tr><td style="${P_TD}">${esc(r.c)}</td><td style="${P_TD};text-align:right;width:28%">${money(Math.abs(r.m))}</td></tr>`;
+  return `<table style="width:100%;border-collapse:collapse;margin:6px 0 10px;font-size:10pt">
+    <tr><td style="${P_TD};background:#eef1f5" colspan="2"><b>Percepciones</b></td></tr>${per.map(tr).join('')}
+    ${ded.length ? `<tr><td style="${P_TD}"><b>Total percepciones</b></td><td style="${P_TD};text-align:right"><b>${money(per.reduce((s, r) => s + r.m, 0))}</b></td></tr><tr><td style="${P_TD};background:#eef1f5" colspan="2"><b>Deducciones</b></td></tr>${ded.map(tr).join('')}` : ''}
+    <tr><td style="${P_TD}"><b>TOTAL A PAGAR</b></td><td style="${P_TD};text-align:right"><b>${money(x.monto)}</b></td></tr></table>`;
+}
+const huella = (n) => `<div style="display:grid;grid-template-columns:1fr 130px;gap:30px;margin-top:50px;align-items:end;page-break-inside:avoid"><div style="border-top:1px solid #222;padding-top:6px;text-align:center">${esc(n)}<br><span style="font-size:8.5pt">Nombre y firma de la persona trabajadora</span></div><div style="border:1px solid #999;height:110px;text-align:center;font-size:8pt;color:#666;padding-top:94px;box-sizing:border-box">Huella digital</div></div>`;
+
 async function docFileUrl(path) { return storageUrl(DOC_BUCKET, path); }
 
 async function openDocument(id) {
@@ -2581,8 +2888,10 @@ async function openDocument(id) {
   const s = d.snapshot || {}, t = DOC_TIPOS[d.tipo];
   const g = S.groups.find((x) => x.id === d.group_id) || {};
   const responsable = g.tipo === 'lideres' || !g.tl_id ? 'Supervisión del área' : profName(g.tl_id);
+  const fin = DOC_FIN.includes(d.tipo) && canDocFin(d.area_id);
   const canDeliver = (d.estado === 'con_lider' && (is('developer') || (is('tl') && g.tl_id === S.me.id) || (is('supervisor') && S.myAreas.includes(d.area_id))))
-    || (d.estado === 'emitido' && DOC_CONTRATA.includes(d.tipo) && is('rh_general', 'rh_area') && S.myAreas.includes(d.area_id));
+    || (d.estado === 'emitido' && DOC_CONTRATA.includes(d.tipo) && is('rh_general', 'rh_area') && S.myAreas.includes(d.area_id))
+    || (fin && d.estado === 'emitido');
   const kv = [['Persona', `${s.nombre || '—'} · ${s.num || 's/n'}`], ['Área / equipo', `${areaName(d.area_id)}${d.group_id ? ' · ' + groupName(d.group_id) : ''}`], ['Fecha', fmtDate(d.fecha)],
     d.enviado_at ? ['Enviado al líder', `${fmtDateTime(d.enviado_at)} · entrega: ${responsable}`] : null,
     d.entregado_at ? [d.estado === 'negativa' ? 'Negativa registrada' : 'Firmado', `${fmtDateTime(d.entregado_at)} · ${profName(d.entregado_by)}`] : null,
@@ -2597,8 +2906,8 @@ async function openDocument(id) {
     <div class="docframe">${docHtml(d, extra)}</div>`;
   const reload = () => { if (S.view === 'documentos') viewDocumentos().catch(() => {}); };
   const actions = [{ label: 'Imprimir / PDF', run: () => { printDoc(d, extra); return false; } }];
-  if (is('developer') && d.estado === 'emitido') {
-    actions.push({ label: 'Editar', run: async () => { const [e] = await db('employees').eq('id', d.employee_id).get(); setTimeout(() => docForm({ tipo: d.tipo, employee: e, existing: d }), 0); } });
+  if ((is('developer') || fin) && d.estado === 'emitido') {
+    actions.push({ label: 'Editar', run: async () => { if (DOC_FIN.includes(d.tipo)) { setTimeout(() => finDocForm({ tipo: d.tipo, employee: { id: d.employee_id }, existing: d }), 0); return; } const [e] = await db('employees').eq('id', d.employee_id).get(); setTimeout(() => docForm({ tipo: d.tipo, employee: e, existing: d }), 0); } });
     if (DOC_LIDER.includes(d.tipo)) actions.push({ label: 'Enviar al líder', cls: 'primary', run: async () => {
       if (!(await confirmBox('Enviar al líder', `El documento aparecerá a <b>${esc(responsable)}</b> para imprimirlo, entregarlo y subir la copia firmada.`, { okLabel: 'Enviar' }))) return false;
       await mustUpdate(db('documents').eq('id', d.id).update({ estado: 'con_lider' }), 'el documento'); toast('Enviado al líder'); reload(); setTimeout(() => openDocument(d.id), 0);
@@ -2607,7 +2916,7 @@ async function openDocument(id) {
   if ((is('developer') && d.estado === 'emitido' && d.tipo !== 'constancia_baja') || canDeliver) actions.push({ label: d.estado === 'con_lider' ? 'Registrar entrega' : 'Registrar firma', cls: d.estado === 'emitido' && DOC_LIDER.includes(d.tipo) ? '' : 'primary', run: () => { setTimeout(() => deliveryForm(d), 0); } });
   if (is('developer') && d.tipo === 'constancia_baja' && d.estado === 'emitido') actions.push({ label: 'Marcar firmada', cls: 'primary', run: () => { setTimeout(() => deliveryForm(d), 0); } });
   if (is('developer') && DOC_BAJA.includes(d.tipo) && ['firmado', 'negativa'].includes(d.estado)) actions.push({ label: 'Constancia de baja', run: async () => { const [e] = await db('employees').eq('id', d.employee_id).get(); setTimeout(() => docForm({ tipo: 'constancia_baja', employee: e }), 0); } });
-  if (is('developer') && d.estado !== 'anulado') actions.push({ label: 'Anular', cls: 'danger', run: () => { setTimeout(() => simpleCaseAction('Anular ' + docFolio(d), [{ k: 'm', label: 'Motivo de la anulación', type: 'textarea', req: true, full: true }],
+  if ((is('developer') || fin) && d.estado !== 'anulado') actions.push({ label: 'Anular', cls: 'danger', run: () => { setTimeout(() => simpleCaseAction('Anular ' + docFolio(d), [{ k: 'm', label: 'Motivo de la anulación', type: 'textarea', req: true, full: true }],
     async (v) => { await mustUpdate(db('documents').eq('id', d.id).update({ estado: 'anulado', anulado_motivo: v.m }), 'el documento'); }, () => { reload(); setTimeout(() => openDocument(d.id), 0); },
     d.baja_aplicada ? 'La baja ya se aplicó en Personal; anular el documento no la revierte.' : 'El documento queda visible como anulado; no se borra.'), 0); } });
   if (is('developer')) actions.push({ label: 'Ver ficha', run: () => { setTimeout(() => openEmployee(d.employee_id), 0); } });
@@ -3188,7 +3497,7 @@ const bancoDeClabe = (c) => BANCOS[clabeDigits(c).slice(0, 3)] || '';
 const NOM_PERC = [['chips', 'Pago de chips'], ['pendiente', 'Pendiente de pago'], ['com_admin', 'Comisión administrativo'], ['bono_referido', 'Bono de referido'],
   ['com_asesores', 'Comisión asesores'], ['com_lideres', 'Comisión líderes'], ['hrs_dobles', 'Horas dobles'], ['horas_extras', 'Horas extras']];
 const NOM_DED = [['otras_deducciones', 'Otras deducciones'], ['multas_disciplina', 'Multas por disciplina'], ['multas_retardo', 'Multas por retardo']];
-const NOM_AUTO = { salario_diario: 'Salario diario', dias_no_lab: 'Días no laborados', faltas: 'Faltas', festivo: 'Pago día festivo', clabe: 'CLABE', banco: 'Banco', beneficiario: 'Beneficiario' };
+const NOM_AUTO = { salario_diario: 'Salario diario', dias_no_lab: 'Días no laborados', faltas: 'Faltas', festivo: 'Pago día festivo', prima_vacacional: 'Prima vacacional', clabe: 'CLABE', banco: 'Banco', beneficiario: 'Beneficiario' };
 const NS = { periodo: null, q: '', filtro: '', tab: null, sec: 'nomina' };
 const num = (n) => Number(n || 0);
 const r2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
@@ -3244,11 +3553,12 @@ function lineaAlertas(l) {
   if (!l.fecha_ingreso) a.push(['warn', 'sining', 'Sin fecha de ingreso en la app']);
   if (num(l.dias_no_lab)) a.push(['info', 'parcial', `${l.dias_no_lab} días no laborados (${l.fecha_baja ? 'baja ' + fmtDate(l.fecha_baja) : 'ingreso ' + fmtDate(l.fecha_ingreso)})`]);
   if (num(l.faltas) > 3) a.push(['warn', 'faltas', `${l.faltas} faltas en el periodo`]);
+  if (num(l.vacaciones_dias)) a.push(['info', 'vacaciones', `${l.vacaciones_dias} días de vacaciones`]);
   if ((l.ajustados || []).length) a.push(['info', 'ajuste', 'Ajustado a mano: ' + l.ajustados.map((k) => NOM_AUTO[k] || k).join(', ')]);
   if (num(l.neto) <= 0) a.push(['bad', 'neto', 'Neto en cero o negativo']);
   return a;
 }
-const ALERTA_FILTROS = [['sinsal', 'Sin salario'], ['sinclabe', 'Sin CLABE'], ['tercero', 'Cuenta de tercero'], ['sining', 'Sin fecha de ingreso'], ['parcial', 'Ingreso/baja en el periodo'], ['faltas', 'Más de 3 faltas'], ['ajuste', 'Ajustes manuales'], ['neto', 'Neto en cero']];
+const ALERTA_FILTROS = [['sinsal', 'Sin salario'], ['sinclabe', 'Sin CLABE'], ['tercero', 'Cuenta de tercero'], ['sining', 'Sin fecha de ingreso'], ['parcial', 'Ingreso/baja en el periodo'], ['faltas', 'Más de 3 faltas'], ['ajuste', 'Ajustes manuales'], ['vacaciones', 'Con vacaciones'], ['neto', 'Neto en cero']];
 const nivelBadge = { bad: 'b-bad', warn: 'b-warn', info: 'b-acc' };
 
 // ───── Pre-nómina al día: calendario de la quincena con lo devengado en tiempo real ─────
@@ -3648,7 +3958,7 @@ async function finiquitoForm(p, f, periodos) {
     ${al.length ? `<div class="row" style="gap:4px;margin-top:8px">${al.map(([n, t]) => `<span class="badge ${nivelBadge[n]}">${esc(t)}</span>`).join('')}</div>` : ''}
     <div class="notice n-info" style="margin-top:10px">Los días trabajados de la quincena se pagan en su línea de Nómina. El tope de la prima de antigüedad es 2 salarios mínimos (${money(2 * SM_LFT(f.fecha_baja))} diarios).</div>
     <div class="eyebrow" style="margin:14px 0 6px">Cálculo</div>${edit ? fieldsHtml(baseF) : ro(baseF)}
-    <div class="eyebrow" style="margin:14px 0 6px">Capturas de Nómina</div>${edit ? fieldsHtml(capF) : ro(capF)}
+    <div class="eyebrow" style="margin:14px 0 6px">Capturas de Nómina</div>${edit ? fieldsHtml(capF) + '<div id="nf_vac" class="small" style="margin-top:6px"></div>' : ro(capF)}
     <div class="eyebrow" style="margin:14px 0 6px">Pago</div>${edit ? fieldsHtml(pagoF) + '<div id="fc_hint" class="small" style="margin-top:4px"></div>' : ro(pagoF)}
     ${edit ? fieldsHtml(notaF) : f.notas ? `<div class="notice n-info" style="margin-top:12px">${esc(f.notas)}</div>` : ''}
     <div class="card pad" style="margin-top:12px;background:var(--soft)" id="nf_prev"></div>`;
@@ -3699,6 +4009,13 @@ async function finiquitoForm(p, f, periodos) {
   if (edit) {
     for (const x of baseF) { const lab = $('#f_' + x.k, m.el).closest('label'); lab.insertBefore(document.createRange().createContextualFragment(tag(x.k)), lab.querySelector('input,select')); }
     $$('input,textarea,select', m.el).forEach((i) => { i.addEventListener('input', () => preview(m.el)); i.addEventListener('change', () => preview(m.el)); });
+    // Registro de vacaciones de la app: días pendientes de años anteriores o tomados de más en el año en curso
+    rpc('vacaciones_saldo', { p_emp: f.employee_id, p_hasta: f.fecha_baja }).then((sv) => {
+      const box = $('#nf_vac', m.el); if (!box || !sv) return;
+      const disp = num(sv.disponibles), pend = Math.max(disp, 0), tom = Math.max(-disp, 0);
+      box.innerHTML = `Registro de vacaciones: derecho ${num(sv.derecho)} días · tomados ${num(sv.tomados) + num(sv.programados)} → <b>${pend} pendientes</b>${tom ? ` · <b>${tom} adelantados</b>` : ''}. <button type="button" class="btn sm" id="nf_usar">Usar estos datos</button>`;
+      $('#nf_usar', m.el).onclick = () => { $('#f_vac_pendientes', m.el).value = pend || ''; $('#f_vac_tomadas', m.el).value = tom || ''; preview(m.el); };
+    }).catch(() => {});
     $$('[data-frest]', m.el).forEach((b) => b.onclick = async (ev) => { ev.preventDefault(); b.disabled = true; try { await rpc('nomina_finiquito_restaurar', { p_id: f.id, p_campo: b.dataset.frest }); m.close(); toast('Valor automático restaurado'); await viewPrenomina(); const [nf] = await db('nomina_finiquitos').eq('id', f.id).get(); if (nf) finiquitoForm(p, nf, periodos); } catch (e) { toast(e.message, true); b.disabled = false; } });
   }
   preview(m.el);
@@ -3754,7 +4071,8 @@ async function lineaForm(p, l) {
     { k: 'salario_diario', label: 'Salario diario', type: 'number', val: l.salario_diario },
     { k: 'dias_no_lab', label: 'Días no laborados (ingreso / baja)', type: 'number', val: l.dias_no_lab },
     { k: 'faltas', label: 'Faltas', type: 'number', val: l.faltas },
-    { k: 'festivo', label: 'Pago día festivo', type: 'number', val: l.festivo }
+    { k: 'festivo', label: 'Pago día festivo', type: 'number', val: l.festivo },
+    { k: 'prima_vacacional', label: `Prima vacacional 25 % (${num(l.vacaciones_dias)} días de vacaciones)`, type: 'number', val: l.prima_vacacional }
   ];
   const percF = NOM_PERC.map(([k, label]) => ({ k, label, type: 'number', val: num(l[k]) || '' }));
   const dedF = [{ k: 'permisos', label: 'Permisos sin goce (horas:minutos)', val: hhmm(l.permisos_min), hint: 'Ej. 2:30 = dos horas y media' }, ...NOM_DED.map(([k, label]) => ({ k, label, type: 'number', val: num(l[k]) || '' }))];
@@ -3765,7 +4083,7 @@ async function lineaForm(p, l) {
   const attHtml = att.length ? `<div class="scrollx"><table class="tbl sub"><tbody>${att.map((a) => `<tr><td class="mono small">${fmtDate(a.fecha)}${a.turno === 'tarde' ? ' tarde' : ''}${p.festivos.includes(a.fecha) ? ' <span class="badge b-acc">festivo</span>' : ''}</td><td class="small">${attBadges(a)}</td><td class="small muted">${esc(a.comentario || '')}</td></tr>`).join('')}</tbody></table></div>` : '<span class="small muted">Sin registros del pase de lista en el periodo.</span>';
   const body = `
     <div class="kv"><span>Departamento</span><span>${esc(l.departamento || '—')}</span><span>Ingreso</span><span>${fmtDate(l.fecha_ingreso)}</span>${l.fecha_baja ? `<span>Baja</span><span>${fmtDate(l.fecha_baja)}</span>` : ''}
-      <span>Días pagados</span><span class="mono">${l.dias_pagados} de ${p.dias}</span><span>Del pase de lista</span><span>${l.retardos} retardos · ${l.dias_permiso} días con permiso · ${l.festivos_lab} festivos trabajados</span></div>
+      <span>Días pagados</span><span class="mono">${l.dias_pagados} de ${p.dias}</span><span>Del pase de lista</span><span>${l.retardos} retardos · ${l.dias_permiso} días con permiso · ${l.festivos_lab} festivos trabajados${num(l.vacaciones_dias) ? ` · ${l.vacaciones_dias} días de vacaciones` : ''}</span></div>
     ${alerts.length ? `<div class="row" style="gap:4px;margin-top:8px">${alerts.map(([n, , t]) => `<span class="badge ${nivelBadge[n]}">${esc(t)}</span>`).join('')}</div>` : ''}
     <div class="eyebrow" style="margin:14px 0 6px">Base</div>
     ${edit ? fieldsHtml(baseF) : ro(baseF)}
@@ -3786,7 +4104,7 @@ async function lineaForm(p, l) {
   const preview = (el) => {
     let x; try { x = collect(el); } catch { return; }
     const dias = p.dias - x.dias_no_lab, nom = r2(x.salario_diario * dias);
-    const perc = r2(nom + x.festivo + NOM_PERC.reduce((s, [k]) => s + x[k], 0));
+    const perc = r2(nom + x.festivo + x.prima_vacacional + NOM_PERC.reduce((s, [k]) => s + x[k], 0));
     const fm = r2(x.salario_diario * x.faltas), pm = r2(x.salario_diario / 8 * x.permisos_min / 60);
     const neto = r2(perc - fm - pm - NOM_DED.reduce((s, [k]) => s + x[k], 0));
     $('#nl_prev', el).innerHTML = `<div class="kv"><span>Nómina (${dias} días)</span><span class="mono">${money(nom)}</span><span>Total percepciones</span><span class="mono">${money(perc)}</span>
@@ -3887,7 +4205,7 @@ function prenominaSheets(p, lineas, att, fins = [], pagos = []) {
   const titulo = `PERIODO ${p.numero ? p.numero + ' ' : ''}DEL ${periodoTitulo({ ...p, numero: null }).toUpperCase()}`;
   const H = ['#', 'NOMBRE', 'Salario diario', 'Nomina \nquincenal', `PAGO DIA FESTIVO${p.festivos.length ? ' ' + p.festivos.map((d) => Number(d.slice(8)) + ' ' + MESES[Number(d.slice(5, 7)) - 1].toUpperCase()).join(', ') : ''}`, 'PAGO DE CHIPS ', 'FECHA DE INGRESO', 'PENDIENTE DE PAGO',
     'COMISION ADMINISTRATIVO', 'BONO DE REFERIDO', 'COMISION ASESORES', 'COMISION LIDERES', 'TOTAL', 'Hrs\nDobles', 'HORAS \nEXTRAS', '#', 'FALTAS', 'OTRAS\nDEDUCCIONES', 'TOTAL',
-    'PERMISOS EN LA QUINCENA', 'HRS / MINUTOS', 'MULTAS POR DISCIPLINA', 'MULTAS POR RETARDO', 'DEPARTAMENTO', 'CLAVE', 'BANCO', 'BENEFICIARIO', 'FIRMA DEL EMPLEADO', 'DÍAS PAGADOS', 'NOTAS / AJUSTES'];
+    'PERMISOS EN LA QUINCENA', 'HRS / MINUTOS', 'MULTAS POR DISCIPLINA', 'MULTAS POR RETARDO', 'DEPARTAMENTO', 'CLAVE', 'BANCO', 'BENEFICIARIO', 'FIRMA DEL EMPLEADO', 'DÍAS PAGADOS', 'DÍAS DE VACACIONES', 'PRIMA VACACIONAL', 'NOTAS / AJUSTES'];
   const rows = [[null, { v: titulo, s: XS.title }], [], H.map((h) => ({ v: h, s: XS.head }))];
   rows[1][12] = { v: 'PERCEP', s: XS.bold }; rows[1][16] = { v: 'DEDUCC', s: XS.bold };
   lineas.forEach((l, i) => {
@@ -3898,12 +4216,12 @@ function prenominaSheets(p, lineas, att, fins = [], pagos = []) {
       { v: i + 1, s: XS.int }, { v: l.nombre, s: XS.text }, mon(l.salario_diario, 'salario_diario'),
       { f: `ROUND(C${r}*AC${r},2)`, v: num(l.nomina), s: XS.money }, mon(l.festivo, 'festivo'), mon(l.chips),
       l.fecha_ingreso ? { v: xlDate(l.fecha_ingreso), s: XS.date } : { v: '', s: XS.text }, mon(l.pendiente), mon(l.com_admin), mon(l.bono_referido), mon(l.com_asesores), mon(l.com_lideres),
-      { f: `D${r}+E${r}+F${r}+H${r}+I${r}+J${r}+K${r}+L${r}+N${r}+O${r}`, v: num(l.total_percepciones), s: XS.money }, mon(l.hrs_dobles), mon(l.horas_extras),
+      { f: `D${r}+E${r}+F${r}+H${r}+I${r}+J${r}+K${r}+L${r}+N${r}+O${r}+AE${r}`, v: num(l.total_percepciones), s: XS.money }, mon(l.hrs_dobles), mon(l.horas_extras),
       { v: num(l.faltas), s: aj.has('faltas') ? XS.adj : XS.int }, { f: `ROUND(C${r}*P${r},2)`, v: num(l.faltas_monto), s: XS.money }, mon(l.otras_deducciones),
       { f: `M${r}-Q${r}-R${r}-T${r}-V${r}-W${r}`, v: num(l.neto), s: XS.money },
       { f: `ROUND(C${r}/8*U${r}*24,2)`, v: num(l.permisos_monto), s: XS.money }, { v: num(l.permisos_min) / 1440, s: XS.time },
       mon(l.multas_disciplina), mon(l.multas_retardo), { v: l.departamento || '', s: XS.text }, { v: l.clabe || '', s: l.clabe ? XS.text : XS.warn },
-      { v: l.banco || '', s: XS.text }, { v: l.beneficiario || '', s: XS.text }, { v: '', s: XS.text }, { v: num(l.dias_pagados), s: aj.has('dias_no_lab') ? XS.adj : XS.int }, { v: notas, s: XS.wrap }
+      { v: l.banco || '', s: XS.text }, { v: l.beneficiario || '', s: XS.text }, { v: '', s: XS.text }, { v: num(l.dias_pagados), s: aj.has('dias_no_lab') ? XS.adj : XS.int }, { v: num(l.vacaciones_dias), s: XS.int }, mon(l.prima_vacacional, 'prima_vacacional'), { v: notas, s: XS.wrap }
     ]);
   });
   const sum = (c, k) => ({ f: `SUM(${c}${first}:${c}${last})`, v: r2(lineas.reduce((s, l) => s + num(typeof k === 'function' ? k(l) : l[k]), 0)), s: XS.total });
@@ -3911,13 +4229,14 @@ function prenominaSheets(p, lineas, att, fins = [], pagos = []) {
     const t = []; t[1] = { v: 'TOTALES', s: XS.bold };
     const cols = { D: 'nomina', E: 'festivo', F: 'chips', H: 'pendiente', I: 'com_admin', J: 'bono_referido', K: 'com_asesores', L: 'com_lideres', M: 'total_percepciones', N: 'hrs_dobles', O: 'horas_extras', Q: 'faltas_monto', R: 'otras_deducciones', S: 'neto', T: 'permisos_monto', V: 'multas_disciplina', W: 'multas_retardo' };
     for (const [c, k] of Object.entries(cols)) t[c.charCodeAt(0) - 65] = sum(c, k);
+    t[30] = sum('AE', 'prima_vacacional');
     t[15] = { f: `SUM(P${first}:P${last})`, v: lineas.reduce((s, l) => s + num(l.faltas), 0), s: XS.int };
     rows.push(t);
     rows.push([]); rows.push([null, { v: 'NETO A PAGAR', s: XS.bold }, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, { f: `S${tr}`, v: r2(lineas.reduce((s, l) => s + num(l.neto), 0)), s: XS.total }]);
     rows.push([]); rows.push([null, { v: `Generado en Enterprise HR el ${fmtDateTime(new Date().toISOString())} · ${p.estado === 'autorizado' ? `Autorizado por ${profName(p.autorizado_by)} el ${fmtDateTime(p.autorizado_at)}` : 'BORRADOR (sin autorizar)'} · Celdas amarillas = ajustadas a mano. Permisos en horas:minutos. Salario diario × días pagados.`, s: XS.sub }]);
   }
   const nomina = { name: 'NOMINA', rows, freeze: [2, 3], zoom: 90, merges: ['B1:S1', 'Q2:R2'], heights: { 2: 45 },
-    cols: [5, 38, 12, 12, 12, 11, 12, 12, 13, 11, 13, 12, 12, 8, 9, 6, 11, 12, 13, 13, 10, 11, 11, 23, 22, 15, 36, 26, 9, 48] };
+    cols: [5, 38, 12, 12, 12, 11, 12, 12, 13, 11, 13, 12, 12, 8, 9, 6, 11, 12, 13, 13, 10, 11, 11, 23, 22, 15, 36, 26, 9, 11, 13, 48] };
   // INCIDENCIAS: pase de lista del periodo (fuente de faltas, retardos y permisos)
   const dias = []; for (let d = p.fecha_inicio; d <= p.fecha_fin; d = addDays(d, 1)) dias.push(d);
   const byEmp = {}; for (const a of att) ((byEmp[a.employee_id] = byEmp[a.employee_id] || {})[a.fecha] = byEmp[a.employee_id][a.fecha] || []).push(a);
