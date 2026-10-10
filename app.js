@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.16.0';
+const APP_VERSION = '0.16.1';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -2766,107 +2766,196 @@ async function docForm({ tipo, employee, caseRow, existing }) {
 // Los montos salen del finiquito de la pre-nómina (o del mismo cálculo al vuelo) y se pueden ajustar antes de emitir.
 // Liquidación: indemnización de 90 días y 20 días por año con salario diario integrado (Arts. 48, 50, 84 y 89 LFT)
 // y prima de antigüedad siempre (Art. 162, tope de 2 salarios mínimos).
-const CAUSAS_LIQ = ['Despido sin causa justificada (Art. 48 LFT)', 'Terminación sin responsabilidad para la persona trabajadora (Art. 51 LFT)', 'Terminación por causas ajenas a la persona trabajadora', 'Otra'];
+// Calculadora de finiquito / liquidación (como M07 del Sandbox): tipo de terminación → conceptos que marca la LFT,
+// casillas para incluir cada concepto, días/base editables, importes en base al salario. Si se marca algo que no
+// corresponde (o se quita algo obligatorio) se pide justificación. El PDF es el mismo formato de Documentos.
+const TERM_RULES = {
+  'Renuncia': { sen: '15y', m3: 'no', d20: 'no', hint: 'Art. 162 fr. III: prima de antigüedad solo con 15 años o más. Sin indemnización.' },
+  'Despido justificado (rescisión art. 47)': { sen: 'yes', m3: 'no', d20: 'no', hint: 'Finiquito + prima de antigüedad (Art. 162 fr. III: se paga aunque el despido sea justificado). Sin indemnización.' },
+  'Despido injustificado': { sen: 'yes', m3: 'yes', d20: 'opt', hint: 'Finiquito + prima de antigüedad + 3 meses (Art. 48). 20 días por año solo si la empresa se niega a reinstalar (Arts. 49 y 50).' },
+  'Rescisión por el trabajador (art. 51)': { sen: 'yes', m3: 'yes', d20: 'yes', hint: 'Art. 52 → Art. 50: 3 meses + 20 días por año + prima de antigüedad.' },
+  'Mutuo consentimiento': { sen: '15y', m3: 'opt', d20: 'opt', hint: 'Art. 53 fr. I. Prima obligatoria solo con 15 años o más; cualquier pago adicional es convenido.' },
+  'Término de contrato': { sen: 'yes', m3: 'no', d20: 'no', hint: 'Art. 53 fr. III. Finiquito + prima de antigüedad por separación.' },
+  'Otro': { sen: 'opt', m3: 'opt', d20: 'opt', hint: 'Revisa el supuesto jurídico; los conceptos se marcan manualmente.' }
+};
 const CENTROS = ['Centro Federal de Conciliación y Registro Laboral', 'Centro de Conciliación Laboral del Estado de México', 'Centro de Conciliación Laboral de la Ciudad de México'];
-function finConceptos(data, { tipo, base, salPend, veinte }) {
-  const c = data.calculo || {}, sal = num(c.salario_diario), antig = num(c.antiguedad_anios);
-  const vacD = r2(num(c.vac_dias) + num(c.vac_pendientes) - num(c.vac_tomadas));
-  const liq = tipo === 'liquidacion' || (tipo === 'ratificacion' && base === 'liquidacion');
-  const sdi = r2(sal * (1 + (15 + num(data.vac_dias_anio) * 0.25) / 365));
-  const tope = Math.min(sal, r2(2 * num(data.salario_minimo)));
-  const rows = [];
-  if (salPend && data.linea) rows.push({ c: `Salarios devengados pendientes (${data.linea.dias_pagados} días, quincena del ${data.linea.periodo})`, m: r2(data.linea.neto) });
-  rows.push({ c: `Vacaciones (${Math.max(vacD, 0).toFixed(2)} días)`, m: r2(c.vacaciones) });
-  rows.push({ c: 'Prima vacacional 25 %', m: r2(c.prima_vacacional) });
-  rows.push({ c: `Aguinaldo proporcional (${num(c.aguinaldo_dias).toFixed(2)} días)`, m: r2(c.aguinaldo) });
-  if (liq) {
-    rows.push({ c: `Prima de antigüedad (12 días × ${antig.toFixed(3)} años × ${money(tope)})`, m: r2(12 * antig * tope) });
-    rows.push({ c: `Indemnización constitucional (90 días × SDI ${money(sdi)})`, m: r2(90 * sdi) });
-    if (veinte) rows.push({ c: `20 días por año de servicio (20 × ${antig.toFixed(3)} años × SDI ${money(sdi)})`, m: r2(20 * antig * sdi) });
-  } else if (c.prima_antig_aplica && num(c.prima_antiguedad)) rows.push({ c: `Prima de antigüedad (12 días × ${antig.toFixed(3)} años)`, m: r2(c.prima_antiguedad) });
-  if (num(c.otras_percepciones)) rows.push({ c: c.otras_percepciones_concepto || 'Otras percepciones', m: r2(c.otras_percepciones) });
-  if (num(c.deducciones)) rows.push({ c: (c.deducciones_concepto || 'Deducciones') + ' (deducción)', m: -r2(c.deducciones) });
-  return { rows: rows.filter((r) => r.m !== 0 || /Vacaciones|Aguinaldo/.test(r.c)), sdi };
+const vacLFT = (k) => k <= 0 ? 0 : k <= 5 ? 10 + 2 * k : 22 + 2 * Math.floor((k - 6) / 5);
+const addYearsISO = (iso, n) => { const [y, m, d] = iso.split('-').map(Number); const last = new Date(Date.UTC(y + n, m, 0)).getUTCDate(); return `${y + n}-${String(m).padStart(2, '0')}-${String(Math.min(d, last)).padStart(2, '0')}`; };
+const diasEntre = (a, b) => Math.round((Date.parse(b + 'T12:00:00Z') - Date.parse(a + 'T12:00:00Z')) / 86400000);
+function terminoDe(motivo, tipo) {
+  const m = norm(motivo || '');
+  if (/renuncia/.test(m)) return 'Renuncia';
+  if (/rescision por el trabajador|art\.? 51/.test(m)) return 'Rescisión por el trabajador (art. 51)';
+  if (/rescision|abandono|despido justificado/.test(m)) return 'Despido justificado (rescisión art. 47)';
+  if (/mutuo|convenio/.test(m)) return 'Mutuo consentimiento';
+  if (/contrato/.test(m)) return 'Término de contrato';
+  if (/injustificado/.test(m)) return 'Despido injustificado';
+  return tipo === 'liquidacion' ? 'Despido injustificado' : 'Renuncia';
+}
+// Base del cálculo para una fecha de baja
+function finBase(data, fb, diario) {
+  const ing = (data.empleado || {}).fecha_ingreso;
+  const out = { ing, fb, anios: 0, n: 0, vacProp: 0, diasAnio: 0, diasQuincena: 0 };
+  if (!fb) return out;
+  const q0 = fb.slice(0, 8) + (Number(fb.slice(8)) <= 15 ? '01' : '16');
+  out.diasQuincena = diasEntre(ing && ing > q0 ? ing : q0, fb) + 1;
+  if (!ing || ing > fb) return out;
+  let n = 0; const fb1 = addDays(fb, 1); while (addYearsISO(ing, n + 1) <= fb1) n++;
+  out.n = n; out.anios = Math.round((diasEntre(ing, fb) + 1) / 365 * 1000) / 1000;
+  out.vacProp = r2(vacLFT(n + 1) * (diasEntre(addYearsISO(ing, n), fb) + 1) / 365);
+  const y0 = fb.slice(0, 4) + '-01-01'; out.diasAnio = diasEntre(ing > y0 ? ing : y0, fb) + 1;
+  out.vacAnual = vacLFT(n + 1);
+  return out;
 }
 async function finPickEmployee(tipo, employee) {
   if (employee) return finDocForm({ tipo, employee });
-  const xs = (await rpc('finiquito_personas', {})).map((e) => ({ ...e, nombre_c: fullName(e) }));
-  elegirPersona(DOC_TIPOS[tipo].label + ' · ¿para quién?', xs.map((e) => ({ id: e.id, nombre: e.nombre_c, num_empleado: e.num_empleado, sub: `${areaName(e.area_id)}${e.status === 'baja' ? ' · baja ' + fmtDate(e.fecha_baja) : ' · activo'}`, badge: statusBadge(e.status) })),
+  const xs = await rpc('finiquito_personas', {});
+  elegirPersona(DOC_TIPOS[tipo].label + ' · ¿para quién?', xs.map((e) => ({ id: e.id, nombre: fullName(e), num_empleado: e.num_empleado, sub: `${areaName(e.area_id)}${e.status === 'baja' ? ' · baja ' + fmtDate(e.fecha_baja) : ' · activo'}`, badge: statusBadge(e.status) })),
     'Normalmente es para personas ya dadas de baja; también puedes prepararlo para alguien activo con la fecha de terminación.', async (p, m) => { m.close(); finDocForm({ tipo, employee: { id: p.id } }); });
 }
 async function finDocForm({ tipo, employee, existing }) {
   const x0 = existing ? existing.datos || {} : {};
   let data = await rpc('finiquito_documento', { p_emp: employee.id, p_fecha: x0.fecha_efectiva || null });
-  const e = data.empleado; const baja = e.status === 'baja';
+  const e = data.empleado; const baja = e.status === 'baja'; const c0 = data.calculo || {};
   await loadTemplates(true);
+  const k0 = x0.calc || null;
   const fields = [
+    ...(existing ? [] : [{ k: 'doc', label: 'Documento', type: 'select', req: true, val: tipo, options: DOC_FIN.map((t) => [t, DOC_TIPOS[t].label]) }]),
+    { k: 'term', label: 'Tipo de terminación', type: 'select', req: true, val: (k0 && k0.term) || terminoDe(e.motivo, tipo), options: opts(Object.keys(TERM_RULES)) },
     { k: '_fecha', label: 'Fecha del documento', type: 'date', req: true, val: existing ? existing.fecha : todayMX() },
     { k: 'fecha_efectiva', label: baja ? 'Fecha de baja' : 'Fecha de terminación', type: 'date', req: true, val: x0.fecha_efectiva || data.fecha_baja },
+    { k: 'diario', label: 'Salario diario', type: 'number', req: true, val: (k0 && k0.diario) ?? c0.salario_diario, hint: 'Del expediente; ajústalo si cambió' },
     { k: 'forma_pago', label: 'Forma de pago', type: 'select', req: true, val: x0.forma_pago || 'Transferencia', options: opts(['Transferencia', 'Efectivo', 'Cheque']) },
     { k: 'representante', label: 'Por la empresa', req: true, val: x0.representante || S.me.full_name || '' },
-    ...(tipo === 'liquidacion' ? [{ k: 'causa', label: 'Causa de la terminación', type: 'select', req: true, full: true, val: x0.causa || CAUSAS_LIQ[0], options: opts(CAUSAS_LIQ) }] : []),
-    ...(tipo === 'ratificacion' ? [{ k: 'base', label: 'Lo que se paga', type: 'select', req: true, val: x0.base || 'finiquito', options: [['finiquito', 'Finiquito'], ['liquidacion', 'Liquidación (con indemnización)']] },
-      { k: 'centro', label: 'Centro de Conciliación', req: true, full: true, val: x0.centro || CENTROS[0], hint: 'Federal si la actividad es de jurisdicción federal; si no, el del estado. Ej. ' + CENTROS.slice(1).join(' / ') }] : [])];
-  let rows = x0.conceptos_tabla ? x0.conceptos_tabla.map((r) => ({ ...r })) : null; let sdi = x0.sdi || null;
-  const liqLike = () => tipo === 'liquidacion' || (tipo === 'ratificacion' && ($('#f_base', m.el) || {}).value === 'liquidacion');
-  const m = modal({ title: (existing ? 'Editar · ' : '') + DOC_TIPOS[tipo].label + ' · ' + fullName(e), wide: true,
-    body: `<div class="notice n-info"><b>${esc(fullName(e))}</b> · ${esc(e.num_empleado || 's/n')} · ${esc(e.puesto || 'sin puesto')} · ${esc(e.area || '')} · ingreso ${fmtDate(e.fecha_ingreso)}${baja ? ' · baja ' + fmtDate(e.fecha_baja) : ''}<br>
-      <span id="fd_fuente"></span></div>
+    { k: 'centro', label: 'Centro de Conciliación (convenio)', full: true, val: x0.centro || CENTROS[0] }];
+  const R = (k) => (k0 && k0.rows && k0.rows[k]) || {};
+  const pre = c0.fuente === 'prenomina';
+  const vac0 = pre ? r2(num(c0.vac_dias) + num(c0.vac_pendientes) - num(c0.vac_tomadas)) : null;
+  const m = modal({ title: (existing ? 'Editar · ' : '') + 'Finiquito / liquidación · ' + fullName(e), wide: true,
+    body: `<div class="notice n-info"><b>${esc(fullName(e))}</b> · ${esc(e.num_empleado || 's/n')} · ${esc(e.puesto || 'sin puesto')} · ${esc(e.area || '')} · ingreso ${fmtDate(e.fecha_ingreso)}${baja ? ' · baja ' + fmtDate(e.fecha_baja) : ''}
+      <br><span class="small">${pre ? 'Toma vacaciones, otras percepciones y deducciones del finiquito de la pre-nómina.' : 'Calculado con salario, fecha de ingreso y fecha de terminación.'}</span></div>
       ${fieldsHtml(fields)}
-      <div class="row" style="gap:14px;flex-wrap:wrap;margin:10px 0">
-        <label class="row small" style="gap:6px"><input type="checkbox" id="fd_sal"${x0.sal_pend ? ' checked' : ''}> Incluir salarios devengados de la última quincena <span id="fd_sal_info" class="muted"></span></label>
-        <span id="fd_veinte_box"><label class="row small" style="gap:6px"><input type="checkbox" id="fd_veinte"${x0.veinte === false ? '' : ' checked'}> Incluir 20 días por año (Art. 50 fr. II)</label></span>
-        ${tipo !== 'ratificacion' ? `<label class="row small" style="gap:6px"><input type="checkbox" id="fd_noadeudo"${x0.no_adeudo === false ? '' : ' checked'}> Agregar carta de no adeudo</label>` : ''}
-      </div>
-      <div class="fbox"><header>Conceptos <span><button type="button" class="btn sm ghost" id="fd_recalc">Recalcular desde el finiquito</button></span></header>
-        <div class="fbody"><div id="fd_rows"></div><button type="button" class="btn sm" id="fd_add" style="margin-top:6px">+ Concepto</button>
-        <div class="small muted" style="margin-top:6px">Las deducciones van en negativo (ej. ISR retenido −850). El ISR lo calcula Nómina.</div></div></div>
-      <div class="card pad" style="margin-top:10px;background:var(--soft)" id="fd_tot"></div>`,
+      <div id="fc_hint" class="notice n-warn" style="margin-top:10px"></div>
+      <div class="fbox" style="margin-top:10px"><header>Finiquito base</header><div class="fbody">
+        <div class="fc-grid">
+          <span></span><b class="small muted">Concepto</b><b class="small muted">Días / base</b><b class="small muted" style="text-align:right">Importe</b>
+          ${[['dias', 'Días laborados pendientes de pago', `<input class="inp mono" id="fc_dias" type="number" step="0.5" min="0" value="${R('dias').v ?? ''}">`],
+            ['agui', 'Aguinaldo proporcional', `<span class="row" style="gap:4px"><input class="inp mono" id="fc_agui" type="number" step="1" min="15" value="${R('agui').v ?? 15}" title="Días de aguinaldo al año"><span class="small muted" id="fc_agui_d"></span></span>`],
+            ['vac', 'Vacaciones', `<input class="inp mono" id="fc_vac" type="number" step="0.01" min="0" value="${R('vac').v ?? ''}">`],
+            ['pv', 'Prima vacacional', `<span class="row" style="gap:4px"><input class="inp mono" id="fc_pv" type="number" step="1" min="25" value="${R('pv').v ?? 25}"><span class="small muted">%</span></span>`],
+            ['com', 'Comisiones / bonos pendientes', '<span></span>'],
+            ['otro', 'Otros adeudos', `<input class="inp" id="fc_otro_c" placeholder="Concepto" value="${esc(R('otro').c || c0.otras_percepciones_concepto || '')}">`]]
+            .map(([k, l, inp]) => `<input type="checkbox" data-fc="${k}"><span>${l}<br><span class="small muted" id="fc_${k}_h"></span></span>${inp}${k === 'com' || k === 'otro' ? `<input class="inp mono" id="fc_${k}_m" type="number" step="0.01" min="0" value="${k === 'com' ? (R('com').m ?? '') : (R('otro').m ?? (num(c0.otras_percepciones) || ''))}" style="text-align:right">` : `<b class="mono" id="fc_${k}_i" style="text-align:right"></b>`}`).join('')}
+        </div></div></div>
+      <div class="fbox" style="margin-top:10px"><header>Salario diario integrado (SDI)</header><div class="fbody">
+        <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center"><label class="field" style="max-width:200px">SDI<input id="fc_sdi" type="number" step="0.01" value="${k0 && k0.sdi_manual ? k0.sdi : ''}"></label>
+        <span class="small muted" id="fc_sdi_h"></span></div></div></div>
+      <div class="fbox" style="margin-top:10px"><header>Indemnizaciones / conceptos sujetos a procedencia</header><div class="fbody">
+        <div class="fc-grid">
+          ${[['sen', 'Prima de antigüedad — 12 días por año, tope 2 salarios mínimos (Art. 162)'], ['m3', 'Indemnización de 3 meses — 90 días de SDI (Art. 48)'], ['d20', '20 días por año de SDI (Art. 50 fr. II, cuando corresponda)']]
+            .map(([k, l]) => `<input type="checkbox" data-fc="${k}"><span>${l}<br><span class="small muted" id="fc_${k}_h"></span></span><span></span><b class="mono" id="fc_${k}_i" style="text-align:right"></b>`).join('')}
+          <input type="checkbox" data-fc="ded"><span>Deducciones autorizadas<br><span class="small muted">ISR retenido, préstamos, adeudos documentados</span></span><input class="inp" id="fc_ded_c" placeholder="Concepto" value="${esc(R('ded').c || c0.deducciones_concepto || '')}"><input class="inp mono" id="fc_ded_m" type="number" step="0.01" min="0" value="${R('ded').m ?? (num(c0.deducciones) || '')}" style="text-align:right">
+        </div></div></div>
+      <div class="fc-tot" style="margin-top:12px" id="fc_tot"></div>
+      <div id="fc_just_box" hidden>${fieldsHtml([{ k: 'just', label: 'Justificación', type: 'textarea', full: true, val: (k0 && k0.just) || '', hint: 'Obligatoria: marcaste un concepto que no corresponde a este tipo de terminación, o quitaste uno obligatorio.' }])}</div>
+      <label class="row small" style="gap:6px;margin-top:10px"><input type="checkbox" id="fc_noadeudo"${x0.no_adeudo === false ? '' : ' checked'}> Agregar carta de no adeudo (recibos)</label>`,
     actions: [{ label: 'Cancelar' }, { label: 'Vista previa', run: async ({ el }) => { const doc = build(el); printDoc(doc, {}); return false; } },
       { label: existing ? 'Guardar cambios' : 'Generar documento', cls: 'primary', run: async ({ el }) => {
         const doc = build(el);
         if (!(doc.datos.monto > 0)) throw new Error('El total a pagar debe ser mayor a cero.');
+        const iss = issues();
+        if ((iss.extra.length || iss.missing.length) && !doc.datos.calc.just) throw new Error('Escribe la justificación: ' + [iss.extra.length ? 'no corresponde: ' + iss.extra.join(', ') : '', iss.missing.length ? 'falta: ' + iss.missing.join(', ') : ''].filter(Boolean).join(' · ') + '.');
         const row = { fecha: doc.fecha, datos: doc.datos, snapshot: doc.snapshot };
         let id;
         if (existing) { await mustUpdate(db('documents').eq('id', existing.id).update(row), 'el documento'); id = existing.id; }
-        else { const [r] = await db('documents').insert([{ ...row, plantilla: blockDefaults(tipo), tipo, employee_id: e.id }]); id = Array.isArray(r) ? r[0].id : r.id; }
+        else { const [r] = await db('documents').insert([{ ...row, plantilla: blockDefaults(doc.tipo), tipo: doc.tipo, employee_id: e.id }]); id = Array.isArray(r) ? r[0].id : r.id; }
         toast(existing ? 'Documento actualizado' : 'Documento generado');
         if (S.view === 'documentos') viewDocumentos().catch(() => {});
         setTimeout(() => openDocument(id), 0);
       } }] });
-  const fuente = () => { $('#fd_fuente', m.el).innerHTML = data.calculo.fuente === 'prenomina' ? `Montos del finiquito de la pre-nómina${data.calculo.periodo_id ? '' : ' (pendiente de quincena)'}.` : 'Aún no está en la pre-nómina: montos calculados con salario, ingreso y fecha de terminación.';
-    const li = data.linea; $('#fd_sal_info', m.el).textContent = li ? `(${li.dias_pagados} días · ${money(li.neto)})` : '(no hay línea en la pre-nómina)'; $('#fd_sal', m.el).disabled = !li; };
-  const recalc = () => { const r = finConceptos(data, { tipo, base: ($('#f_base', m.el) || {}).value, salPend: $('#fd_sal', m.el).checked, veinte: $('#fd_veinte', m.el).checked }); rows = r.rows; sdi = liqLike() ? r.sdi : null; paintRows(); };
-  const paintRows = () => {
-    $('#fd_veinte_box', m.el).hidden = !liqLike();
-    $('#fd_rows', m.el).innerHTML = rows.map((r, i) => `<div class="row" style="gap:6px;margin-bottom:6px"><input class="inp grow" data-rc="${i}" value="${esc(r.c)}" aria-label="Concepto"><input class="inp mono" data-rm="${i}" type="number" step="0.01" inputmode="decimal" value="${r.m}" style="width:130px;text-align:right" aria-label="Importe"><button type="button" class="btn sm ghost" data-rx="${i}" aria-label="Quitar">×</button></div>`).join('') || '<span class="small muted">Sin conceptos.</span>';
-    $$('[data-rc]', m.el).forEach((i) => i.oninput = () => { rows[i.dataset.rc].c = i.value; });
-    $$('[data-rm]', m.el).forEach((i) => i.oninput = () => { rows[i.dataset.rm].m = num(i.value); total(); });
-    $$('[data-rx]', m.el).forEach((b) => b.onclick = () => { rows.splice(Number(b.dataset.rx), 1); paintRows(); });
-    total();
+  const el = m.el, $f = (s) => $(s, el);
+  const docTipo = () => existing ? existing.tipo : $f('#f_doc').value;
+  const chk = (k) => $f(`[data-fc="${k}"]`);
+  // Estado inicial de las casillas
+  const ini = (k, def) => { chk(k).checked = R(k).on != null ? !!R(k).on : def; };
+  let B = finBase(data, $f('#f_fecha_efectiva').value, num($f('#f_diario').value));
+  const lineaCubre = !!data.linea;
+  if ($f('#fc_dias').value === '') $f('#fc_dias').value = lineaCubre ? 0 : B.diasQuincena;
+  if ($f('#fc_vac').value === '') $f('#fc_vac').value = vac0 != null ? vac0 : B.vacProp;
+  ini('dias', !lineaCubre && B.diasQuincena > 0); ini('agui', true); ini('vac', true); ini('pv', true);
+  ini('com', num($f('#fc_com_m').value) > 0); ini('otro', num($f('#fc_otro_m').value) > 0); ini('ded', num($f('#fc_ded_m').value) > 0);
+  const applyRule = (fromUser) => {
+    const r = TERM_RULES[$f('#f_term').value]; if (!r) return;
+    if (fromUser || !k0) { chk('sen').checked = r.sen === 'yes' || (r.sen === '15y' && B.anios >= 15); chk('m3').checked = r.m3 === 'yes'; chk('d20').checked = r.d20 === 'yes'; }
   };
-  const total = () => { const p = r2(rows.filter((r) => r.m > 0).reduce((s, r) => s + num(r.m), 0)), d = r2(rows.filter((r) => r.m < 0).reduce((s, r) => s - num(r.m), 0)), t = r2(p - d);
-    $('#fd_tot', m.el).innerHTML = `<div class="kv"><span>Percepciones</span><span class="mono">${money(p)}</span><span>Deducciones</span><span class="mono">−${money(d)}</span><span><b>Total a pagar</b></span><span class="mono"><b style="color:${t > 0 ? 'var(--ok)' : 'var(--bad)'}">${money(t)}</b></span>${sdi ? `<span>Salario diario integrado</span><span class="mono">${money(sdi)}</span>` : ''}</div><div class="small muted" style="margin-top:4px">${esc(montoLetras(t))}</div>`; };
-  $('#fd_add', m.el).onclick = () => { rows.push({ c: '', m: 0 }); paintRows(); const ins = $$('[data-rc]', m.el); if (ins.length) ins[ins.length - 1].focus(); };
-  $('#fd_recalc', m.el).onclick = recalc;
-  ['#fd_sal', '#fd_veinte'].forEach((s) => { const i = $(s, m.el); if (i) i.onchange = recalc; });
-  const fb = $('#f_base', m.el); if (fb) fb.onchange = recalc;
-  if (!baja) $('#f_fecha_efectiva', m.el).addEventListener('change', async (ev) => { try { data = await rpc('finiquito_documento', { p_emp: e.id, p_fecha: ev.target.value }); fuente(); recalc(); } catch (er) { toast(er.message, true); } });
-  else $('#f_fecha_efectiva', m.el).readOnly = true;
-  fuente();
-  if (rows) paintRows(); else recalc();
-  function build(el) {
-    const v = readFields(el, fields);
-    const datos = { fecha_efectiva: v.fecha_efectiva, forma_pago: v.forma_pago, representante: v.representante, causa: v.causa || null, base: v.base || null, centro: v.centro || null,
-      sal_pend: $('#fd_sal', el).checked, veinte: $('#fd_veinte', el).checked, no_adeudo: tipo === 'ratificacion' ? false : $('#fd_noadeudo', el).checked,
-      conceptos_tabla: rows.filter((r) => String(r.c || '').trim() && num(r.m) !== 0).map((r) => ({ c: String(r.c).trim(), m: r2(r.m) })),
-      salario_diario: num(data.calculo.salario_diario), sdi: liqLike() ? sdi : null, antiguedad_anios: num(data.calculo.antiguedad_anios), fuente: data.calculo.fuente };
-    if (rows.some((r) => !String(r.c || '').trim() && num(r.m))) throw new Error('Hay un importe sin concepto.');
-    datos.monto = r2(datos.conceptos_tabla.reduce((s, r) => s + r.m, 0));
-    const snap = { ...empSnapshot({ ...e, fecha_ingreso: e.fecha_ingreso }), area: e.area || areaName(e.area_id) };
-    const tv = latestTpl(tipo);
-    return { id: existing && existing.id, folio: existing ? existing.folio : 0, tipo, fecha: v._fecha, estado: existing ? existing.estado : 'emitido', datos, snapshot: existing ? { ...existing.snapshot, ...snap } : snap,
-      plantilla: existing ? existing.plantilla : currentPlantilla(tipo), plantilla_version: existing ? existing.plantilla_version : tv && tv.version };
+  if (k0) { ini('sen', false); ini('m3', false); ini('d20', false); } else applyRule(false);
+  function issues() {
+    const r = TERM_RULES[$f('#f_term').value] || TERM_RULES.Otro, extra = [], missing = [];
+    if (chk('m3').checked && r.m3 === 'no') extra.push('3 meses'); if (chk('d20').checked && r.d20 === 'no') extra.push('20 días por año');
+    const senReq = r.sen === 'yes' || (r.sen === '15y' && B.anios >= 15);
+    if (chk('sen').checked && (r.sen === 'no' || (r.sen === '15y' && B.anios < 15))) extra.push('prima de antigüedad');
+    if (senReq && !chk('sen').checked) missing.push('prima de antigüedad'); if (r.m3 === 'yes' && !chk('m3').checked) missing.push('3 meses'); if (r.d20 === 'yes' && !chk('d20').checked) missing.push('20 días por año');
+    return { extra, missing };
+  }
+  function calc() {
+    const diario = num($f('#f_diario').value); B = finBase(data, $f('#f_fecha_efectiva').value, diario);
+    const aguAnual = num($f('#fc_agui').value) || 15, pvPct = num($f('#fc_pv').value) || 25;
+    const aguDias = r2(aguAnual * B.diasAnio / 365), vacDias = num($f('#fc_vac').value), dias = num($f('#fc_dias').value);
+    const sdiSug = r2(diario * (1 + (aguAnual + (B.vacAnual || 12) * pvPct / 100) / 365));
+    const sdi = num($f('#fc_sdi').value) || sdiSug, sm = num(data.salario_minimo) || 315.04, tope = Math.min(diario, r2(2 * sm));
+    const v = { dias: r2(diario * dias), agui: r2(diario * aguDias), vac: r2(diario * vacDias), pv: r2(diario * vacDias * pvPct / 100),
+      com: r2(num($f('#fc_com_m').value)), otro: r2(num($f('#fc_otro_m').value)), sen: r2(12 * B.anios * tope), m3: r2(90 * sdi), d20: r2(20 * B.anios * sdi), ded: r2(num($f('#fc_ded_m').value)) };
+    const on = (k) => chk(k).checked;
+    const fin = r2(['dias', 'agui', 'vac', 'pv', 'com', 'otro', 'sen'].reduce((s, k) => s + (on(k) ? v[k] : 0), 0)), ind = r2((on('m3') ? v.m3 : 0) + (on('d20') ? v.d20 : 0)), ded = on('ded') ? v.ded : 0, total = r2(fin + ind - ded);
+    return { diario, aguAnual, pvPct, aguDias, vacDias, dias, sdi, sdiSug, sm, tope, v, on, fin, ind, ded, total };
+  }
+  function paint() {
+    const k = calc(); const set = (id, t) => { const x = $f(id); if (x) x.textContent = t; };
+    for (const key of ['dias', 'agui', 'vac', 'pv', 'sen', 'm3', 'd20']) set(`#fc_${key}_i`, k.on(key) ? money(k.v[key]) : '—');
+    set('#fc_dias_h', lineaCubre ? `La quincena ${data.linea.periodo} ya los paga en la pre-nómina (${data.linea.dias_pagados} días)` : `${B.diasQuincena} días de la quincena hasta la baja × ${money(k.diario)}`);
+    set('#fc_agui_d', `al año → ${k.aguDias.toFixed(2)} días`); set('#fc_agui_h', `${B.diasAnio} días trabajados en el año`);
+    set('#fc_vac_h', `Proporcional ${B.vacProp} de ${B.vacAnual || 12} días del ${B.n + 1}º año${pre && (num(c0.vac_pendientes) || num(c0.vac_tomadas)) ? ` · pendientes ${num(c0.vac_pendientes)} · tomados ${num(c0.vac_tomadas)}` : ''}`);
+    set('#fc_pv_h', `${k.pvPct}% de las vacaciones`);
+    set('#fc_sen_h', `${B.anios.toFixed(3)} años × 12 días × ${money(k.tope)} (tope ${money(2 * k.sm)})`);
+    set('#fc_m3_h', `90 × ${money(k.sdi)}`); set('#fc_d20_h', `20 × ${B.anios.toFixed(3)} años × ${money(k.sdi)}`);
+    set('#fc_sdi_h', `Sugerido ${money(k.sdiSug)} = salario + partes proporcionales de aguinaldo (${k.aguAnual} días) y prima vacacional (${B.vacAnual || 12} días × ${k.pvPct}%) ÷ 365. Déjalo vacío para usar el sugerido.`);
+    const r = TERM_RULES[$f('#f_term').value]; $f('#fc_hint').textContent = r ? r.hint : '';
+    const iss = issues(); $f('#fc_just_box').hidden = !(iss.extra.length || iss.missing.length);
+    if (!existing) { const d = $f('#f_doc'); if (d.value !== 'ratificacion') d.value = k.on('m3') || k.on('d20') ? 'liquidacion' : 'finiquito'; }
+    $f('#f_centro').closest('label').hidden = docTipo() !== 'ratificacion';
+    $f('#fc_tot').innerHTML = `<div class="fc-k"><span>Finiquito</span><b>${money(k.fin)}</b></div><div class="fc-k"><span>Indemnizaciones</span><b>${money(k.ind)}</b></div><div class="fc-k"><span>Deducciones</span><b>${money(k.ded)}</b></div><div class="fc-k"><span>Total a pagar</span><b style="color:${k.total > 0 ? 'var(--ok)' : 'var(--bad)'}">${money(k.total)}</b><span class="small muted">${esc(montoLetras(k.total))}</span></div>`;
+  }
+  $$('input,select,textarea', el).forEach((i) => { i.addEventListener('input', paint); i.addEventListener('change', paint); });
+  $f('#f_term').addEventListener('change', () => { applyRule(true); paint(); });
+  if (!baja) $f('#f_fecha_efectiva').addEventListener('change', async (ev) => { try { data = await rpc('finiquito_documento', { p_emp: e.id, p_fecha: ev.target.value }); B = finBase(data, ev.target.value, num($f('#f_diario').value)); $f('#fc_vac').value = B.vacProp; $f('#fc_dias').value = data.linea ? 0 : B.diasQuincena; paint(); } catch (er) { toast(er.message, true); } });
+  else $f('#f_fecha_efectiva').readOnly = true;
+  paint();
+  function build(el2) {
+    const v = readFields(el2, fields); const k = calc(); const t = docTipo();
+    const rows = [];
+    const add = (key, c, mnt) => { if (k.on(key) && mnt) rows.push({ c, m: r2(mnt) }); };
+    add('dias', `Días laborados pendientes de pago (${k.dias} días × ${money(k.diario)})`, k.v.dias);
+    add('vac', `Vacaciones (${k.vacDias.toFixed(2)} días)`, k.v.vac);
+    add('pv', `Prima vacacional ${k.pvPct}%`, k.v.pv);
+    add('agui', `Aguinaldo proporcional (${k.aguDias.toFixed(2)} días)`, k.v.agui);
+    add('com', 'Comisiones / bonos pendientes', k.v.com);
+    add('otro', ($f('#fc_otro_c').value.trim() || 'Otros adeudos'), k.v.otro);
+    add('sen', `Prima de antigüedad (12 días × ${B.anios.toFixed(3)} años × ${money(k.tope)})`, k.v.sen);
+    add('m3', `Indemnización constitucional (90 días × SDI ${money(k.sdi)})`, k.v.m3);
+    add('d20', `20 días por año de servicio (20 × ${B.anios.toFixed(3)} años × SDI ${money(k.sdi)})`, k.v.d20);
+    if (k.on('ded') && k.ded) rows.push({ c: ($f('#fc_ded_c').value.trim() || 'Deducciones') + ' (deducción)', m: -r2(k.ded) });
+    if (k.on('otro') && k.v.otro && !$f('#fc_otro_c').value.trim()) throw new Error('Escribe el concepto de "Otros adeudos".');
+    const liq = k.on('m3') || k.on('d20');
+    const calcSave = { term: v.term, diario: k.diario, sdi: k.sdi, sdi_manual: !!num($f('#fc_sdi').value), just: ($f('#f_just').value || '').trim() || null,
+      rows: { dias: { on: k.on('dias'), v: k.dias }, agui: { on: k.on('agui'), v: k.aguAnual }, vac: { on: k.on('vac'), v: k.vacDias }, pv: { on: k.on('pv'), v: k.pvPct }, sen: { on: k.on('sen') }, m3: { on: k.on('m3') }, d20: { on: k.on('d20') },
+        com: { on: k.on('com'), m: k.v.com }, otro: { on: k.on('otro'), c: $f('#fc_otro_c').value.trim(), m: k.v.otro }, ded: { on: k.on('ded'), c: $f('#fc_ded_c').value.trim(), m: k.ded } } };
+    const datos = { fecha_efectiva: v.fecha_efectiva, forma_pago: v.forma_pago, representante: v.representante, causa: v.term, base: liq ? 'liquidacion' : 'finiquito', centro: t === 'ratificacion' ? v.centro : null,
+      no_adeudo: t === 'ratificacion' ? false : $f('#fc_noadeudo').checked, conceptos_tabla: rows, monto: r2(rows.reduce((s, r) => s + r.m, 0)),
+      salario_diario: k.diario, sdi: liq ? k.sdi : null, antiguedad_anios: B.anios, fuente: c0.fuente, calc: calcSave };
+    const snap = { ...empSnapshot(e), area: e.area || areaName(e.area_id) };
+    const tv = latestTpl(t);
+    return { id: existing && existing.id, folio: existing ? existing.folio : 0, tipo: t, fecha: v._fecha, estado: existing ? existing.estado : 'emitido', datos, snapshot: existing ? { ...existing.snapshot, ...snap } : snap,
+      plantilla: existing ? existing.plantilla : currentPlantilla(t), plantilla_version: existing ? existing.plantilla_version : tv && tv.version };
   }
 }
 function finConceptosTabla(x) {
