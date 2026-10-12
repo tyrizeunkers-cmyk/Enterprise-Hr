@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.16.1';
+const APP_VERSION = '0.17.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -335,12 +335,24 @@ const VIEWS = {
   chat: { label: 'Mensajes', short: 'Chat', ic: '💬', grupo: 'Comunicación', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewChat() },
   prenomina: { label: 'Pre-nómina', short: 'Nómina', ic: '$', grupo: 'Nómina', roles: ['developer', 'director', 'nomina'], render: () => viewPrenomina() },
   usuarios: { label: 'Usuarios', ic: '🔑', grupo: 'Administración', roles: ['developer'], render: () => viewUsuarios() },
-  catalogos: { label: 'Áreas y grupos', ic: '⌂', grupo: 'Administración', roles: ['developer'], render: () => viewCatalogos() },
+  catalogos: { label: 'Áreas y grupos', short: 'Grupos', ic: '⌂', grupo: 'Personal', roles: ['developer', 'rh_general', 'rh_area'], render: () => viewCatalogos() },
+  informes: { label: 'Informes', ic: '▤', grupo: 'Personal', roles: ['developer', 'director', 'rh_general', 'rh_area'], render: () => viewInformes() },
   plantillas: { label: 'Plantillas', ic: '✎', grupo: 'Administración', roles: ['developer'], render: () => viewPlantillas() },
   buzon: { label: 'Buzón', ic: '✉', grupo: 'Administración', roles: ['developer'], render: () => viewBuzon() },
   bitacora: { label: 'Bitácora', ic: '🕘', grupo: 'Administración', roles: ['developer', 'director'], render: () => viewBitacora() }
 };
-const myViews = () => Object.entries(VIEWS).filter(([, v]) => v.roles.includes(role()));
+// Permisos por usuario: además del rol, Daniel puede quitar módulos y quitar o dar acciones (profiles.permisos)
+const PERM_ACC = {
+  'vac.registrar': { label: 'Registrar vacaciones', roles: ['developer', 'rh_general', 'rh_area', 'supervisor', 'tl'], dar: ['director', 'nomina'], db: true },
+  'doc.finiquito': { label: 'Generar finiquitos y liquidaciones', roles: ['developer', 'nomina', 'rh_general', 'rh_area'], dar: ['director', 'supervisor'], db: true },
+  'grupos.editar': { label: 'Editar grupos y mover personal (Áreas y grupos)', roles: ['developer', 'rh_general', 'rh_area'], dar: ['supervisor'], db: true },
+  'prenomina.excel': { label: 'Descargar Excel de pre-nómina', roles: ['developer', 'director', 'nomina'], dar: [], db: false }
+};
+const MOD_DB = ['prenomina', 'documentos', 'reclutamiento', 'bitacora', 'informes'];   // al quitarlos también se bloquean en la base de datos
+const myPerm = () => (S.me && S.me.permisos) || {};
+const modOk = (k) => myPerm()['mod.' + k] !== false;
+const can = (k) => { const v = myPerm()[k]; return typeof v === 'boolean' ? v : PERM_ACC[k].roles.includes(role()); };
+const myViews = () => Object.entries(VIEWS).filter(([k, v]) => v.roles.includes(role()) && (k === 'usuarios' || modOk(k)));
 // Íconos de línea uniformes (24×24, trazo)
 const ICONS = {
   lista: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/>',
@@ -355,6 +367,7 @@ const ICONS = {
   plantillas: '<path d="M6 3h8l4 4v6"/><path d="M6 3v18h6"/><path d="M14 3v4h4"/><path d="M14.5 21l1-3.5 5-5 2.5 2.5-5 5z"/>',
   buzon: '<path d="M3 13l2.5-7h13L21 13v6H3z"/><path d="M3 13h5l1.5 2.5h5L16 13h5"/>',
   bitacora: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  informes: '<path d="M5 20V10M10 20V4M15 20v-7M20 20v-4"/><path d="M3 20h18"/>',
   chat: '<path d="M4 5.5h16v10.5H10l-4.5 3.5V16H4z"/><path d="M8 9.5h8M8 12.5h5"/>',
   prenomina: '<rect x="3" y="6" width="18" height="12" rx="2.5"/><circle cx="12" cy="12" r="2.6"/><path d="M6.5 9.5v5M17.5 9.5v5"/>',
   mas: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
@@ -363,7 +376,7 @@ const ICONS = {
 };
 const icon = (k, sz = 22) => `<svg viewBox="0 0 24 24" width="${sz}" height="${sz}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[k] || ''}</svg>`;
 // En el celular: máximo 4 secciones abajo + "Más" (el resto en un panel agrupado)
-const TAB_PRIO = ['lista', 'personal', 'chat', 'casos', 'documentos', 'reclutamiento', 'asistencia', 'prenomina', 'operacion', 'buzon', 'usuarios', 'catalogos', 'plantillas', 'bitacora'];
+const TAB_PRIO = ['lista', 'personal', 'chat', 'casos', 'documentos', 'reclutamiento', 'asistencia', 'prenomina', 'catalogos', 'informes', 'operacion', 'buzon', 'usuarios', 'plantillas', 'bitacora'];
 // Supervisión: su trabajo diario es la lista y la actividad; documentos va en "Más"
 const TAB_PRIO_SUP = ['lista', 'personal', 'casos', 'operacion', 'chat', 'asistencia', 'reclutamiento', 'documentos'];
 // Nómina: su trabajo diario es la pre-nómina
@@ -496,6 +509,11 @@ async function viewLista() {
   // Turno inicial: la tarde si la mañana ya se envió y el cierre está habilitado
   if (!LS.turno) LS.turno = d.sent_at && !d.sent_pm_at && pmOpen(g.area_id, LS.fecha) ? 'tarde' : (d.sent_pm_at ? 'tarde' : 'manana');
   const lockedDay = !!d.reviewed_at && !is('developer', 'nomina');
+  // Retiro solicitado (dejó de venir): desde el día siguiente a su último día sale de la lista
+  const rets = ids.length ? await db('retiros_lista').select('id,employee_id,ultimo_dia,motivo').in('employee_id', ids).eq('estado', 'pendiente').get().catch(() => []) : [];
+  const retirados = rets.filter((x) => LS.fecha > x.ultimo_dia).map((x) => ({ ...x, e: emps.find((y) => y.id === x.employee_id) }));
+  const retIds = new Set(retirados.map((x) => x.employee_id));
+  for (let i = emps.length - 1; i >= 0; i--) if (retIds.has(emps[i].id)) emps.splice(i, 1);
   // Vacaciones aprobadas que cubren este día: se registran solas (mañana) y no se pueden cambiar
   const vacs = ids.length ? await db('vacaciones').select('employee_id,fechas').in('employee_id', ids).eq('estado', 'aprobada').eq('tipo', 'disfrute').get().catch(() => []) : [];
   const vac = new Set(vacs.filter((x) => (x.fechas || []).includes(LS.fecha)).map((x) => x.employee_id));
@@ -503,7 +521,7 @@ async function viewLista() {
   if (falta.length && !lockedDay && LS.fecha <= todayMX()) {
     try { (await db('attendance').insert(falta.map((id) => ({ employee_id: id, fecha: LS.fecha, turno: 'manana', status: null, aviso: null, incidencia: 'vacaciones', comentario: 'Vacaciones autorizadas por RH', incidencias: [] })), { onConflict: 'employee_id,fecha,turno' })).forEach((r) => { recM[r.employee_id] = r; }); } catch { /* lo registra el pase normal */ }
   }
-  renderLista({ emps, recM, recT, fx, d, lockedDay, g, vac }, groups);
+  renderLista({ emps, recM, recT, fx, d, lockedDay, g, vac, retirados, rets }, groups);
 }
 function renderLista(st, groups) {
   const v = $('#view');
@@ -534,7 +552,8 @@ function renderLista(st, groups) {
   ${tarde && !open ? `<div class="notice n-info" style="margin-bottom:10px">El pase de la tarde (cierre) se habilita a partir de las <b>${areaCierre(g.area_id)}</b>.</div>` : ''}
   ${tarde && open && diffs ? `<div class="notice n-warn" style="margin-bottom:10px"><b>${diffs}</b> ${diffs === 1 ? 'persona no coincide' : 'personas no coinciden'} con el pase de la mañana. Revísalas antes de enviar el cierre.</div>` : ''}
   ${total && !locked ? `<div class="row" style="margin-bottom:10px"><button class="btn ghost grow" id="allok"${done === total ? ' disabled' : ''}>${tarde ? 'Marcar pendientes igual que en la mañana' : 'Marcar pendientes como “Asistencia”'}</button></div>` : ''}
-  <div class="list" id="people">${total ? emps.map((e) => personCard(e, rec[e.id], fx[e.id], locked, tarde ? recM[e.id] : null, st.vac && st.vac.has(e.id))).join('') : `<div class="card empty">${lider ? 'Aún no hay líderes en este grupo. Asígnalos desde Personal (grupo “Líderes”).' : 'No hay personal activo en este grupo.'}</div>`}</div>
+  <div class="list" id="people">${total ? emps.map((e) => personCard(e, rec[e.id], fx[e.id], locked, tarde ? recM[e.id] : null, st.vac && st.vac.has(e.id), (st.rets || []).find((x) => x.employee_id === e.id))).join('') : `<div class="card empty">${lider ? 'Aún no hay líderes en este grupo. Asígnalos desde Personal (grupo “Líderes”).' : 'No hay personal activo en este grupo.'}</div>`}</div>
+  ${(st.retirados || []).length ? `<div class="card pad small" style="margin-top:10px"><b>Retiro solicitado (${st.retirados.length})</b> · ya no aparecen en la lista:<br>${st.retirados.map((x) => `${esc(fullName(x.e))} · último día ${fmtDate(x.ultimo_dia)} (${esc(x.motivo)})`).join('<br>')}<div class="muted" style="margin-top:4px">Nómina les paga hasta su último día. Daniel aplica la baja o RH la rechaza.</div></div>` : ''}
   ${canAddToList(g) && !lockedDay ? '<button type="button" class="btn ghost add-person" id="addPerson">+ Agregar persona que no aparece en la lista</button>' : ''}
   ${total ? `<div class="stickybar">
     <button class="btn primary" id="send" ${done < total || locked ? 'disabled' : ''} style="${sentAt && done === total ? 'background:var(--ok);border-color:var(--ok)' : ''}">${done < total ? `Faltan ${total - done} por registrar` : sentAt ? `${tarde ? 'Cierre enviado' : 'Entrada enviada'} ✓ · reenviar` : tarde ? 'Enviar cierre (tarde)' : 'Enviar entrada (mañana)'}</button>
@@ -566,6 +585,26 @@ function renderLista(st, groups) {
   };
   $$('#people .person').forEach((card) => wirePerson(card, st, groups));
 }
+// El líder (o Supervisión/RH) avisa que alguien dejó de venir: sale de su lista desde el día siguiente a su último día
+function retiroForm(e, done) {
+  const f = [{ k: 'ultimo_dia', label: 'Último día que trabajó', type: 'date', req: true, val: addDays(todayMX(), -1), max: todayMX() },
+    { k: 'motivo', label: 'Motivo', type: 'select', req: true, val: 'Abandono de empleo', options: opts(['Renuncia', 'Abandono de empleo', 'Otro']) },
+    { k: 'comentario', label: 'Comentario', type: 'textarea', full: true, hint: 'Ej. "Avisó por WhatsApp que ya no regresa" o "No contesta desde el lunes".' }];
+  modal({ title: 'Retiro de la lista · ' + fullName(e), body: `<div class="notice n-info">Desde el día siguiente a su último día ya no aparece en tu pase de lista, y la pre-nómina le paga solo hasta ese día. Daniel aplica la baja (o RH la rechaza y regresa a la lista).</div>${fieldsHtml(f)}`,
+    actions: [{ label: 'Cancelar' }, { label: 'Solicitar retiro', cls: 'primary', run: async ({ el }) => {
+      const v = readFields(el, f); if (v.ultimo_dia > todayMX()) throw new Error('El último día no puede ser futuro.');
+      await db('retiros_lista').insert([{ employee_id: e.id, ultimo_dia: v.ultimo_dia, motivo: v.motivo, comentario: v.comentario }]);
+      toast('Retiro solicitado'); done && done();
+    } }] });
+}
+function retiroResolver(x, e, done) {
+  const f = [{ k: 'nota', label: 'Nota', type: 'textarea', full: true, hint: 'Obligatoria si se rechaza.' }];
+  const acts = [{ label: 'Cerrar' }];
+  if (is('developer', 'rh_general', 'rh_area')) acts.push({ label: 'Rechazar (regresa a la lista)', cls: 'danger', run: async ({ el }) => { const v = readFields(el, f); await rpc('retiro_resolver', { p_id: x.id, p_aplicar: false, p_nota: v.nota }); toast('Rechazado'); done && done(); } });
+  if (is('developer')) acts.push({ label: 'Aplicar baja', cls: 'primary', run: async ({ el }) => { const v = readFields(el, f); await rpc('retiro_resolver', { p_id: x.id, p_aplicar: true, p_nota: v.nota }); toast('Baja aplicada con fecha ' + fmtDate(x.ultimo_dia)); done && done(); } });
+  modal({ title: 'Retiro solicitado · ' + (e ? fullName(e) : ''), body: `<div class="kv"><span>Último día</span><span>${fmtDate(x.ultimo_dia)}</span><span>Motivo</span><span>${esc(x.motivo)}</span>${x.comentario ? `<span>Comentario</span><span>${esc(x.comentario)}</span>` : ''}<span>Solicitó</span><span>${esc(profName(x.solicitado_by))} · ${fmtDateTime(x.created_at)}</span></div>
+    <div class="notice n-info" style="margin-top:10px">Al aplicar la baja queda con fecha ${fmtDate(x.ultimo_dia)} y motivo "${esc(x.motivo)}". Después puedes generar su finiquito en Documentos.</div>${fieldsHtml(f)}`, actions: acts });
+}
 // El líder agrega a alguien que RH no ha dado de alta: queda como alta pendiente en su grupo
 const canAddToList = (g) => g.tipo !== 'lideres' && (is('developer') || (is('tl') && g.tl_id === S.me.id));
 function addPersonForm(g, onDone) {
@@ -586,7 +625,8 @@ function addPersonForm(g, onDone) {
     } }] });
 }
 const pendBadge = (e) => e.status === 'alta_pendiente' ? `<span class="badge b-warn">${e.origen === 'lider' ? 'Agregado por líder · falta alta' : 'Alta pendiente'}</span>` : '';
-function personCard(e, r, faltas, locked, morning, vac) {
+function personCard(e, r, faltas, locked, morning, vac, retiro) {
+  const lockedOrig = locked;
   if (vac) locked = true;   // vacaciones aprobadas por RH: el día queda fijo
   const open = LS.open === e.id;
   const col = r ? ATT_COLOR[attKey(r)] : null;
@@ -619,10 +659,12 @@ function personCard(e, r, faltas, locked, morning, vac) {
         <header>Incidencias del día</header>
         <div class="fbody">
           <div class="att3">${INC_TL.map(incBtn).join('')}</div>
+          ${!vac && !tarde && e.status === 'activo' && canEditVac(e) && !lockedOrig ? '<button type="button" class="btn sm" data-vacbtn style="margin-top:8px">🌴 Registrar vacaciones…</button>' : ''}
           ${r && r.incidencia ? `<div class="inc-note"><div class="small muted">Comentarios</div><div>${esc(r.comentario || '')}</div>${locked ? '' : '<button type="button" class="btn sm ghost" data-inc-edit>Editar comentario</button>'}</div>` : '<div class="small muted">Si eliges una incidencia se pide un comentario obligatorio.</div>'}
         </div>
       </section>
       ${r ? `<div class="small muted">Último cambio: ${esc(profName(r.updated_by))} · ${fmtDateTime(r.updated_at)}</div>` : ''}
+      ${e.status === 'activo' && !tarde ? (retiro ? `<div class="notice n-warn">Retiro solicitado: último día ${fmtDate(retiro.ultimo_dia)} (${esc(retiro.motivo)}). Sale de la lista desde el día siguiente.</div>` : '<button type="button" class="btn sm ghost" data-retiro style="align-self:flex-start">Ya no trabaja aquí · solicitar retiro de la lista</button>') : ''}
       ${e.status === 'alta_pendiente' ? '<div class="notice n-warn">Esta persona aún no tiene alta confirmada. Las solicitudes e incidencias de riesgo se habilitan cuando Daniel acepte el alta.</div>' : ''}
       ${canReportCase() && e.status === 'activo' ? `<section class="fbox">
         <header>Solicitud de incidencias<span>Se envía a Supervisión</span></header>
@@ -684,6 +726,8 @@ function wirePerson(card, st, groups) {
   $$('[data-inc]', card).forEach((b) => b.onclick = () => incModal(b.dataset.inc));
   const ie = $('[data-inc-edit]', card);
   if (ie) ie.onclick = () => incModal(rec[id].incidencia);
+  const vb = $('[data-vacbtn]', card); if (vb) vb.onclick = () => vacForm({ emps: [emp], employee: emp, onDone: () => viewLista() });
+  const rb = $('[data-retiro]', card); if (rb) rb.onclick = () => retiroForm(emp, () => viewLista());
   $$('[data-req]', card).forEach((b) => b.onclick = () => requestForm({ employee: emp, tipo: b.dataset.req, fecha: LS.fecha, onDone: () => toast(RIESGO[b.dataset.req] ? 'Incidencia de riesgo enviada a RH' : 'Solicitud enviada a Supervisión') }));
 }
 
@@ -699,6 +743,7 @@ async function viewPersonal() {
   ]);
   emps.sort(sortName); EMP_CACHE = emps;
   const fx = Object.fromEntries(faltas.map((f) => [f.employee_id, f.faltas]));
+  const retiros = is('tl') ? [] : await db('retiros_lista').eq('estado', 'pendiente').order('created_at').get().catch(() => []);
   const counts = { activo: 0, alta_pendiente: 0, baja: 0, rechazado: 0 };
   emps.forEach((e) => { counts[e.status]++; });
   const areas = visibleAreas();
@@ -707,6 +752,8 @@ async function viewPersonal() {
   v.innerHTML = `
   <div class="pagehead"><div><h1>Personal</h1><div class="muted small">${counts.activo} activos${counts.alta_pendiente ? ` · <b style="color:var(--warn)">${counts.alta_pendiente} altas pendientes</b>` : ''}</div></div>
     ${canRequest ? `<button class="btn primary" id="newEmp">${is('developer') ? '+ Nuevo ingreso' : '+ Solicitar alta'}</button>` : ''}</div>
+  ${retiros.length ? `<div class="card pad" style="margin-bottom:12px;border-color:var(--warn)"><div class="eyebrow" style="margin-bottom:6px;color:var(--warn)">Retiros de lista solicitados (${retiros.length})${is('developer') ? ' · aplica la baja' : ''}</div><div class="list">${retiros.map((x) => { const e = emps.find((y) => y.id === x.employee_id);
+    return `<button type="button" class="item" data-ret="${x.id}"><span class="grow"><span class="nm">${esc(e ? fullName(e) : 'Persona')}</span><br><span class="small muted">${e ? esc(areaName(e.area_id)) + ' · ' + esc(groupName(e.group_id)) + ' · ' : ''}último día ${fmtDate(x.ultimo_dia)} · ${esc(x.motivo)} · pidió ${esc(profName(x.solicitado_by))}</span></span><span class="badge b-warn">Pendiente</span></button>`; }).join('')}</div></div>` : ''}
   <div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
     <input class="inp" id="pq" type="search" placeholder="Buscar por nombre, número o puesto" value="${esc(PS.q)}" aria-label="Buscar">
     <div class="row">
@@ -734,6 +781,7 @@ async function viewPersonal() {
   if ($('#pa')) $('#pa').onchange = (e) => { PS.area = e.target.value; PS.group = ''; viewPersonal(); };
   $('#pg').onchange = (e) => { PS.group = e.target.value; draw(); };
   if ($('#newEmp')) $('#newEmp').onclick = () => altaForm();
+  $$('[data-ret]').forEach((b) => b.onclick = () => { const x = retiros.find((y) => y.id === b.dataset.ret); retiroResolver(x, emps.find((y) => y.id === x.employee_id), () => viewPersonal()); });
 }
 
 const PRIV_FIELDS = [
@@ -1260,7 +1308,7 @@ function bajaForm(e, p) {
 // ───────────────────────── Asistencia (revisión, alertas, exportación) ─────────────────────────
 // ───── Vacaciones: RH registra, se marcan solas en el pase de lista y se descuentan del saldo (Art. 76 LFT) ─────
 const VS = { q: '', area: '', ver: 'actuales' };
-const canEditVac = (e) => is('developer') || (is('rh_general', 'rh_area') && e && S.myAreas.includes(e.area_id));
+const canEditVac = (e) => !!e && can('vac.registrar') && (is('developer', 'director', 'nomina') || S.myAreas.includes(e.area_id) || (is('tl') && S.groups.some((g) => g.id === e.group_id && g.tl_id === S.me.id)));
 const canSaldoVac = (e) => canEditVac(e) || is('director', 'nomina');
 const DOW_L = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
 const dowOf = (iso) => new Date(iso + 'T12:00:00Z').getUTCDay();
@@ -1293,7 +1341,7 @@ async function viewVacaciones(v) {
   const hoyV = vis.filter((x) => x.tipo === 'disfrute' && (x.fechas || []).includes(hoy));
   const prox = vis.filter((x) => x.tipo === 'disfrute' && x.fecha_inicio > hoy).sort((a, b) => a.fecha_inicio.localeCompare(b.fecha_inicio));
   const pas = vis.filter((x) => !hoyV.includes(x) && !prox.includes(x));
-  const puede = is('developer', 'rh_general', 'rh_area');
+  const puede = can('vac.registrar') && !is('tl');
   const row = (x) => { const e = empById[x.employee_id];
     return `<button type="button" class="item" data-vac="${x.id}"><span class="grow"><span class="nm">${esc(fullName(e))}</span><br><span class="small muted">${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))} · ${esc(vacRango(x))}${x.nota ? ' · ' + esc(x.nota) : ''}</span></span>
       ${x.adelanto ? '<span class="badge b-warn">Adelanto</span>' : ''}<span class="badge ${x.tipo === 'ajuste' ? 'b-mut' : 'b-ok'}">${num(x.dias)} día${num(x.dias) === 1 ? '' : 's'}</span></button>`; };
@@ -1498,10 +1546,33 @@ async function viewUsuarios() {
     <td>${p.role ? esc(ROLES[p.role]) : '<span class="badge b-warn">Sin rol</span>'}</td>
     <td class="small">${['developer', 'director', 'nomina'].includes(p.role) ? '<span class="muted">Todas</span>' : p.role === 'tl' ? esc(S.groups.filter((g) => g.tl_id === p.id).map((g) => areaName(g.area_id) + ' · ' + g.name).join(', ') || 'Sin grupo') : esc(areasOf(p.id).map(areaName).join(', ') || '—')}</td>
     <td>${p.active ? '<span class="badge b-ok">Activo</span>' : '<span class="badge b-mut">Inactivo</span>'}</td>
-    <td style="white-space:nowrap">${p.id === S.me.id ? '<span class="small muted">Tú</span>' : `<button class="btn sm" data-ed="${p.id}">Editar</button>`}</td></tr>`).join('')}
+    <td style="white-space:nowrap">${p.id === S.me.id ? '<span class="small muted">Tú</span>' : `<button class="btn sm" data-ed="${p.id}">Editar</button> <button class="btn sm" data-pm="${p.id}">Permisos${Object.keys(p.permisos || {}).length ? ' <span class="badge b-warn">' + Object.keys(p.permisos).length + '</span>' : ''}</button>`}</td></tr>`).join('')}
   </tbody></table></div>`;
   $('#nu').onclick = () => userForm(null, [], () => viewUsuarios());
   $$('[data-ed]').forEach((b) => b.onclick = () => { const p = profiles.find((x) => x.id === b.dataset.ed); userForm(p, areasOf(p.id), () => viewUsuarios()); });
+  $$('[data-pm]').forEach((b) => b.onclick = () => permisosForm(profiles.find((x) => x.id === b.dataset.pm), () => viewUsuarios()));
+}
+// Módulos que ve y acciones que puede hacer un usuario: lo que da su rol, con lo que Daniel le quite o le dé
+function permisosForm(p, done) {
+  if (!p.role) return toast('Primero asígnale un rol', true);
+  const per = { ...(p.permisos || {}) };
+  const mods = Object.entries(VIEWS).filter(([k]) => !['usuarios', 'catalogos_dev'].includes(k));
+  const modRow = ([k, v]) => { const enRol = v.roles.includes(p.role); const on = enRol && per['mod.' + k] !== false;
+    return `<label class="item" style="gap:10px;${enRol ? '' : 'opacity:.55'}"><input type="checkbox" data-pmod="${k}"${on ? ' checked' : ''}${enRol ? '' : ' disabled'}><span class="grow">${esc(v.label)}${MOD_DB.includes(k) ? ' <span class="small muted">· se bloquea también en la base de datos</span>' : ''}${enRol ? '' : '<br><span class="small muted">No incluido en el rol ' + esc(ROLES[p.role]) + '; cambia el rol para darlo</span>'}</span>${enRol && per['mod.' + k] === false ? '<span class="badge b-warn">Quitado</span>' : ''}</label>`; };
+  const accRow = ([k, a]) => { const def = a.roles.includes(p.role), puede = def || a.dar.includes(p.role); const on = typeof per[k] === 'boolean' ? per[k] : def;
+    return `<label class="item" style="gap:10px;${puede ? '' : 'opacity:.55'}"><input type="checkbox" data-pacc="${k}"${on ? ' checked' : ''}${puede ? '' : ' disabled'}><span class="grow">${esc(a.label)}<br><span class="small muted">${def ? 'Incluida en su rol' : puede ? 'No viene en su rol; se le puede dar' : 'No disponible para este rol'}${a.db ? ' · se aplica en la base de datos' : ' · solo en pantalla'}</span></span>${typeof per[k] === 'boolean' && per[k] !== def ? `<span class="badge b-warn">${per[k] ? 'Dado' : 'Quitado'}</span>` : ''}</label>`; };
+  modal({ title: 'Permisos · ' + p.full_name, wide: true,
+    body: `<div class="notice n-info">Rol: <b>${esc(ROLES[p.role])}</b>. Las casillas parten de lo que da su rol; desmarca para quitar o marca para dar. Lo que no cambies sigue al rol si después le cambias el rol.</div>
+      <div class="eyebrow" style="margin:12px 0 6px">Módulos que ve</div><div class="list">${mods.map(modRow).join('')}</div>
+      <div class="eyebrow" style="margin:12px 0 6px">Acciones</div><div class="list">${Object.entries(PERM_ACC).map(accRow).join('')}</div>`,
+    actions: [{ label: 'Cancelar' }, { label: 'Restablecer al rol', run: async () => { await mustUpdate(db('profiles').eq('id', p.id).update({ permisos: {} }), 'el usuario'); toast('Permisos del rol restablecidos'); done(); } },
+      { label: 'Guardar', cls: 'primary', run: async ({ el }) => {
+        const out = {};
+        $$('[data-pmod]', el).forEach((c) => { if (!c.disabled && !c.checked) out['mod.' + c.dataset.pmod] = false; });
+        $$('[data-pacc]', el).forEach((c) => { if (c.disabled) return; const a = PERM_ACC[c.dataset.pacc], def = a.roles.includes(p.role); if (c.checked !== def) out[c.dataset.pacc] = c.checked; });
+        await mustUpdate(db('profiles').eq('id', p.id).update({ permisos: out }), 'el usuario');
+        toast(Object.keys(out).length ? `Permisos guardados · ${Object.keys(out).length} cambio(s) sobre su rol` : 'Sin cambios sobre su rol'); done();
+      } }] });
 }
 function genPass() {
   const abc = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'; const a = new Uint32Array(12); crypto.getRandomValues(a);
@@ -1545,30 +1616,86 @@ function userForm(p, areas, done) {
   };
 }
 
-// ───────────────────────── Áreas y grupos (solo Daniel) ─────────────────────────
+// ───────────────────────── Áreas y grupos (Daniel y RH de su área) ─────────────────────────
+// Lista de personal por grupo o por líder, mover personas entre grupos y aviso de grupos bajo el mínimo (15 por defecto).
+const CG = { ver: 'grupo', open: new Set(), q: '' };
 async function viewCatalogos() {
   await loadCatalogs();
-  const v = $('#view');
-  const empsG = await db('employees').select('group_id,status').get().catch(() => []);
+  const v = $('#view'); const dev = is('developer');
+  const areas = S.areas.filter((a) => dev || S.myAreas.includes(a.id));
+  const canEdit = (areaId) => dev || (can('grupos.editar') && S.myAreas.includes(areaId));
+  const [empsG, emps, retiros] = await Promise.all([
+    db('employees').select('group_id,status').get().catch(() => []),
+    db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,puesto,area_id,group_id,status,fecha_ingreso').in('status', ['activo', 'alta_pendiente']).get().catch(() => []),
+    db('retiros_lista').select('employee_id,ultimo_dia').eq('estado', 'pendiente').get().catch(() => [])]);
   const perG = {}, allG = {}; empsG.forEach((e) => { if (!e.group_id) return; allG[e.group_id] = (allG[e.group_id] || 0) + 1; if (e.status !== 'baja' && e.status !== 'rechazado') perG[e.group_id] = (perG[e.group_id] || 0) + 1; });
+  const byG = {}; emps.sort(sortName).forEach((e) => { (byG[e.group_id || '-'] = byG[e.group_id || '-'] || []).push(e); });
+  const ret = new Map(retiros.map((x) => [x.employee_id, x.ultimo_dia]));
   const tls = S.profiles.filter((p) => p.role === 'tl' && p.active);
-  v.innerHTML = `<div class="pagehead"><h1>Áreas y grupos</h1><div class="row"><button class="btn" id="na">+ Área</button><button class="btn primary" id="ng">+ Grupo</button></div></div>
-  ${S.areas.map((a) => `<div class="card" style="margin-bottom:12px"><div class="pad row" style="border-bottom:1px solid var(--line)"><b class="grow">${esc(a.name)}</b><span class="small muted">Cierre desde ${String(a.hora_cierre || '16:00').slice(0, 5)}</span>${a.active ? '' : '<span class="badge b-mut">Inactiva</span>'}<button class="btn sm" data-ea="${a.id}">Editar</button></div>
-    <table class="tbl"><tbody>${S.groups.filter((g) => g.area_id === a.id).map((g) => `<tr><td><b>${esc(g.name)}</b>${g.tipo === 'lideres' ? ' <span class="badge b-acc">Líderes</span>' : ''}${g.active ? '' : ' <span class="badge b-mut">Inactivo</span>'}</td><td>${g.tipo === 'lideres' ? '<span class="small muted">Pasa lista: Supervisión</span>' : g.tl_id ? esc(profName(g.tl_id)) : '<span class="badge b-warn">Sin TL</span>'}</td><td class="small muted">${perG[g.id] ? perG[g.id] + (perG[g.id] === 1 ? ' persona' : ' personas') : 'Vacío'}</td><td style="text-align:right;white-space:nowrap"><button class="btn sm primary" data-ag="${g.id}">+ Agregar personal</button> <button class="btn sm" data-eg="${g.id}">Editar</button> <button class="btn sm danger" data-dg="${g.id}" aria-label="Eliminar ${esc(g.name)}">Eliminar</button></td></tr>`).join('') || '<tr><td class="muted">Sin grupos</td></tr>'}</tbody></table></div>`).join('')}
-  <div class="card pad"><div class="eyebrow" style="margin-bottom:8px">Cambios de área no permitidos</div>
-    ${S.blocks.map((b) => `<div class="row" style="padding:4px 0"><span class="grow">${esc(areaName(b.from_area))} → ${esc(areaName(b.to_area))}</span><button class="btn sm danger" data-db="${b.from_area}|${b.to_area}">Quitar</button></div>`).join('') || '<span class="muted small">Ninguno</span>'}
-    <button class="btn sm" id="nb" style="margin-top:8px">+ Bloquear cambio</button></div>`;
-  const areaOpts = S.areas.map((a) => [a.id, a.name]);
-  $('#na').onclick = () => simpleForm('Nueva área', [{ k: 'name', label: 'Nombre', req: true, full: true }], (x) => db('areas').insert([x]));
-  $$('[data-ea]').forEach((b) => b.onclick = () => { const a = S.areas.find((x) => x.id === b.dataset.ea); simpleForm('Editar área', [{ k: 'name', label: 'Nombre', req: true, val: a.name }, { k: 'hora_cierre', label: 'Pase de la tarde desde', type: 'time', req: true, val: String(a.hora_cierre || '16:00').slice(0, 5) }, { k: 'active', label: 'Estado', type: 'select', val: a.active ? '1' : '0', options: [['1', 'Activa'], ['0', 'Inactiva']] }], (x) => mustUpdate(db('areas').eq('id', a.id).update({ name: x.name, hora_cierre: x.hora_cierre, active: x.active === '1' })), 'Hora de Ciudad de México. Antes de esa hora no se puede capturar ni enviar el cierre del día.'); });
+  const minOf = (g) => g.tipo === 'lideres' ? 0 : num((S.areas.find((a) => a.id === g.area_id) || {}).min_por_grupo ?? 15);
+  const groups = S.groups.filter((g) => areas.some((a) => a.id === g.area_id));
+  const q = norm(CG.q);
+  const gEmps = (g) => (byG[g.id] || []).filter((e) => !q || norm(fullName(e) + ' ' + (e.num_empleado || '')).includes(q));
+  const bajoMin = groups.filter((g) => g.active && minOf(g) && (perG[g.id] || 0) < minOf(g));
+  const cuenta = (g) => { const n = perG[g.id] || 0, mn = minOf(g);
+    return `<span class="mono"><b>${n}</b>${mn ? ' / ' + mn : ''}</span> ${mn && g.active && n < mn ? `<span class="badge b-warn">Faltan ${mn - n}</span>` : mn && g.active ? '<span class="badge b-ok">Completo</span>' : ''}`; };
+  const people = (g) => { const xs = gEmps(g); const otros = groups.filter((x) => x.area_id === g.area_id && x.id !== g.id && x.active);
+    return `<tr class="cg-sub"><td colspan="5" style="background:var(--soft)">${xs.length ? `<table class="tbl sub"><thead><tr><th>Nombre</th><th>Puesto</th><th>Ingreso</th><th>Estatus</th>${canEdit(g.area_id) ? '<th>Mover a</th>' : ''}</tr></thead><tbody>${xs.map((e) => `<tr>
+        <td><button type="button" class="linkbtn" data-oe="${e.id}"><b>${esc(fullName(e))}</b></button>${e.num_empleado ? ` <span class="small muted mono">${esc(e.num_empleado)}</span>` : ''}</td>
+        <td class="small">${esc(e.puesto || '—')}</td><td class="small mono">${fmtDate(e.fecha_ingreso)}</td>
+        <td>${statusBadge(e.status)}${ret.has(e.id) ? ` <span class="badge b-bad">Retiro solicitado · último día ${fmtDate(ret.get(e.id))}</span>` : ''}</td>
+        ${canEdit(g.area_id) ? `<td><select class="inp" data-mv="${e.id}" aria-label="Mover a otro grupo" style="min-height:32px;max-width:200px"><option value="">—</option>${otros.map((x) => `<option value="${x.id}">${esc(groupLabel(x))}</option>`).join('')}</select></td>` : ''}</tr>`).join('')}</tbody></table>`
+      : `<span class="small muted">${q ? 'Nadie coincide con la búsqueda.' : 'Sin personal.'}</span>`}</td></tr>`; };
+  const gRow = (g, showArea) => `<tr><td><button type="button" class="linkbtn" data-tg="${g.id}">${CG.open.has(g.id) ? '▾' : '▸'} <b>${esc(g.name)}</b></button>${g.tipo === 'lideres' ? ' <span class="badge b-acc">Líderes</span>' : ''}${g.active ? '' : ' <span class="badge b-mut">Inactivo</span>'}${showArea ? `<br><span class="small muted">${esc(areaName(g.area_id))}</span>` : ''}</td>
+      <td>${g.tipo === 'lideres' ? '<span class="small muted">Pasa lista: Supervisión</span>' : g.tl_id ? esc(profName(g.tl_id)) : '<span class="badge b-warn">Sin TL</span>'}</td>
+      <td style="white-space:nowrap">${cuenta(g)}</td>
+      <td style="text-align:right;white-space:nowrap">${canEdit(g.area_id) ? `<button class="btn sm primary" data-ag="${g.id}">+ Agregar personal</button> <button class="btn sm" data-eg="${g.id}">Editar</button> <button class="btn sm danger" data-dg="${g.id}" aria-label="Eliminar ${esc(g.name)}">Eliminar</button>` : ''}</td></tr>
+    ${CG.open.has(g.id) || q ? people(g) : ''}`;
+  const tabla = (gs, showArea) => `<div class="scrollx"><table class="tbl"><thead><tr><th>Grupo</th><th>Líder</th><th>Personas / mínimo</th><th></th></tr></thead><tbody>${gs.map((g) => gRow(g, showArea)).join('') || '<tr><td colspan="4" class="muted">Sin grupos</td></tr>'}</tbody></table></div>`;
+  let cuerpo;
+  if (CG.ver === 'lider') {
+    const porTl = new Map(); groups.filter((g) => g.tipo !== 'lideres').forEach((g) => { const k = g.tl_id || '-'; porTl.set(k, [...(porTl.get(k) || []), g]); });
+    const keys = [...porTl.keys()].sort((a, b) => a === '-' ? 1 : b === '-' ? -1 : profName(a).localeCompare(profName(b), 'es'));
+    cuerpo = keys.map((k) => { const gs = porTl.get(k); const n = gs.reduce((s, g) => s + (perG[g.id] || 0), 0);
+      return `<div class="card" style="margin-bottom:12px"><div class="pad row" style="border-bottom:1px solid var(--line)"><b class="grow">${k === '-' ? 'Grupos sin líder' : esc(profName(k))}</b><span class="small muted">${gs.length} grupo${gs.length === 1 ? '' : 's'} · ${n} personas</span></div>${tabla(gs, true)}</div>`; }).join('') || '<div class="card empty">Sin grupos.</div>';
+  } else {
+    cuerpo = areas.map((a) => { const gs = groups.filter((g) => g.area_id === a.id); const n = gs.reduce((s, g) => s + (perG[g.id] || 0), 0); const bm = bajoMin.filter((g) => g.area_id === a.id).length;
+      return `<div class="card" style="margin-bottom:12px"><div class="pad row" style="border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap"><b class="grow">${esc(a.name)}</b>
+        <span class="small muted">${n} personas · ${gs.length} grupos · mínimo ${num(a.min_por_grupo ?? 15)} por grupo · cierre desde ${String(a.hora_cierre || '16:00').slice(0, 5)}</span>${bm ? `<span class="badge b-warn">${bm} grupo${bm === 1 ? '' : 's'} por llenar</span>` : ''}${a.active ? '' : '<span class="badge b-mut">Inactiva</span>'}${dev ? `<button class="btn sm" data-ea="${a.id}">Editar</button>` : ''}</div>${tabla(gs, false)}</div>`; }).join('');
+  }
+  const sinGrupo = (byG['-'] || []).filter((e) => areas.some((a) => a.id === e.area_id));
+  v.innerHTML = `<div class="pagehead"><div><h1>Áreas y grupos</h1><div class="muted small">${groups.length} grupos · ${emps.filter((e) => areas.some((a) => a.id === e.area_id)).length} personas activas${sinGrupo.length ? ` · <b style="color:var(--warn)">${sinGrupo.length} sin grupo</b>` : ''}</div></div>
+      <div class="row">${dev ? '<button class="btn" id="na">+ Área</button>' : ''}${areas.some((a) => canEdit(a.id)) ? '<button class="btn primary" id="ng">+ Grupo</button>' : ''}</div></div>
+    ${bajoMin.length ? `<div class="notice n-warn" style="margin-bottom:12px"><b>${bajoMin.length} grupo${bajoMin.length === 1 ? '' : 's'} con menos personal del mínimo:</b> ${bajoMin.map((g) => `${esc(g.name)} (${perG[g.id] || 0}/${minOf(g)}, faltan ${minOf(g) - (perG[g.id] || 0)})`).join(' · ')}. Hay que llenarlos.</div>` : ''}
+    <div class="card pad row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap">
+      <div class="seg" role="group" aria-label="Ver"><button type="button" data-cgv="grupo" class="${CG.ver === 'grupo' ? 'on' : ''}">Por área y grupo</button><button type="button" data-cgv="lider" class="${CG.ver === 'lider' ? 'on' : ''}">Por líder</button></div>
+      <input class="inp grow" id="cg_q" type="search" placeholder="Buscar persona (abre los grupos donde aparece)" value="${esc(CG.q)}" aria-label="Buscar persona">
+      <button type="button" class="btn sm" id="cg_all">${CG.open.size ? 'Cerrar listas' : 'Abrir todas las listas'}</button></div>
+    ${cuerpo}
+    ${dev ? `<div class="card pad"><div class="eyebrow" style="margin-bottom:8px">Cambios de área no permitidos</div>
+      ${S.blocks.map((b) => `<div class="row" style="padding:4px 0"><span class="grow">${esc(areaName(b.from_area))} → ${esc(areaName(b.to_area))}</span><button class="btn sm danger" data-db="${b.from_area}|${b.to_area}">Quitar</button></div>`).join('') || '<span class="muted small">Ninguno</span>'}
+      <button class="btn sm" id="nb" style="margin-top:8px">+ Bloquear cambio</button></div>` : ''}`;
+  const areaOpts = (dev ? S.areas : areas.filter((a) => canEdit(a.id))).map((a) => [a.id, a.name]);
+  $$('[data-cgv]').forEach((b) => b.onclick = () => { CG.ver = b.dataset.cgv; viewCatalogos(); });
+  $('#cg_q').oninput = (e) => { CG.q = e.target.value; clearTimeout(viewCatalogos._t); viewCatalogos._t = setTimeout(() => viewCatalogos().then(() => { const i = $('#cg_q'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }), 300); };
+  $('#cg_all').onclick = () => { if (CG.open.size) CG.open.clear(); else groups.forEach((g) => CG.open.add(g.id)); viewCatalogos(); };
+  $$('[data-tg]').forEach((b) => b.onclick = () => { const id = b.dataset.tg; CG.open.has(id) ? CG.open.delete(id) : CG.open.add(id); viewCatalogos(); });
+  $$('[data-oe]').forEach((b) => b.onclick = () => openEmployee(b.dataset.oe));
+  $$('[data-mv]').forEach((sel) => sel.onchange = async () => {
+    const e = emps.find((x) => x.id === sel.dataset.mv), g = S.groups.find((x) => x.id === sel.value); if (!g) return;
+    if (!(await confirmBox('Mover de grupo', `¿Mover a <b>${esc(fullName(e))}</b> a <b>${esc(groupLabel(g))}</b>?`, { okLabel: 'Mover' }))) { sel.value = ''; return; }
+    try { await mustUpdate(db('employees').eq('id', e.id).update({ group_id: g.id }), 'la persona'); toast('Movido a ' + groupLabel(g)); viewCatalogos(); } catch (er) { toast(er.message, true); sel.value = ''; }
+  });
+  const na = $('#na'); if (na) na.onclick = () => simpleForm('Nueva área', [{ k: 'name', label: 'Nombre', req: true, full: true }], (x) => db('areas').insert([x]));
+  $$('[data-ea]').forEach((b) => b.onclick = () => { const a = S.areas.find((x) => x.id === b.dataset.ea); simpleForm('Editar área', [{ k: 'name', label: 'Nombre', req: true, val: a.name }, { k: 'hora_cierre', label: 'Pase de la tarde desde', type: 'time', req: true, val: String(a.hora_cierre || '16:00').slice(0, 5) }, { k: 'min_por_grupo', label: 'Mínimo de personas por grupo', type: 'number', req: true, val: a.min_por_grupo ?? 15 }, { k: 'active', label: 'Estado', type: 'select', val: a.active ? '1' : '0', options: [['1', 'Activa'], ['0', 'Inactiva']] }], (x) => { if (!Number.isInteger(x.min_por_grupo) || x.min_por_grupo < 0) throw new Error('Mínimo: un número entero.'); return mustUpdate(db('areas').eq('id', a.id).update({ name: x.name, hora_cierre: x.hora_cierre, min_por_grupo: x.min_por_grupo, active: x.active === '1' })); }, 'Hora de Ciudad de México para el pase de la tarde. Los grupos de agentes con menos personas que el mínimo aparecen como "por llenar".'); });
   const gFields = (g) => [
-    { k: 'area_id', label: 'Área', type: 'select', req: true, options: areaOpts, val: g ? g.area_id : '' },
+    { k: 'area_id', label: 'Área', type: 'select', req: true, options: areaOpts, val: g ? g.area_id : (areaOpts[0] || [''])[0] },
     { k: 'name', label: 'Nombre del grupo', req: true, val: g ? g.name : '' },
     { k: 'tipo', label: 'Tipo', type: 'select', val: g ? g.tipo || 'agentes' : 'agentes', options: [['agentes', 'Agentes (lo pasa su TL)'], ['lideres', 'Líderes (lo pasa Supervisión)']] },
     { k: 'tl_id', label: 'Team Leader', type: 'select', val: g ? g.tl_id || '' : '', options: [['', 'Sin TL'], ...tls.map((p) => [p.id, p.full_name])] },
     ...(g ? [{ k: 'active', label: 'Estado', type: 'select', val: g.active ? '1' : '0', options: [['1', 'Activo'], ['0', 'Inactivo']] }] : [])
   ];
-  $('#ng').onclick = () => simpleForm('Nuevo grupo', gFields(null), (x) => db('groups').insert([{ ...x, tl_id: x.tipo === 'lideres' ? null : x.tl_id || null }]), 'Solo aparecen como TL los usuarios con rol Team Leader. Un grupo de Líderes no lleva TL.');
+  const ng = $('#ng'); if (ng) ng.onclick = () => simpleForm('Nuevo grupo', gFields(null), (x) => db('groups').insert([{ ...x, tl_id: x.tipo === 'lideres' ? null : x.tl_id || null }]), 'Solo aparecen como TL los usuarios con rol Team Leader. Un grupo de Líderes no lleva TL.');
   $$('[data-ag]').forEach((b) => b.onclick = () => addToGroupForm(S.groups.find((x) => x.id === b.dataset.ag)));
   $$('[data-dg]').forEach((b) => b.onclick = async () => {
     const g = S.groups.find((x) => x.id === b.dataset.dg);
@@ -1582,8 +1709,8 @@ async function viewCatalogos() {
       toast('Grupo eliminado'); viewCatalogos();
     } catch (e) { toast(e.message, true); }
   });
-  $$('[data-eg]').forEach((b) => b.onclick = () => { const g = S.groups.find((x) => x.id === b.dataset.eg); simpleForm('Editar grupo', gFields(g), (x) => mustUpdate(db('groups').eq('id', g.id).update({ area_id: x.area_id, name: x.name, tipo: x.tipo, tl_id: x.tipo === 'lideres' ? null : x.tl_id || null, active: x.active === '1' }))); });
-  $('#nb').onclick = () => simpleForm('Bloquear cambio de área', [{ k: 'from_area', label: 'De', type: 'select', options: areaOpts }, { k: 'to_area', label: 'A', type: 'select', options: areaOpts }], (x) => { if (x.from_area === x.to_area) throw new Error('Elige áreas distintas'); return db('area_transfer_blocks').insert([x]); }, 'Se bloquea solo en esa dirección. Agrega también la inversa si aplica.');
+  $$('[data-eg]').forEach((b) => b.onclick = () => { const g = S.groups.find((x) => x.id === b.dataset.eg); simpleForm('Editar grupo', gFields(g), (x) => mustUpdate(db('groups').eq('id', g.id).update({ area_id: x.area_id, name: x.name, tipo: x.tipo, tl_id: x.tipo === 'lideres' ? null : x.tl_id || null, active: x.active === '1' }), 'el grupo')); });
+  const nb = $('#nb'); if (nb) nb.onclick = () => simpleForm('Bloquear cambio de área', [{ k: 'from_area', label: 'De', type: 'select', options: S.areas.map((a) => [a.id, a.name]) }, { k: 'to_area', label: 'A', type: 'select', options: S.areas.map((a) => [a.id, a.name]) }], (x) => { if (x.from_area === x.to_area) throw new Error('Elige áreas distintas'); return db('area_transfer_blocks').insert([x]); });
   $$('[data-db]').forEach((b) => b.onclick = async () => { const [fa, ta] = b.dataset.db.split('|'); try { await db('area_transfer_blocks').eq('from_area', fa).eq('to_area', ta).remove(); viewCatalogos(); } catch (e) { toast(e.message, true); } });
 }
 // Agregar varias personas a un grupo (misma área). Por defecto muestra a quienes no tienen grupo.
@@ -2220,7 +2347,7 @@ const DOC_TIPOS = {
   ratificacion: { label: 'Convenio para ratificar', code: 'RAT', grupo: 'Finiquitos', desc: 'Convenio de terminación para ratificarse ante el Centro de Conciliación (Art. 33 LFT).' }
 };
 const DOC_FIN = ['finiquito', 'liquidacion', 'ratificacion'];
-const canDocFin = (areaId) => is('developer', 'nomina') || (is('rh_general', 'rh_area') && S.myAreas.includes(areaId));
+const canDocFin = (areaId) => can('doc.finiquito') && (is('developer', 'nomina', 'director') || S.myAreas.includes(areaId));
 const DOC_BAJA = ['renuncia', 'rescision', 'convenio'];
 const DOC_CONTRATA = ['contrato', 'reglamento', 'confidencialidad'];
 const CONTRATOS = { '15_dias': 'Periodo a prueba · 15 días', '30_dias': 'Periodo a prueba · 30 días', indeterminado: 'Tiempo indeterminado' };
@@ -2646,7 +2773,7 @@ async function viewDocumentos() {
   const rows = (DS.tab === 'pend' ? pend : docs).filter((d) => (!DS.tipo || d.tipo === DS.tipo) && (!q || norm(`${d.snapshot.nombre} ${docFolio(d)} ${d.snapshot.num}`).includes(q)));
   const pendLabel = is('developer') ? 'Por firmar' : 'Por entregar';
   v.innerHTML = `<div class="pagehead"><div><h1>Documentos</h1><div class="muted small">${is('developer') ? `${pend.length} emitidos sin firma · ${docs.filter((d) => d.estado === 'con_lider').length} con el líder` : is('tl', 'supervisor') ? `${pend.length} por entregar` : `${docs.length} documentos`}</div></div>
-      <div class="row" style="gap:8px">${is('developer') ? '<button class="btn" id="zipall" title="ZIP con todos los documentos, copias firmadas e índice">Respaldo ZIP</button><button class="btn primary" id="newdoc">+ Nuevo documento</button>' : is('nomina', 'rh_general', 'rh_area') ? '<button class="btn primary" id="newdoc">+ Finiquito / liquidación</button>' : ''}</div></div>
+      <div class="row" style="gap:8px">${is('developer') ? '<button class="btn" id="zipall" title="ZIP con todos los documentos, copias firmadas e índice">Respaldo ZIP</button><button class="btn primary" id="newdoc">+ Nuevo documento</button>' : !is('developer') && can('doc.finiquito') && is('nomina', 'rh_general', 'rh_area', 'director', 'supervisor') ? '<button class="btn primary" id="newdoc">+ Finiquito / liquidación</button>' : ''}</div></div>
     <div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
       ${is('developer', 'tl', 'supervisor') ? `<div class="seg" role="group" aria-label="Filtro"><button type="button" data-dt="pend" class="${DS.tab === 'pend' ? 'on' : ''}">${pendLabel} (${pend.length})</button><button type="button" data-dt="all" class="${DS.tab === 'all' ? 'on' : ''}">Todos</button></div>` : ''}
       <div class="row" style="gap:8px"><input class="inp grow" id="dq" type="search" placeholder="Buscar por nombre, número o folio" value="${esc(DS.q)}" aria-label="Buscar documentos">
@@ -3840,7 +3967,7 @@ async function viewPrenominaPeriodos() {
       <div class="row" style="gap:8px">
         <select class="inp" id="np_sel" aria-label="Periodo">${periodos.map((x) => `<option value="${x.id}"${x.id === p.id ? ' selected' : ''}>${esc(periodoTitulo(x))}${x.estado === 'autorizado' ? ' ✓' : ''}</option>`).join('')}</select>
         ${canEdit ? '<button class="btn" id="np_new">+ Nuevo periodo</button>' : ''}
-        <button class="btn primary" id="np_xls">Descargar Excel</button></div></div>
+        ${can('prenomina.excel') ? '<button class="btn primary" id="np_xls">Descargar Excel</button>' : ''}</div></div>
     <div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
       <div class="row" style="gap:8px;align-items:center">
         ${borr ? '<span class="badge b-warn">Borrador</span>' : '<span class="badge b-ok">Autorizada</span>'}
@@ -4230,6 +4357,103 @@ async function lineaForm(p, l) {
     $$('[data-rest]', m.el).forEach((b) => b.onclick = async (ev) => { ev.preventDefault(); b.disabled = true; try { await rpc('nomina_restaurar', { p_linea: l.id, p_campo: b.dataset.rest }); m.close(); toast('Valor automático restaurado'); await viewPrenomina(); const [nl] = await db('nomina_lineas').eq('id', l.id).get(); if (nl) lineaForm(p, nl); } catch (e) { toast(e.message, true); b.disabled = false; } });
   }
   preview(m.el);
+}
+
+// ───────────────────────── Informes: movimientos de personal por periodo ─────────────────────────
+const IF = { preset: 'mes', ini: null, fin: null };
+function infRango(preset) {
+  const t = todayMX(), [y, m, d] = t.split('-').map(Number), mm = (x) => String(x).padStart(2, '0');
+  const ld = (yy, mo) => new Date(Date.UTC(yy, mo, 0)).getUTCDate();
+  if (preset === 'quincena') return d <= 15 ? [`${y}-${mm(m)}-01`, t] : [`${y}-${mm(m)}-16`, t];
+  if (preset === 'quincena_ant') { if (d > 15) return [`${y}-${mm(m)}-01`, `${y}-${mm(m)}-15`]; const py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1; return [`${py}-${mm(pm)}-16`, `${py}-${mm(pm)}-${ld(py, pm)}`]; }
+  if (preset === 'mes_ant') { const py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1; return [`${py}-${mm(pm)}-01`, `${py}-${mm(pm)}-${ld(py, pm)}`]; }
+  if (preset === 'semana') return [addDays(t, -6), t];
+  if (preset === 'anio') return [`${y}-01-01`, t];
+  return [`${y}-${mm(m)}-01`, t];
+}
+const STATUS_TXT = { activo: 'Activo', baja: 'Baja', alta_pendiente: 'Alta pendiente', rechazado: 'Rechazado' };
+function infCambio(mv) {
+  const a = mv.antes || {}, d = mv.despues || {}, out = [];
+  if ('group_id' in d) out.push(`Grupo: ${a.group_id ? groupName(a.group_id) : 'sin grupo'} → ${d.group_id ? groupName(d.group_id) : 'sin grupo'}`);
+  if ('area_id' in d) out.push(`Área: ${areaName(a.area_id)} → ${areaName(d.area_id)}`);
+  if ('puesto' in d) out.push(`Puesto: ${a.puesto || '—'} → ${d.puesto || '—'}`);
+  if ('status' in d) out.push(`Estatus: ${STATUS_TXT[a.status] || a.status} → ${STATUS_TXT[d.status] || d.status}`);
+  return out.join(' · ');
+}
+const rotacion = (a) => { const prom = (num(a.inicio) + num(a.fin)) / 2; return prom ? Math.round(num(a.bajas) / prom * 1000) / 10 : 0; };
+function informeHtml(x, { impreso } = {}) {
+  const tot = x.areas.reduce((s, a) => ({ inicio: s.inicio + num(a.inicio), fin: s.fin + num(a.fin), altas: s.altas + num(a.altas), bajas: s.bajas + num(a.bajas), hoy: s.hoy + num(a.hoy) }), { inicio: 0, fin: 0, altas: 0, bajas: 0, hoy: 0 });
+  const bajo = x.grupos.filter((g) => g.minimo && g.personas < g.minimo);
+  const T = impreso ? 'style="width:100%;border-collapse:collapse;font-size:9.5pt;margin:6px 0 12px"' : 'class="tbl"';
+  const td = impreso ? ' style="border:1px solid #bbb;padding:4px 6px;vertical-align:top"' : '';
+  const th = impreso ? ' style="border:1px solid #bbb;padding:4px 6px;background:#eef1f5;text-align:left"' : '';
+  const tbl = (head, rows, empty) => rows.length ? `<div class="scrollx"><table ${T}><thead><tr>${head.map((h) => `<th${th}>${h}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td${td}>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : `<p class="small muted">${empty}</p>`;
+  const H = (t) => impreso ? `<h2 style="font-size:11pt;border-bottom:1px solid #777;margin:16px 0 6px;text-transform:uppercase">${t}</h2>` : `<div class="eyebrow" style="margin:18px 0 8px">${t}</div>`;
+  const docs = Object.entries(x.documentos || {}).map(([k, n]) => [esc((DOC_TIPOS[k] || { label: k }).label), n]);
+  return `${H('Plantilla por área')}
+    ${tbl(['Área', 'Al inicio', 'Altas', 'Bajas', 'Al cierre', 'Rotación', 'Hoy activos'], [...x.areas.map((a) => [`<b>${esc(a.name)}</b>`, a.inicio, a.altas, a.bajas, `<b>${a.fin}</b>`, rotacion(a) + ' %', a.hoy]),
+      ['<b>Total</b>', tot.inicio, tot.altas, tot.bajas, `<b>${tot.fin}</b>`, rotacion(tot) + ' %', tot.hoy]], 'Sin áreas.')}
+    ${H(`Grupos (${x.grupos.length})${bajo.length ? ` · ${bajo.length} por llenar` : ''}`)}
+    ${tbl(['Área', 'Grupo', 'Líder', 'Personas', 'Mínimo', 'Faltan'], x.grupos.map((g) => [esc(g.area), esc(g.name) + (g.tipo === 'lideres' ? ' (Líderes)' : ''), esc(g.tl || '—'), g.personas, g.minimo || '—', g.minimo && g.personas < g.minimo ? `<b style="color:#b42318">${g.minimo - g.personas}</b>` : '']), 'Sin grupos.')}
+    ${H(`Altas (${x.altas.length})`)}
+    ${tbl(['Fecha de ingreso', 'Nombre', 'Área', 'Grupo', 'Puesto', 'Estatus hoy'], x.altas.map((a) => [fmtDate(a.fecha), esc(a.nombre), esc(a.area), esc(a.grupo || '—'), esc(a.puesto || '—'), esc(STATUS_TXT[a.status] || a.status)]), 'Sin altas en el periodo.')}
+    ${H(`Bajas (${x.bajas.length})`)}
+    ${tbl(['Fecha de baja', 'Nombre', 'Área', 'Puesto', 'Ingreso', 'Motivo', 'Recontratable'], x.bajas.map((b) => [fmtDate(b.fecha), esc(b.nombre), esc(b.area), esc(b.puesto || '—'), fmtDate(b.ingreso), esc(b.motivo || '—'), b.recontratable == null ? '—' : b.recontratable ? 'Sí' : 'No']), 'Sin bajas en el periodo.')}
+    ${H(`Cambios y movimientos (${x.movimientos.length})`)}
+    ${tbl(['Fecha', 'Persona', 'Área', 'Cambio', 'Hecho por'], x.movimientos.map((m) => [fmtDateTime(m.fecha), esc(m.nombre), esc(m.area), esc(infCambio(m)), esc(m.usuario || '—')]), 'Sin cambios en el periodo.')}
+    ${H('Asistencia del periodo')}
+    ${tbl(['Área', 'Faltas', 'Retardos', 'Permisos', 'Días de vacaciones'], x.asistencia.map((a) => [esc(a.area), a.faltas, a.retardos, a.permisos, a.vacaciones]), 'Sin registros de asistencia.')}
+    ${H(`Vacaciones (${x.vacaciones.length})`)}
+    ${tbl(['Persona', 'Área', 'Periodo', 'Días'], x.vacaciones.map((v) => [esc(v.nombre), esc(v.area), v.tipo === 'ajuste' ? 'Ajuste de saldo' : `${fmtDate(v.desde)} al ${fmtDate(v.hasta)}`, num(v.dias)]), 'Sin vacaciones en el periodo.')}
+    ${H('Documentos emitidos y casos')}
+    ${tbl(['Concepto', 'Cantidad'], [...docs, ['Casos abiertos', x.casos.abiertos], ['Casos cerrados', x.casos.cerrados]], 'Sin documentos.')}`;
+}
+async function viewInformes() {
+  const v = $('#view'); await loadTemplates();
+  if (!IF.ini) [IF.ini, IF.fin] = infRango(IF.preset);
+  v.innerHTML = `<div class="pagehead"><div><h1>Informe de movimientos</h1><div class="muted small">Altas, bajas, cambios de grupo y área, plantilla por área y grupos por llenar</div></div>
+      <div class="row" style="gap:8px"><button class="btn" id="if_pdf">Imprimir / PDF</button><button class="btn primary" id="if_xls">Descargar Excel</button></div></div>
+    <div class="card pad row" style="gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:flex-end">
+      <label class="field" style="min-width:180px">Periodo<select id="if_p">${[['semana', 'Últimos 7 días'], ['quincena', 'Esta quincena'], ['quincena_ant', 'Quincena anterior'], ['mes', 'Este mes'], ['mes_ant', 'Mes anterior'], ['anio', 'Este año'], ['libre', 'Fechas…']].map(([k, l]) => `<option value="${k}"${IF.preset === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="field">Del<input type="date" id="if_ini" value="${IF.ini}" max="${todayMX()}"></label><label class="field">Al<input type="date" id="if_fin" value="${IF.fin}" max="${todayMX()}"></label>
+      <button class="btn" id="if_go">Actualizar</button></div>
+    <div id="if_body"><div class="empty">Cargando…</div></div>`;
+  $('#if_p').onchange = (e) => { IF.preset = e.target.value; if (IF.preset !== 'libre') [IF.ini, IF.fin] = infRango(IF.preset); viewInformes(); };
+  $('#if_go').onclick = () => { IF.ini = $('#if_ini').value; IF.fin = $('#if_fin').value; IF.preset = 'libre'; viewInformes(); };
+  let x;
+  try { x = await rpc('informe_movimientos', { p_ini: IF.ini, p_fin: IF.fin }); } catch (e) { $('#if_body').innerHTML = `<div class="notice n-bad">${esc(e.message)}</div>`; return; }
+  const tot = x.areas.reduce((s, a) => ({ fin: s.fin + num(a.fin), altas: s.altas + num(a.altas), bajas: s.bajas + num(a.bajas), inicio: s.inicio + num(a.inicio) }), { fin: 0, altas: 0, bajas: 0, inicio: 0 });
+  const bajo = x.grupos.filter((g) => g.minimo && g.personas < g.minimo);
+  $('#if_body').innerHTML = `<div class="fc-tot" style="margin-bottom:12px">
+      ${x.areas.map((a) => `<div class="fc-k"><span>${esc(a.name)}</span><b>${a.fin}</b><span class="small muted">+${a.altas} altas · −${a.bajas} bajas · rotación ${rotacion(a)} %</span></div>`).join('')}
+      <div class="fc-k"><span>Total</span><b>${tot.fin}</b><span class="small muted">+${tot.altas} · −${tot.bajas} · rotación ${rotacion(tot)} %</span></div>
+      <div class="fc-k"><span>Grupos por llenar</span><b style="color:${bajo.length ? 'var(--warn)' : 'var(--ok)'}">${bajo.length}</b><span class="small muted">${bajo.reduce((s, g) => s + g.minimo - g.personas, 0)} lugares vacíos</span></div></div>
+    <div class="card pad">${informeHtml(x)}</div>`;
+  const titulo = `Informe de movimientos ${fmtDate(x.ini)} al ${fmtDate(x.fin)}`;
+  $('#if_pdf').onclick = () => {
+    const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(titulo)}</title><style>@page{size:letter landscape;margin:12mm}body{font-family:Arial,Helvetica,sans-serif;font-size:10pt;color:#111}h1{font-size:15pt;margin:0}.small{font-size:8.5pt}.muted{color:#555}</style></head><body>
+      <div style="border-bottom:3px solid #172033;padding-bottom:8px;margin-bottom:10px;display:flex;justify-content:space-between"><div><div style="font-size:14pt;font-weight:700">${esc((latestTpl('general') || { bloques: {} }).bloques.empresa || EMPRESA)}</div><div class="small muted">Recursos Humanos</div></div><div style="text-align:right" class="small"><b>${esc(titulo)}</b><br>Generado ${fmtDateTime(new Date().toISOString())} por ${esc(S.me.full_name || '')}</div></div>
+      <h1>INFORME DE MOVIMIENTOS DE PERSONAL</h1>${informeHtml(x, { impreso: true })}</body></html>`;
+    const w = window.open('', '_blank'); if (!w) return toast('Permite ventanas emergentes para imprimir', true);
+    w.document.open(); w.document.write(html); w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch { /* menú */ } }, 350);
+  };
+  $('#if_xls').onclick = () => {
+    const head = (hs) => hs.map((h) => ({ v: h, s: XS.head }));
+    const T = (v) => ({ v: v == null ? '' : v, s: typeof v === 'number' ? XS.int : XS.text }), D = (iso) => iso ? { v: xlDate(String(iso).slice(0, 10)), s: XS.date } : T('');
+    const sh = (name, title, hs, rows, cols) => ({ name, freeze: [0, 3], cols, rows: [[{ v: title, s: XS.title }], [{ v: `Del ${fmtDate(x.ini)} al ${fmtDate(x.fin)} · generado ${fmtDateTime(new Date().toISOString())}`, s: XS.sub }], head(hs), ...rows] });
+    const sheets = [
+      sh('RESUMEN', 'PLANTILLA POR ÁREA', ['Área', 'Al inicio', 'Altas', 'Bajas', 'Al cierre', 'Rotación %', 'Activos hoy'], x.areas.map((a) => [T(a.name), T(num(a.inicio)), T(num(a.altas)), T(num(a.bajas)), T(num(a.fin)), { v: rotacion(a), s: XS.dec }, T(num(a.hoy))]), [24, 11, 9, 9, 11, 11, 12]),
+      sh('GRUPOS', 'GRUPOS Y MÍNIMO DE PERSONAL', ['Área', 'Grupo', 'Tipo', 'Líder', 'Personas', 'Mínimo', 'Faltan'], x.grupos.map((g) => [T(g.area), T(g.name), T(g.tipo === 'lideres' ? 'Líderes' : 'Agentes'), T(g.tl || ''), T(g.personas), T(g.minimo || 0), g.minimo && g.personas < g.minimo ? { v: g.minimo - g.personas, s: XS.warn } : T(0)]), [20, 26, 10, 26, 10, 9, 9]),
+      sh('ALTAS', 'ALTAS', ['Fecha de ingreso', 'Nombre', 'No.', 'Área', 'Grupo', 'Puesto', 'Estatus hoy'], x.altas.map((a) => [D(a.fecha), T(a.nombre), T(a.num || ''), T(a.area), T(a.grupo || ''), T(a.puesto || ''), T(STATUS_TXT[a.status] || a.status)]), [13, 34, 10, 18, 22, 24, 13]),
+      sh('BAJAS', 'BAJAS', ['Fecha de baja', 'Nombre', 'No.', 'Área', 'Puesto', 'Ingreso', 'Motivo', 'Recontratable'], x.bajas.map((b) => [D(b.fecha), T(b.nombre), T(b.num || ''), T(b.area), T(b.puesto || ''), D(b.ingreso), { v: b.motivo || '', s: XS.wrap }, T(b.recontratable == null ? '' : b.recontratable ? 'Sí' : 'No')]), [13, 34, 10, 18, 24, 12, 50, 13]),
+      sh('MOVIMIENTOS', 'CAMBIOS Y MOVIMIENTOS', ['Fecha', 'Persona', 'Área', 'Cambio', 'Hecho por'], x.movimientos.map((m) => [T(fmtDateTime(m.fecha)), T(m.nombre), T(m.area), { v: infCambio(m), s: XS.wrap }, T(m.usuario || '')]), [18, 34, 18, 60, 26]),
+      sh('ASISTENCIA', 'ASISTENCIA DEL PERIODO', ['Área', 'Faltas', 'Retardos', 'Permisos', 'Días de vacaciones'], x.asistencia.map((a) => [T(a.area), T(num(a.faltas)), T(num(a.retardos)), T(num(a.permisos)), T(num(a.vacaciones))]), [24, 10, 10, 10, 16]),
+      sh('VACACIONES', 'VACACIONES', ['Persona', 'Área', 'Tipo', 'Desde', 'Hasta', 'Días'], x.vacaciones.map((v2) => [T(v2.nombre), T(v2.area), T(v2.tipo === 'ajuste' ? 'Ajuste' : 'Disfrute'), D(v2.desde), D(v2.hasta), T(num(v2.dias))]), [34, 18, 10, 12, 12, 8])
+    ];
+    const blob = xlsxBuild(sheets);
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `Informe_movimientos_${x.ini}_al_${x.fin}.xlsx`;
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000); toast('Excel listo');
+  };
 }
 
 // ───── Excel (.xlsx) en el formato de pre-nómina de la empresa ─────
