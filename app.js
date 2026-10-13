@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.17.1';
+const APP_VERSION = '0.17.2';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -3674,19 +3674,24 @@ async function asignarForm(cs, done, { minimos = false } = {}) {
   const areas = [...new Set(cs.map((c) => c.area_id))];
   if (areas.length > 1) return toast('Asigna por separado a candidatos de áreas distintas', true);
   const sups = await rpc('supervisores_de', { p_area: areas[0] }).catch(() => []);
-  if (!sups.length) return toast('No hay supervisores activos en ' + areaName(areas[0]), true);
+  const sinVac = cs.filter((c) => !c.vacante_id);
+  const vacs = sinVac.length ? await db('vacantes').eq('area_id', areas[0]).eq('estado', 'abierta').get().catch(() => []) : [];
+  if (sinVac.length && !vacs.length) return toast(`${sinVac.map(candName).join(', ')} no ${sinVac.length === 1 ? 'tiene' : 'tienen'} vacante y no hay vacantes abiertas en ${areaName(areas[0])}. Solicita o abre una vacante (puesto y sueldo) para poder contratar.`, true);
   const alert = cs.filter((c) => c.alerta);
   const f = [
-    { k: 'sup', label: 'Supervisor que lo recibe', type: 'select', req: true, val: sups.length === 1 ? sups[0].id : '', options: [['', 'Elegir…'], ...sups.map((s) => [s.id, s.full_name])] },
+    ...(sinVac.length ? [{ k: 'vac', label: `Vacante (puesto y sueldo) para ${sinVac.length === 1 ? esc(candName(sinVac[0])) : sinVac.length + ' sin vacante'}`, type: 'select', req: true, val: vacs.length === 1 ? vacs[0].id : '', options: [['', 'Elegir…'], ...vacs.map((x) => [x.id, `${vacLabel(x)}${x.sueldo != null ? ' · ' + money(x.sueldo) : ''}`])], full: true }] : []),
+    ...(sups.length ? [{ k: 'sup', label: 'Supervisor que lo recibe', type: 'select', req: true, val: sups.length === 1 ? sups[0].id : '', options: [['', 'Elegir…'], ...sups.map((s) => [s.id, s.full_name])] }] : []),
     { k: 'ing', label: 'Fecha de ingreso', type: 'date', req: true, val: todayMX() },
     { k: 'ct', label: 'Tipo de contrato', type: 'select', req: true, options: [['', 'Elegir…'], ...Object.entries(CONTRATOS)], full: true }];
   modal({ title: `Contratar · ${cs.length === 1 ? candName(cs[0]) : cs.length + ' candidatos'}`, wide: true,
     body: `${alert.length ? `<div class="notice n-bad">${alert.map((c) => `<b>${esc(candName(c))}</b>: ${esc(c.alerta)}`).join('<br>')}${is('developer') ? '<br>Puedes continuar bajo tu responsabilidad.' : '<br>Solo Daniel puede contratarlo.'}</div>` : ''}
+      ${sups.length ? '' : `<div class="notice n-info">${esc(areaName(areas[0]))} no tiene supervisor activo: ${cs.length === 1 ? 'entra' : 'entran'} como alta pendiente sin grupo y RH ${cs.length === 1 ? 'lo asigna' : 'los asigna'} después a un grupo (Áreas y grupos o su expediente).</div>`}
       ${sin.length ? `<div class="notice n-warn"><b>Datos mínimos:</b> ${sin.map((c) => esc(candName(c))).join(', ')} ${sin.length === 1 ? 'entra' : 'entran'} con nombre y teléfono y ${sin.length === 1 ? 'queda' : 'quedan'} con "Datos pendientes". RH completa la hoja en Personal → Editar datos; Daniel no acepta el alta hasta que esté completa (CURP, RFC, NSS, nacimiento y domicilio son necesarios para el IMSS).</div>` : ''}
       <div class="notice n-info">Se hará el alta pendiente en Personal con la hoja de datos y se generarán <b>contrato, reglamento interior y acuerdo de confidencialidad</b> para imprimir y firmar. Daniel acepta el alta cuando los 3 estén firmados y subidos.</div>${fieldsHtml(f)}`,
     actions: [{ label: 'Cancelar' }, { label: 'Contratar', cls: 'primary', run: async ({ el }) => {
       const v = readFields(el, f);
-      const n = await rpc(sin.length ? 'cand_asignar_minimos' : 'cand_asignar', { p_ids: cs.map((c) => c.id), p_supervisor: v.sup, p_fecha_ingreso: v.ing, p_contrato: v.ct });
+      if (sinVac.length) await mustUpdate(db('candidatos').in('id', sinVac.map((c) => c.id)).update({ vacante_id: v.vac }), 'el candidato');
+      const n = await rpc(sin.length ? 'cand_asignar_minimos' : 'cand_asignar', { p_ids: cs.map((c) => c.id), p_supervisor: v.sup || null, p_fecha_ingreso: v.ing, p_contrato: v.ct });
       RS.sel.clear(); RS.etapa = 'asignado';
       toast(`${Array.isArray(n) ? n[0] : n} contratado(s) · imprime y sube los documentos firmados`);
       (done || (() => viewReclutamiento()))();
