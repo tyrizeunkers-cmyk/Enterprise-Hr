@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.17.3';
+const APP_VERSION = '0.17.4';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -1164,10 +1164,20 @@ async function aceptarAlta(e) {
     { k: 'fecha_ingreso', label: 'Fecha de ingreso', type: 'date', req: true, val: e.fecha_ingreso || todayMX() },
     { k: 'group_id', label: 'Grupo', type: 'select', val: e.group_id || '', options: [['', 'Sin grupo'], ...S.groups.filter((g) => g.area_id === e.area_id && g.active).map((g) => [g.id, g.name])] }
   ];
+  const DOCL = { contrato: 'contrato', reglamento: 'reglamento', confidencialidad: 'acuerdo de confidencialidad' };
+  const sinFirma = (await db('documents').select('tipo,estado').eq('employee_id', e.id).in('tipo', Object.keys(DOCL)).get().catch(() => []))
+    .filter((d) => !['firmado', 'anulado'].includes(d.estado)).map((d) => DOCL[d.tipo]);
+  const avisoDocs = sinFirma.length ? `<div class="notice n-warn"><b>Documentos sin firmar:</b> ${esc(sinFirma.join(', '))}. Puedes usar <b>"Aceptar sin documentos"</b>; quedan pendientes y se suben firmados después desde su expediente.</div>` : '';
   return new Promise((resolve) => modal({
     title: 'Aceptar alta · ' + fullName(e), onClose: () => resolve(),
-    body: avisoDatos + `<div class="notice n-info">Al aceptar, ${esc(fullName(e))} queda activo y aparece en el pase de lista de su grupo.</div>` + fieldsHtml(fields),
-    actions: [{ label: 'Cancelar' }, { label: 'Aceptar alta', cls: 'primary', run: async ({ el }) => {
+    body: avisoDatos + avisoDocs + `<div class="notice n-info">Al aceptar, ${esc(fullName(e))} queda activo y aparece en el pase de lista de su grupo.</div>` + fieldsHtml(fields),
+    actions: [{ label: 'Cancelar' },
+      ...(sinFirma.length ? [{ label: 'Aceptar sin documentos', run: async ({ el }) => {
+        const v = readFields(el, fields);
+        await rpc('alta_sin_documentos', { p_emp: e.id, p_num: v.num_empleado, p_fecha: v.fecha_ingreso, p_grupo: v.group_id || null });
+        toast('Alta aceptada · documentos pendientes de firma'); viewPersonal();
+      } }] : []),
+      { label: 'Aceptar alta', cls: 'primary', run: async ({ el }) => {
       const v = readFields(el, fields);
       await mustUpdate(db('employees').eq('id', e.id).update({ status: 'activo', num_empleado: v.num_empleado, fecha_ingreso: v.fecha_ingreso, group_id: v.group_id }));
       toast('Alta aceptada'); viewPersonal();
