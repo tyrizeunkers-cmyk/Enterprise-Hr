@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.17.0';
+const APP_VERSION = '0.17.1';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -624,7 +624,9 @@ function addPersonForm(g, onDone) {
       toast('Agregada · RH debe completar su alta'); onDone && onDone();
     } }] });
 }
-const pendBadge = (e) => e.status === 'alta_pendiente' ? `<span class="badge b-warn">${e.origen === 'lider' ? 'Agregado por líder · falta alta' : 'Alta pendiente'}</span>` : '';
+const HOJA_REQ = [['curp', 'CURP'], ['rfc', 'RFC'], ['nss', 'NSS'], ['fecha_nacimiento', 'fecha de nacimiento'], ['domicilio', 'domicilio'], ['telefono', 'teléfono']];
+const faltaHoja = (p) => HOJA_REQ.filter(([k]) => !String((p && p[k]) ?? '').trim()).map(([, l]) => l).join(', ');
+const pendBadge = (e) => e.status === 'alta_pendiente' ? `<span class="badge b-warn">${e.origen === 'lider' ? 'Agregado por líder · falta alta' : 'Alta pendiente'}</span>${e.datos_pendientes ? ' <span class="badge b-bad">Datos pendientes</span>' : ''}` : '';
 function personCard(e, r, faltas, locked, morning, vac, retiro) {
   const lockedOrig = locked;
   if (vac) locked = true;   // vacaciones aprobadas por RH: el día queda fijo
@@ -738,7 +740,7 @@ async function viewPersonal() {
   if (S.view === 'expediente' && EXP.id) return viewExpediente(EXP.id);   // tras editar desde el perfil, se queda en el perfil
   const v = $('#view');
   const [emps, faltas] = await Promise.all([
-    db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,puesto,area_id,group_id,status,fecha_ingreso,fecha_baja,requested_by,requested_at,origen').get(),
+    db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,puesto,area_id,group_id,status,fecha_ingreso,fecha_baja,requested_by,requested_at,origen,datos_pendientes').get(),
     db('faltas_30d').get()
   ]);
   emps.sort(sortName); EMP_CACHE = emps;
@@ -770,7 +772,7 @@ async function viewPersonal() {
       && (!q || norm(fullName(e) + ' ' + (e.num_empleado || '') + ' ' + (e.puesto || '')).includes(q)));
     $('#plist').innerHTML = rows.length ? rows.slice(0, 400).map((e) => `<button type="button" class="item" data-id="${e.id}">
         <span class="grow"><span class="nm">${esc(fullName(e))}</span><br><span class="small muted">${e.num_empleado ? esc(e.num_empleado) + ' · ' : ''}${esc(e.puesto || 'Sin puesto')} · ${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))}</span></span>
-        ${e.origen === 'lider' && e.status === 'alta_pendiente' ? '<span class="badge b-acc">Agregado por líder</span>' : ''}${faltasBadge(fx[e.id])} ${PS.status !== e.status || !PS.status ? statusBadge(e.status) : (e.status === 'alta_pendiente' ? statusBadge(e.status) : '')}</button>`).join('')
+        ${e.origen === 'lider' && e.status === 'alta_pendiente' ? '<span class="badge b-acc">Agregado por líder</span>' : ''}${e.datos_pendientes && e.status === 'alta_pendiente' ? '<span class="badge b-bad">Datos pendientes</span>' : ''}${faltasBadge(fx[e.id])} ${PS.status !== e.status || !PS.status ? statusBadge(e.status) : (e.status === 'alta_pendiente' ? statusBadge(e.status) : '')}</button>`).join('')
       + (rows.length > 400 ? `<div class="muted small">Mostrando 400 de ${rows.length}. Usa el buscador.</div>` : '')
       : '<div class="card empty">Sin resultados</div>';
     $$('#plist .item').forEach((b) => b.onclick = () => openEmployee(b.dataset.id, fx));
@@ -926,10 +928,11 @@ async function viewExpediente(id) {
         <div class="row" style="gap:6px;margin-top:8px">${statusBadge(e.status)}${e.num_empleado ? `<span class="badge b-mut mono">${esc(e.num_empleado)}</span>` : ''}
           <span class="badge b-acc">${e.fecha_ingreso ? 'Ingreso ' + fmtDate(e.fecha_ingreso) + ' · ' + esc(antiguedad(e.fecha_ingreso, e.status === 'baja' ? e.fecha_baja : null)) : 'Sin fecha de ingreso'}</span>
           ${contrato && contrato.datos ? `<span class="badge b-mut">${esc(CONTRATOS[contrato.datos.contrato_tipo] || 'Contrato')}${contrato.datos.fecha_fin ? ' · hasta ' + fmtDate(contrato.datos.fecha_fin) : ''}</span>` : ''}
-          ${faltasBadge(c30.falta)}</div>
+          ${faltasBadge(c30.falta)}${e.datos_pendientes && e.status === 'alta_pendiente' ? '<span class="badge b-bad">Datos pendientes</span>' : ''}</div>
       </div>
       ${acts.length ? `<div class="row ex-acts" style="gap:6px">${acts.map(([k, l, c]) => `<button type="button" class="btn sm ${c}" data-act="${k}">${esc(l)}</button>`).join('')}</div>` : ''}
     </div>
+    ${e.datos_pendientes && e.status === 'alta_pendiente' ? `<div class="notice n-warn" style="margin-bottom:12px"><b>Contratado con datos mínimos.</b> ${canSeePrivate(e) ? `Falta: ${esc(faltaHoja(p))}. ` : ''}RH debe completar su hoja de datos en "Editar datos"; Daniel no puede aceptar el alta (ni darlo de alta en el IMSS) hasta tenerla completa. La CURP y el RFC pasan solos al contrato y demás documentos sin firmar.</div>` : ''}
     ${e.origen === 'lider' && e.status === 'alta_pendiente' ? `<div class="notice n-warn" style="margin-bottom:12px">Agregado al pase de lista por ${esc(profName(e.requested_by))} el ${fmtDateTime(e.requested_at)}. RH debe completar datos y Daniel confirmar el alta.</div>` : ''}
     <div class="ex-tabs" role="tablist">${tabs.map(([k, l]) => `<button type="button" role="tab" data-tab="${k}" class="${EXP.tab === k ? 'on' : ''}">${esc(l)}</button>`).join('')}</div>
     <div id="ex_body"><div class="empty">Cargando…</div></div>
@@ -1151,6 +1154,7 @@ const EXP_TABS = {
 };
 
 async function aceptarAlta(e) {
+  if (e.datos_pendientes) return toast('Antes de aceptar el alta, RH debe completar su hoja de datos (CURP, RFC, NSS, nacimiento, domicilio y teléfono)', true);
   const fields = [
     { k: 'num_empleado', label: 'Número de empleado', val: e.num_empleado || '' },
     { k: 'fecha_ingreso', label: 'Fecha de ingreso', type: 'date', req: true, val: e.fecha_ingreso || todayMX() },
@@ -3356,6 +3360,7 @@ async function viewReclutamiento() {
     const [act, val] = b.dataset.bulk.split(':');
     if (act === 'f1' || act === 'f2') resultadoForm(xs, act, val);
     else if (act === 'asignar') asignarForm(xs);
+    else if (act === 'minimos') asignarForm(xs, null, { minimos: true });
     else if (act === 'descartar') descartarForm(xs);
   });
   const pg = $('#purge'); if (pg) pg.onclick = () => purgeCandidatos(cands);
@@ -3373,7 +3378,7 @@ function candidatosHtml(cands, vacs, vacById) {
   const bulk = {
     registrado: [['f1:paso', 'Pasó 1er filtro', 'primary'], ['f1:no_paso', 'No pasó', ''], ['f1:no_se_presento', 'No se presentó', '']],
     segundo_filtro: [['f2:paso', 'Pasó 2º filtro', 'primary'], ['f2:no_paso', 'No pasó', ''], ['f2:no_se_presento', 'No se presentó', '']],
-    seleccionado: [['asignar', 'Contratar y asignar', 'primary'], ['descartar', 'Sin hoja de datos / descartar', '']]
+    seleccionado: [['asignar', 'Contratar y asignar', 'primary'], ['minimos', 'Contratar con datos mínimos', ''], ['descartar', 'Sin hoja de datos / descartar', '']]
   }[RS.etapa] || [];
   return `<div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
       ${nopas ? '' : `<div class="seg" role="group" aria-label="Etapa">${['registrado', 'segundo_filtro', 'seleccionado', 'asignado'].map((k) => `<button type="button" data-ret="${k}" class="${RS.etapa === k ? 'on' : ''}">${ETAPAS[k][0]} (${counts[k]})</button>`).join('')}</div>`}
@@ -3382,7 +3387,7 @@ function candidatosHtml(cands, vacs, vacById) {
         ${lotes.length ? `<select class="inp" id="rlote" aria-label="Grupo de reclutamiento" style="max-width:200px"><option value="">Todos los grupos</option>${lotes.map((l) => `<option${RS.lote === l ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>` : ''}</div>
     </div>
     ${nopas ? `<div class="notice n-info" style="margin-bottom:10px">Entrevistados que no pasaron un filtro, no se presentaron, no entregaron hoja de datos o desistieron. Se pueden reactivar desde su ficha.${is('developer') ? ' <button type="button" class="btn sm" id="purge" style="margin-left:8px;min-height:32px">Depurar mayores a 6 meses</button>' : ''}</div>` : ''}
-    ${!nopas && RS.etapa === 'seleccionado' && rows.length ? '<div class="notice n-info" style="margin-bottom:10px">Abre a cada seleccionado y llena su <b>hoja de datos</b>. Sin ella no se puede contratar; si no la entrega, márcalo como "Sin hoja de datos" y pasa a No pasaron.</div>' : ''}
+    ${!nopas && RS.etapa === 'seleccionado' && rows.length ? '<div class="notice n-info" style="margin-bottom:10px">Abre a cada seleccionado y llena su <b>hoja de datos</b>. Si aún no la entrega, puedes <b>contratar con datos mínimos</b> (nombre y teléfono) y completarla después en Personal; Daniel acepta el alta hasta que esté completa. Si ya no se presenta, márcalo como "Sin hoja de datos".</div>' : ''}
     ${selectable && bulk.length && rows.length ? `<div class="card pad bulkbar" id="rbulk" hidden><b id="rbn"></b><span class="grow"></span>${bulk.map(([k, l, c]) => `<button type="button" class="btn ${c}" data-bulk="${k}">${l}</button>`).join('')}</div>` : ''}
     <div class="list">${selectable && rows.length && bulk.length ? `<label class="item chk" style="padding:8px 12px"><input type="checkbox" id="rall"> <span class="small muted">Seleccionar todos (${rows.length})</span></label>` : ''}
     ${rows.length ? rows.map((c) => `<div role="button" tabindex="0" class="item" data-cand="${c.id}">
@@ -3579,7 +3584,7 @@ async function openCandidato(id) {
     <div class="kv">${kv.map(([k, v]) => `<span>${esc(k)}</span><span>${esc(v)}</span>`).join('')}</div>
     ${c.cv_path ? `<a class="evid-item" id="cvlink" target="_blank" rel="noopener" aria-disabled="true"><span class="fic">CV</span><span class="grow"><b>CV / solicitud</b><span class="small muted">${esc(c.cv_nombre || '')}</span></span><span class="go" aria-hidden="true">↗</span></a>` : ''}
     ${['seleccionado', 'asignado'].includes(c.etapa) ? `<section class="fbox"><header>Hoja de datos para el alta ${c.hoja_at ? '<span class="badge b-ok">Completa</span>' : '<span class="badge b-warn">Pendiente</span>'}</header>
-      <div class="fbody">${hoja ? `<div class="kv">${hoja.map(([k, v]) => `<span>${esc(k)}</span><span>${esc(v)}</span>`).join('')}</div>` : '<span class="small muted">Sin hoja de datos no se puede contratar. Si no la entrega, márcalo como "Sin hoja de datos".</span>'}</div></section>` : ''}
+      <div class="fbody">${hoja ? `<div class="kv">${hoja.map(([k, v]) => `<span>${esc(k)}</span><span>${esc(v)}</span>`).join('')}</div>` : '<span class="small muted">Sin hoja de datos puedes contratar con datos mínimos (nombre y teléfono) y completarla después en Personal. Si no se presenta, márcalo como "Sin hoja de datos".</span>'}</div></section>` : ''}
     ${c.etapa === 'asignado' ? `<section class="fbox"><header>Contratación · ${esc(CONTRATOS[c.contrato_tipo] || '')} · ${firm}/3 firmados</header><div class="fbody">
       <div class="small muted" style="margin-bottom:8px">Ingreso ${fmtDate(c.fecha_ingreso)} · asignado a ${esc(profName(c.supervisor_id))} · alta en Personal: ${emp ? STATUS[emp.status][0] : '—'}${firm < 3 ? '. Imprime los 3 documentos, recaba firmas y sube cada uno firmado; Daniel acepta el alta cuando estén los 3.' : ''}</div>
       ${docListHtml(contratados)}</div></section>` : ''}`;
@@ -3592,6 +3597,7 @@ async function openCandidato(id) {
     if (c.etapa === 'seleccionado') {
       actions.push({ label: c.hoja_at ? 'Editar hoja de datos' : 'Llenar hoja de datos', cls: c.hoja_at ? '' : 'primary', run: () => { setTimeout(() => hojaForm(c, again), 0); } });
       if (c.hoja_at) actions.push({ label: 'Contratar y asignar', cls: 'primary', run: () => { setTimeout(() => asignarForm([c], again), 0); } });
+      else actions.push({ label: 'Contratar con datos mínimos', run: () => { setTimeout(() => asignarForm([c], again, { minimos: true }), 0); } });
     }
     if (['registrado', 'segundo_filtro', 'seleccionado'].includes(c.etapa)) actions.push({ label: c.etapa === 'seleccionado' ? 'Sin hoja de datos / descartar' : 'Descartar', cls: 'danger', run: () => { setTimeout(() => descartarForm([c], again), 0); } });
     if (c.etapa === 'descartado') actions.push({ label: 'Reactivar', run: async () => { await mustUpdate(db('candidatos').eq('id', c.id).update({ etapa: 'registrado' }), 'el candidato'); toast('Reactivado: vuelve a Por entrevistar'); again(); } });
@@ -3660,9 +3666,11 @@ function hojaForm(c, done) {
       toast('Hoja de datos guardada'); (done || (() => viewReclutamiento()))();
     } }] });
 }
-async function asignarForm(cs, done) {
+async function asignarForm(cs, done, { minimos = false } = {}) {
   const sin = cs.filter((c) => !c.hoja_at);
-  if (sin.length) return toast('Falta la hoja de datos de: ' + sin.map(candName).join(', '), true);
+  if (sin.length && !minimos) return toast('Falta la hoja de datos de: ' + sin.map(candName).join(', ') + '. Puedes usar "Contratar con datos mínimos".', true);
+  const sinTel = sin.filter((c) => !String(c.telefono || '').trim() || !String(c.apellido_paterno || '').trim());
+  if (sinTel.length) return toast('Para contratar con datos mínimos se necesita nombre, apellido paterno y teléfono: ' + sinTel.map(candName).join(', '), true);
   const areas = [...new Set(cs.map((c) => c.area_id))];
   if (areas.length > 1) return toast('Asigna por separado a candidatos de áreas distintas', true);
   const sups = await rpc('supervisores_de', { p_area: areas[0] }).catch(() => []);
@@ -3674,10 +3682,11 @@ async function asignarForm(cs, done) {
     { k: 'ct', label: 'Tipo de contrato', type: 'select', req: true, options: [['', 'Elegir…'], ...Object.entries(CONTRATOS)], full: true }];
   modal({ title: `Contratar · ${cs.length === 1 ? candName(cs[0]) : cs.length + ' candidatos'}`, wide: true,
     body: `${alert.length ? `<div class="notice n-bad">${alert.map((c) => `<b>${esc(candName(c))}</b>: ${esc(c.alerta)}`).join('<br>')}${is('developer') ? '<br>Puedes continuar bajo tu responsabilidad.' : '<br>Solo Daniel puede contratarlo.'}</div>` : ''}
+      ${sin.length ? `<div class="notice n-warn"><b>Datos mínimos:</b> ${sin.map((c) => esc(candName(c))).join(', ')} ${sin.length === 1 ? 'entra' : 'entran'} con nombre y teléfono y ${sin.length === 1 ? 'queda' : 'quedan'} con "Datos pendientes". RH completa la hoja en Personal → Editar datos; Daniel no acepta el alta hasta que esté completa (CURP, RFC, NSS, nacimiento y domicilio son necesarios para el IMSS).</div>` : ''}
       <div class="notice n-info">Se hará el alta pendiente en Personal con la hoja de datos y se generarán <b>contrato, reglamento interior y acuerdo de confidencialidad</b> para imprimir y firmar. Daniel acepta el alta cuando los 3 estén firmados y subidos.</div>${fieldsHtml(f)}`,
     actions: [{ label: 'Cancelar' }, { label: 'Contratar', cls: 'primary', run: async ({ el }) => {
       const v = readFields(el, f);
-      const n = await rpc('cand_asignar', { p_ids: cs.map((c) => c.id), p_supervisor: v.sup, p_fecha_ingreso: v.ing, p_contrato: v.ct });
+      const n = await rpc(sin.length ? 'cand_asignar_minimos' : 'cand_asignar', { p_ids: cs.map((c) => c.id), p_supervisor: v.sup, p_fecha_ingreso: v.ing, p_contrato: v.ct });
       RS.sel.clear(); RS.etapa = 'asignado';
       toast(`${Array.isArray(n) ? n[0] : n} contratado(s) · imprime y sube los documentos firmados`);
       (done || (() => viewReclutamiento()))();
