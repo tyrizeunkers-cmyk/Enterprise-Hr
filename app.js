@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.17.2';
+const APP_VERSION = '0.17.3';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -772,7 +772,7 @@ async function viewPersonal() {
       && (!q || norm(fullName(e) + ' ' + (e.num_empleado || '') + ' ' + (e.puesto || '')).includes(q)));
     $('#plist').innerHTML = rows.length ? rows.slice(0, 400).map((e) => `<button type="button" class="item" data-id="${e.id}">
         <span class="grow"><span class="nm">${esc(fullName(e))}</span><br><span class="small muted">${e.num_empleado ? esc(e.num_empleado) + ' · ' : ''}${esc(e.puesto || 'Sin puesto')} · ${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))}</span></span>
-        ${e.origen === 'lider' && e.status === 'alta_pendiente' ? '<span class="badge b-acc">Agregado por líder</span>' : ''}${e.datos_pendientes && e.status === 'alta_pendiente' ? '<span class="badge b-bad">Datos pendientes</span>' : ''}${faltasBadge(fx[e.id])} ${PS.status !== e.status || !PS.status ? statusBadge(e.status) : (e.status === 'alta_pendiente' ? statusBadge(e.status) : '')}</button>`).join('')
+        ${e.origen === 'lider' && e.status === 'alta_pendiente' ? '<span class="badge b-acc">Agregado por líder</span>' : ''}${e.datos_pendientes && ['activo', 'alta_pendiente'].includes(e.status) ? '<span class="badge b-bad">Datos pendientes</span>' : ''}${faltasBadge(fx[e.id])} ${PS.status !== e.status || !PS.status ? statusBadge(e.status) : (e.status === 'alta_pendiente' ? statusBadge(e.status) : '')}</button>`).join('')
       + (rows.length > 400 ? `<div class="muted small">Mostrando 400 de ${rows.length}. Usa el buscador.</div>` : '')
       : '<div class="card empty">Sin resultados</div>';
     $$('#plist .item').forEach((b) => b.onclick = () => openEmployee(b.dataset.id, fx));
@@ -928,11 +928,11 @@ async function viewExpediente(id) {
         <div class="row" style="gap:6px;margin-top:8px">${statusBadge(e.status)}${e.num_empleado ? `<span class="badge b-mut mono">${esc(e.num_empleado)}</span>` : ''}
           <span class="badge b-acc">${e.fecha_ingreso ? 'Ingreso ' + fmtDate(e.fecha_ingreso) + ' · ' + esc(antiguedad(e.fecha_ingreso, e.status === 'baja' ? e.fecha_baja : null)) : 'Sin fecha de ingreso'}</span>
           ${contrato && contrato.datos ? `<span class="badge b-mut">${esc(CONTRATOS[contrato.datos.contrato_tipo] || 'Contrato')}${contrato.datos.fecha_fin ? ' · hasta ' + fmtDate(contrato.datos.fecha_fin) : ''}</span>` : ''}
-          ${faltasBadge(c30.falta)}${e.datos_pendientes && e.status === 'alta_pendiente' ? '<span class="badge b-bad">Datos pendientes</span>' : ''}</div>
+          ${faltasBadge(c30.falta)}${e.datos_pendientes && ['activo', 'alta_pendiente'].includes(e.status) ? '<span class="badge b-bad">Datos pendientes</span>' : ''}</div>
       </div>
       ${acts.length ? `<div class="row ex-acts" style="gap:6px">${acts.map(([k, l, c]) => `<button type="button" class="btn sm ${c}" data-act="${k}">${esc(l)}</button>`).join('')}</div>` : ''}
     </div>
-    ${e.datos_pendientes && e.status === 'alta_pendiente' ? `<div class="notice n-warn" style="margin-bottom:12px"><b>Contratado con datos mínimos.</b> ${canSeePrivate(e) ? `Falta: ${esc(faltaHoja(p))}. ` : ''}RH debe completar su hoja de datos en "Editar datos"; Daniel no puede aceptar el alta (ni darlo de alta en el IMSS) hasta tenerla completa. La CURP y el RFC pasan solos al contrato y demás documentos sin firmar.</div>` : ''}
+    ${e.datos_pendientes && ['activo', 'alta_pendiente'].includes(e.status) ? `<div class="notice n-warn" style="margin-bottom:12px"><b>Datos pendientes.</b> ${canSeePrivate(e) ? `Falta: ${esc(faltaHoja(p))}. ` : ''}RH debe completar su hoja de datos en "Editar datos" (sin CURP y NSS no se puede dar de alta en el IMSS).${e.status === 'alta_pendiente' ? ' Daniel puede aceptar el alta aunque falten; la CURP y el RFC pasan solos al contrato y demás documentos sin firmar.' : ''}</div>` : ''}
     ${e.origen === 'lider' && e.status === 'alta_pendiente' ? `<div class="notice n-warn" style="margin-bottom:12px">Agregado al pase de lista por ${esc(profName(e.requested_by))} el ${fmtDateTime(e.requested_at)}. RH debe completar datos y Daniel confirmar el alta.</div>` : ''}
     <div class="ex-tabs" role="tablist">${tabs.map(([k, l]) => `<button type="button" role="tab" data-tab="${k}" class="${EXP.tab === k ? 'on' : ''}">${esc(l)}</button>`).join('')}</div>
     <div id="ex_body"><div class="empty">Cargando…</div></div>
@@ -1154,7 +1154,11 @@ const EXP_TABS = {
 };
 
 async function aceptarAlta(e) {
-  if (e.datos_pendientes) return toast('Antes de aceptar el alta, RH debe completar su hoja de datos (CURP, RFC, NSS, nacimiento, domicilio y teléfono)', true);
+  let avisoDatos = '';
+  if (e.datos_pendientes) {
+    const [pv] = await db('employee_private').eq('employee_id', e.id).get().catch(() => []);
+    avisoDatos = `<div class="notice n-warn"><b>Datos pendientes:</b> le falta ${esc(faltaHoja(pv) || 'completar su hoja')}. Puedes aceptar el alta; quedará activo con "Datos pendientes" hasta que RH complete la hoja. Sin CURP y NSS no se puede dar de alta en el IMSS.</div>`;
+  }
   const fields = [
     { k: 'num_empleado', label: 'Número de empleado', val: e.num_empleado || '' },
     { k: 'fecha_ingreso', label: 'Fecha de ingreso', type: 'date', req: true, val: e.fecha_ingreso || todayMX() },
@@ -1162,7 +1166,7 @@ async function aceptarAlta(e) {
   ];
   return new Promise((resolve) => modal({
     title: 'Aceptar alta · ' + fullName(e), onClose: () => resolve(),
-    body: `<div class="notice n-info">Al aceptar, ${esc(fullName(e))} queda activo y aparece en el pase de lista de su grupo.</div>` + fieldsHtml(fields),
+    body: avisoDatos + `<div class="notice n-info">Al aceptar, ${esc(fullName(e))} queda activo y aparece en el pase de lista de su grupo.</div>` + fieldsHtml(fields),
     actions: [{ label: 'Cancelar' }, { label: 'Aceptar alta', cls: 'primary', run: async ({ el }) => {
       const v = readFields(el, fields);
       await mustUpdate(db('employees').eq('id', e.id).update({ status: 'activo', num_empleado: v.num_empleado, fecha_ingreso: v.fecha_ingreso, group_id: v.group_id }));
@@ -3387,7 +3391,7 @@ function candidatosHtml(cands, vacs, vacById) {
         ${lotes.length ? `<select class="inp" id="rlote" aria-label="Grupo de reclutamiento" style="max-width:200px"><option value="">Todos los grupos</option>${lotes.map((l) => `<option${RS.lote === l ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>` : ''}</div>
     </div>
     ${nopas ? `<div class="notice n-info" style="margin-bottom:10px">Entrevistados que no pasaron un filtro, no se presentaron, no entregaron hoja de datos o desistieron. Se pueden reactivar desde su ficha.${is('developer') ? ' <button type="button" class="btn sm" id="purge" style="margin-left:8px;min-height:32px">Depurar mayores a 6 meses</button>' : ''}</div>` : ''}
-    ${!nopas && RS.etapa === 'seleccionado' && rows.length ? '<div class="notice n-info" style="margin-bottom:10px">Abre a cada seleccionado y llena su <b>hoja de datos</b>. Si aún no la entrega, puedes <b>contratar con datos mínimos</b> (nombre y teléfono) y completarla después en Personal; Daniel acepta el alta hasta que esté completa. Si ya no se presenta, márcalo como "Sin hoja de datos".</div>' : ''}
+    ${!nopas && RS.etapa === 'seleccionado' && rows.length ? '<div class="notice n-info" style="margin-bottom:10px">Abre a cada seleccionado y llena su <b>hoja de datos</b>. Si aún no la entrega, puedes <b>contratar con datos mínimos</b> (nombre y teléfono) y completarla después en Personal. Si ya no se presenta, márcalo como "Sin hoja de datos".</div>' : ''}
     ${selectable && bulk.length && rows.length ? `<div class="card pad bulkbar" id="rbulk" hidden><b id="rbn"></b><span class="grow"></span>${bulk.map(([k, l, c]) => `<button type="button" class="btn ${c}" data-bulk="${k}">${l}</button>`).join('')}</div>` : ''}
     <div class="list">${selectable && rows.length && bulk.length ? `<label class="item chk" style="padding:8px 12px"><input type="checkbox" id="rall"> <span class="small muted">Seleccionar todos (${rows.length})</span></label>` : ''}
     ${rows.length ? rows.map((c) => `<div role="button" tabindex="0" class="item" data-cand="${c.id}">
@@ -3686,7 +3690,7 @@ async function asignarForm(cs, done, { minimos = false } = {}) {
   modal({ title: `Contratar · ${cs.length === 1 ? candName(cs[0]) : cs.length + ' candidatos'}`, wide: true,
     body: `${alert.length ? `<div class="notice n-bad">${alert.map((c) => `<b>${esc(candName(c))}</b>: ${esc(c.alerta)}`).join('<br>')}${is('developer') ? '<br>Puedes continuar bajo tu responsabilidad.' : '<br>Solo Daniel puede contratarlo.'}</div>` : ''}
       ${sups.length ? '' : `<div class="notice n-info">${esc(areaName(areas[0]))} no tiene supervisor activo: ${cs.length === 1 ? 'entra' : 'entran'} como alta pendiente sin grupo y RH ${cs.length === 1 ? 'lo asigna' : 'los asigna'} después a un grupo (Áreas y grupos o su expediente).</div>`}
-      ${sin.length ? `<div class="notice n-warn"><b>Datos mínimos:</b> ${sin.map((c) => esc(candName(c))).join(', ')} ${sin.length === 1 ? 'entra' : 'entran'} con nombre y teléfono y ${sin.length === 1 ? 'queda' : 'quedan'} con "Datos pendientes". RH completa la hoja en Personal → Editar datos; Daniel no acepta el alta hasta que esté completa (CURP, RFC, NSS, nacimiento y domicilio son necesarios para el IMSS).</div>` : ''}
+      ${sin.length ? `<div class="notice n-warn"><b>Datos mínimos:</b> ${sin.map((c) => esc(candName(c))).join(', ')} ${sin.length === 1 ? 'entra' : 'entran'} con nombre y teléfono y ${sin.length === 1 ? 'queda' : 'quedan'} con "Datos pendientes". RH completa la hoja en Personal → Editar datos (CURP, RFC, NSS, nacimiento y domicilio son necesarios para el IMSS).</div>` : ''}
       <div class="notice n-info">Se hará el alta pendiente en Personal con la hoja de datos y se generarán <b>contrato, reglamento interior y acuerdo de confidencialidad</b> para imprimir y firmar. Daniel acepta el alta cuando los 3 estén firmados y subidos.</div>${fieldsHtml(f)}`,
     actions: [{ label: 'Cancelar' }, { label: 'Contratar', cls: 'primary', run: async ({ el }) => {
       const v = readFields(el, f);
