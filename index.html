@@ -283,7 +283,7 @@ details.card summary{cursor:pointer}
   .chat.has-conv .ch-list{display:none}.chat:not(.has-conv) .ch-main{display:none}
   .ch-back{display:inline-flex}
 }
-.ad-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.ad-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
 .linkbtn{background:none;border:0;padding:0;font:inherit;color:inherit;cursor:pointer;text-align:left}.linkbtn:hover b{text-decoration:underline}
 .fc-grid{display:grid;grid-template-columns:22px 1fr 200px 130px;gap:8px 10px;align-items:center}
 .fc-grid input[type=checkbox]{width:18px;height:18px;margin:0}
@@ -308,6 +308,7 @@ details.card summary{cursor:pointer}
 .ad-lg.proy{border-top:2px dashed var(--muted)}
 #ad_chart{position:relative}
 .ad-tip{position:absolute;top:28px;background:var(--ink);color:#fff;font-size:12px;padding:6px 9px;border-radius:8px;pointer-events:none;width:160px;line-height:1.4}
+@media (max-width:900px){.ad-kpis{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:640px){.ad-kpis{grid-template-columns:1fr}.ad-big{font-size:22px}.ad-cal{gap:3px}.ad-day{min-height:58px;padding:4px}.ad-m{font-size:10px}.ad-a{font-size:9.5px}}
 .kv{display:grid;grid-template-columns:140px 1fr;gap:6px 10px;font-size:14px}
 .kv>span:nth-child(odd){color:var(--muted)}
@@ -341,7 +342,7 @@ details.card summary{cursor:pointer}
 </head>
 <body>
 <div id="app"><div class="login"><div class="muted">Cargando…</div></div></div>
-<script src="config.js?v=0.19.0"></script>
-<script src="app.js?v=0.19.0"></script>
+<script src="config.js?v=0.19.1"></script>
+<script src="app.js?v=0.19.1"></script>
 </body>
 </html>
