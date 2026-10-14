@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.17.4';
+const APP_VERSION = '0.18.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -669,7 +669,7 @@ function personCard(e, r, faltas, locked, morning, vac, retiro) {
       ${e.status === 'activo' && !tarde ? (retiro ? `<div class="notice n-warn">Retiro solicitado: último día ${fmtDate(retiro.ultimo_dia)} (${esc(retiro.motivo)}). Sale de la lista desde el día siguiente.</div>` : '<button type="button" class="btn sm ghost" data-retiro style="align-self:flex-start">Ya no trabaja aquí · solicitar retiro de la lista</button>') : ''}
       ${e.status === 'alta_pendiente' ? '<div class="notice n-warn">Esta persona aún no tiene alta confirmada. Las solicitudes e incidencias de riesgo se habilitan cuando Daniel acepte el alta.</div>' : ''}
       ${canReportCase() && e.status === 'activo' ? `<section class="fbox">
-        <header>Solicitud de incidencias<span>Se envía a Supervisión</span></header>
+        <header>Solicitud de incidencias<span>Se envía directo a Daniel</span></header>
         <div class="req-list">${Object.entries(SOLICITUD_LIDER).map(([k, l]) => reqRow(k, l)).join('')}</div>
         <footer>Cada solicitud pide razón, evidencias y fechas.</footer>
       </section>
@@ -730,7 +730,7 @@ function wirePerson(card, st, groups) {
   if (ie) ie.onclick = () => incModal(rec[id].incidencia);
   const vb = $('[data-vacbtn]', card); if (vb) vb.onclick = () => vacForm({ emps: [emp], employee: emp, onDone: () => viewLista() });
   const rb = $('[data-retiro]', card); if (rb) rb.onclick = () => retiroForm(emp, () => viewLista());
-  $$('[data-req]', card).forEach((b) => b.onclick = () => requestForm({ employee: emp, tipo: b.dataset.req, fecha: LS.fecha, onDone: () => toast(RIESGO[b.dataset.req] ? 'Incidencia de riesgo enviada a RH' : 'Solicitud enviada a Supervisión') }));
+  $$('[data-req]', card).forEach((b) => b.onclick = () => requestForm({ employee: emp, tipo: b.dataset.req, fecha: LS.fecha, onDone: () => toast(RIESGO[b.dataset.req] ? 'Incidencia de riesgo enviada a Daniel' : 'Solicitud enviada a Daniel') }));
 }
 
 // ───────────────────────── Personal ─────────────────────────
@@ -2051,9 +2051,8 @@ const PREGUNTAS = ['¿Qué hizo?', '¿Cuándo?', '¿Cuál era la obligación?', 
 const caseBadge = (s) => `<span class="badge ${CASE_ST[s][1]}">${CASE_ST[s][0]}</span>`;
 function pendingForMe(c) {
   if (is('tl')) return c.status === 'regresado' && c.created_by === S.me.id;
-  if (is('supervisor')) return c.status === 'en_validacion' || (c.status === 'regresado' && c.created_by === S.me.id);
-  if (is('rh_general', 'rh_area')) return c.status === 'en_rh';
-  if (is('developer')) return ['en_rh', 'en_decision', 'decidido'].includes(c.status);
+  if (is('supervisor', 'rh_general', 'rh_area')) return c.status === 'regresado' && c.created_by === S.me.id;
+  if (is('developer')) return ['en_validacion', 'en_rh', 'en_decision', 'decidido'].includes(c.status);
   return false;
 }
 
@@ -2167,9 +2166,9 @@ function requestForm({ employee, tipo, fecha, existing, onDone }) {
   const fb = fileBox('evid_req');
   const m = modal({
     title: `${label} · ${fullName(employee)}`, wide: true,
-    body: `<div class="notice ${riesgo ? 'n-bad' : 'n-info'}">${riesgo ? 'Incidencia de riesgo: va directo a RH y Supervisión no la ve.' : isEdit ? 'Supervisión la regresó con un comentario: complétala y reenvíala.' : 'La solicitud va a Supervisión para validarla y después a RH. Tú reportas hechos; la decisión la toma RH.'}</div>
+    body: `<div class="notice ${riesgo ? 'n-bad' : 'n-info'}">${riesgo ? 'Incidencia de riesgo: va directo a Daniel y Supervisión no la ve.' : isEdit ? 'Daniel la regresó con un comentario: complétala y reenvíala.' : 'La solicitud va directo a Daniel. Tú reportas hechos; la decisión la toma Daniel.'}</div>
       ${fieldsHtml(f.slice(0, 2))}${fb.html}${fieldsHtml(f.slice(2))}${isEdit ? fieldsHtml([{ k: 'comentario', label: 'Qué corregiste', full: true }]) : ''}`,
-    actions: [{ label: 'Cancelar' }, { label: isEdit ? 'Reenviar a Supervisión' : riesgo ? 'Enviar a RH' : 'Enviar solicitud', cls: riesgo ? 'danger solid' : 'primary', run: async ({ el, btn }) => {
+    actions: [{ label: 'Cancelar' }, { label: isEdit ? 'Reenviar a Daniel' : riesgo ? 'Enviar a Daniel' : 'Enviar solicitud', cls: riesgo ? 'danger solid' : 'primary', run: async ({ el, btn }) => {
       const v = readFields(el, f);
       if (!v.evidencia && !fb.files.length) throw new Error('Falta: Evidencias. Descríbelas o adjunta al menos un archivo.');
       if (!v.evidencia) v.evidencia = 'Archivos adjuntos: ' + fb.files.map((x) => x.name).join(', ');
@@ -2204,10 +2203,10 @@ function caseForm({ employee, fecha, existing, onDone }) {
   const isEdit = !!existing;
   const m = modal({
     title: (isEdit ? 'Completar incidencia · ' : 'Incidencia formal · ') + fullName(employee), wide: true,
-    body: `<div class="notice n-info">El líder reporta hechos; no decide la consecuencia. ${isEdit ? 'Supervisión la regresó con un comentario: complétala y reenvíala.' : 'Va a Supervisión para validarla antes de llegar a RH.'}</div>
+    body: `<div class="notice n-info">El líder reporta hechos; no decide la consecuencia. ${isEdit ? 'Daniel la regresó con un comentario: complétala y reenvíala.' : 'Va directo a Daniel para validarla antes de llegar a RH.'}</div>
       ${!isEdit ? `<label class="chip" style="display:inline-flex;align-items:center;gap:8px;align-self:flex-start;border-color:var(--bad);color:var(--bad)"><input type="checkbox" id="f_grave"> Es un caso grave (fraude, desvío de pagos, amenazas, información confidencial): va directo a RH</label>` : ''}
       ${fieldsHtml(f)}${isEdit ? fieldsHtml([{ k: 'comentario', label: 'Qué corregiste', full: true }]) : ''}`,
-    actions: [{ label: 'Cancelar' }, { label: isEdit ? 'Reenviar a Supervisión' : 'Enviar', cls: 'primary', run: async ({ el }) => {
+    actions: [{ label: 'Cancelar' }, { label: isEdit ? 'Reenviar a Daniel' : 'Enviar', cls: 'primary', run: async ({ el }) => {
       const v = readFields(el, f);
       const grave = !isEdit && $('#f_grave', el).checked;
       if (!grave && c.kind !== 'grave' && (!v.instruccion || !v.indicador)) throw new Error('En casos ordinarios faltan: la instrucción que existía y el indicador incumplido.');
@@ -2298,19 +2297,14 @@ async function openCase(id) {
   const reload = () => { viewCasos().catch(() => {}); };
   const actions = [];
   const area = c.area_id;
-  if (c.status === 'regresado' && (c.created_by === S.me.id || is('developer'))) actions.push({ label: 'Completar y reenviar', cls: 'primary', run: () => { setTimeout(() => (c.solicitud_lider || c.riesgo_tipo ? requestForm : caseForm)({ employee: emp, existing: c, onDone: () => { toast('Reenviado a Supervisión'); reload(); } }), 0); } });
-  if (c.status === 'en_validacion' && (is('developer') || (is('supervisor') && S.myAreas.includes(area)))) {
-    actions.push({ label: 'Regresar al líder', cls: 'danger', run: () => { setTimeout(() => simpleCaseAction('Regresar al líder', [{ k: 'c', label: 'Qué falta para completar el expediente', type: 'textarea', req: true, full: true }], (v) => rpc('case_return', { p_id: c.id, p_comentario: v.c }), reload), 0); } });
-    actions.push({ label: 'Validar y escalar a RH', cls: 'primary', run: () => { setTimeout(() => validateForm(c, reload), 0); } });
-  }
-  if (c.status === 'en_rh' && (is('developer') || (is('rh_general', 'rh_area') && S.myAreas.includes(area)))) actions.push({ label: 'Analizar y proponer', cls: 'primary', run: () => { setTimeout(() => simpleCaseAction('Análisis de RH', [
-    { k: 'cl', label: 'Clasificación', type: 'select', req: true, val: c.kind === 'grave' ? 'grave' : '', options: [['', 'Elegir…'], ...Object.entries(CLASIF)] },
-    { k: 'pr', label: 'Medida que propones', type: 'select', req: true, options: [['', 'Elegir…'], ...Object.entries(MEDIDAS)] },
-    { k: 'an', label: 'Análisis laboral y documental', type: 'textarea', req: true, full: true, hint: 'Antecedentes, evidencia revisada, justificación del trabajador y fundamento.' }],
-    (v) => rpc('case_analyze', { p_id: c.id, p_clasificacion: v.cl, p_analisis: v.an, p_propuesta: v.pr }), reload), 0); } });
-  if (c.status === 'en_decision' && is('developer')) actions.push({ label: 'Decidir', cls: 'primary', run: () => { setTimeout(() => simpleCaseAction('Decisión', [
-    { k: 'd', label: 'Medida', type: 'select', req: true, val: c.propuesta, options: Object.entries(MEDIDAS) },
-    { k: 'n', label: 'Nota', type: 'textarea', full: true }], (v) => rpc('case_decide', { p_id: c.id, p_decision: v.d, p_nota: v.n }), reload), 0); } });
+  if (c.status === 'regresado' && (c.created_by === S.me.id || is('developer'))) actions.push({ label: 'Completar y reenviar', cls: 'primary', run: () => { setTimeout(() => (c.solicitud_lider || c.riesgo_tipo ? requestForm : caseForm)({ employee: emp, existing: c, onDone: () => { toast('Reenviado a Daniel'); reload(); } }), 0); } });
+  if (['en_validacion', 'en_rh', 'en_decision'].includes(c.status) && is('developer')) actions.push({ label: 'Regresar al líder', cls: 'danger', run: () => { setTimeout(() => simpleCaseAction('Regresar al líder', [{ k: 'c', label: 'Qué falta para completar el caso', type: 'textarea', req: true, full: true }], (v) => rpc('case_return', { p_id: c.id, p_comentario: v.c }), reload), 0); } });
+  if (['en_validacion', 'en_rh', 'en_decision'].includes(c.status) && is('developer')) actions.push({ label: 'Decidir', cls: 'primary', run: () => { setTimeout(() => simpleCaseAction('Decisión', [
+    { k: 'd', label: 'Medida', type: 'select', req: true, val: c.propuesta || '', options: [['', 'Elegir…'], ...Object.entries(MEDIDAS)], hint: 'Acta, advertencia o rescisión: genera el documento y el caso se cierra solo al registrarse firmado o con negativa. Las demás medidas cierran el caso al decidir.' },
+    { k: 'n', label: 'Nota / resultado', type: 'textarea', full: true }], async (v) => {
+      await rpc('case_decide', { p_id: c.id, p_decision: v.d, p_nota: v.n });
+      if (CASE_DOC[v.d] && emp && emp.status === 'activo') setTimeout(() => docForm({ tipo: CASE_DOC[v.d], employee: emp, caseRow: { ...c, decision: v.d, status: 'decidido' } }), 0);
+    }, reload), 0); } });
   if (c.status === 'decidido' && is('developer')) actions.push({ label: 'Cerrar caso', cls: 'primary', run: () => { setTimeout(() => simpleCaseAction('Cerrar caso', [{ k: 'r', label: 'Resultado que se comunica a Marketing', type: 'textarea', req: true, full: true, hint: 'Solo lo necesario para operar: cambio de equipo, periodo de seguimiento o baja.' }], (v) => rpc('case_close', { p_id: c.id, p_resultado: v.r }), reload,
     c.decision === 'terminacion' ? 'Genera el aviso de rescisión desde este caso: al registrarse firmado o con negativa, la baja se aplica sola.' : null), 0); } });
   if (is('developer') && ['decidido', 'cerrado'].includes(c.status) && CASE_DOC[c.decision] && emp && emp.status === 'activo') actions.push({ label: 'Generar ' + DOC_TIPOS[CASE_DOC[c.decision]].label.toLowerCase(), cls: 'primary', run: () => { setTimeout(() => docForm({ tipo: CASE_DOC[c.decision], employee: emp, caseRow: c }), 0); } });
