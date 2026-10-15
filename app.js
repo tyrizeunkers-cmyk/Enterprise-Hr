@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.23.1';
+const APP_VERSION = '0.24.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -506,10 +506,11 @@ async function viewLista() {
   if (!LS.group || !groups.some((g) => g.id === LS.group)) LS.group = (store.get('hr.lista.group') && groups.some((g) => g.id === store.get('hr.lista.group'))) ? store.get('hr.lista.group') : groups[0].id;
   if (!LS.fecha) LS.fecha = todayMX();
   const g = groups.find((x) => x.id === LS.group);
-  const [emps, day, desc] = await Promise.all([
+  const [emps, day, desc, sinEq] = await Promise.all([
     db('employees').select('id,nombre,apellido_paterno,apellido_materno,puesto,group_id,area_id,status,origen').eq('group_id', g.id).in('status', ['activo', 'alta_pendiente']).get(),
     db('attendance_days').eq('group_id', g.id).eq('fecha', LS.fecha).get(),
-    db('grupo_descansos').eq('group_id', g.id).gte('fecha', addDays(todayMX(), -1)).is('cancelado_at', 'null').order('fecha').get().catch(() => [])
+    db('grupo_descansos').eq('group_id', g.id).gte('fecha', addDays(todayMX(), -1)).is('cancelado_at', 'null').order('fecha').get().catch(() => []),
+    is('tl', 'supervisor', 'rh_general', 'rh_area', 'developer') ? rpc('sin_equipo').catch(() => []) : Promise.resolve([])
   ]);
   emps.sort(sortName);
   const ids = emps.map((e) => e.id);
@@ -541,7 +542,7 @@ async function viewLista() {
     const dy = await db('attendance_days').eq('group_id', g.id).eq('fecha', ayer).get().catch(() => []);
     pendAyer = !(dy[0] && dy[0].sent_at);
   }
-  renderLista({ emps, recM, recT, fx, d, lockedDay, g, vac, retirados, rets, desc, pendAyer }, groups);
+  renderLista({ emps, recM, recT, fx, d, lockedDay, g, vac, retirados, rets, desc, pendAyer, sinEq: (sinEq || []).filter((x) => x.area_id === g.area_id) }, groups);
 }
 const canDescanso = (g) => is('developer') || (is('tl') && g.tl_id === S.me.id) || (is('rh_general', 'rh_area', 'supervisor') && S.myAreas.includes(g.area_id));
 async function descansoForm(g, desc, done) {
@@ -595,6 +596,7 @@ function renderLista(st, groups) {
   ${is('tl') && g.tl_id !== S.me.id ? `<div class="notice n-info" style="margin-bottom:10px"><b>Suplencia:</b> cubres el grupo de ${esc(g.tl_id ? profName(g.tl_id) : groupLabel(g))} por su día de descanso.</div>` : ''}
   ${(() => { const x = (st.desc || []).find((y) => y.fecha === LS.fecha); return x ? `<div class="notice n-info" style="margin-bottom:10px"><b>Día de descanso del líder.</b> ${x.tipo === 'suplente' ? 'Este día pasa lista ' + esc(x.suplente_id === S.me.id ? 'tú' : (x.suplente_nombre || profName(x.suplente_id))) + '.' : 'La lista de este día se pasa al día siguiente.'}</div>` : ''; })()}
   ${st.pendAyer ? `<div class="notice n-warn" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="grow">Tienes pendiente el pase de lista de <b>ayer</b> (tu día de descanso).</span><button type="button" class="btn sm" id="lf_ayer">Pasar lista de ayer</button></div>` : ''}
+  ${(st.sinEq || []).length && !g.es_bolsa ? `<div class="notice n-info" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="grow"><b>${st.sinEq.length} persona${st.sinEq.length === 1 ? '' : 's'} sin equipo</b> en ${esc(areaName(g.area_id))}: otro líder la${st.sinEq.length === 1 ? '' : 's'} sacó porque no era${st.sinEq.length === 1 ? '' : 'n'} de su equipo.</span><button type="button" class="btn sm" id="lf_sineq">Ver</button></div>` : ''}
   ${canDescanso(g) && !(is('tl') && g.tl_id !== S.me.id) ? '<div class="row" style="margin-bottom:10px;justify-content:flex-end"><button type="button" class="btn sm" id="lf_desc">Día de descanso / suplente</button></div>' : ''}
   ${lockedDay ? `<div class="notice n-warn" style="margin-bottom:10px">Nómina ya revisó este día (${fmtDateTime(d.reviewed_at)}). Para corregir, pídelo a Nómina.</div>` : ''}
   ${d.reviewed_at && !lockedDay ? `<div class="notice n-info" style="margin-bottom:10px">Día revisado por ${esc(profName(d.reviewed_by))} · ${fmtDateTime(d.reviewed_at)}. Puedes corregir porque tienes rol de ${esc(ROLES[role()])}.</div>` : ''}
@@ -613,6 +615,7 @@ function renderLista(st, groups) {
   if ($('#lf_group')) $('#lf_group').onchange = (e) => { LS.group = e.target.value; store.set('hr.lista.group', LS.group); LS.open = null; LS.turno = null; reload(); };
   if ($('#addPerson')) $('#addPerson').onclick = () => addPersonForm(g, reload);
   if ($('#lf_desc')) $('#lf_desc').onclick = () => descansoForm(g, st.desc || [], reload);
+  if ($('#lf_sineq')) $('#lf_sineq').onclick = () => sinEquipoForm(st.sinEq, g, reload);
   if ($('#lf_ayer')) $('#lf_ayer').onclick = () => { LS.fecha = addDays(todayMX(), -1); LS.turno = null; reload(); };
   $$('[data-turno]').forEach((b) => b.onclick = () => { if (LS.turno === b.dataset.turno) return; LS.turno = b.dataset.turno; renderLista(st, groups); });
   if ($('#allok')) $('#allok').onclick = async (ev) => {
@@ -657,7 +660,42 @@ function retiroResolver(x, e, done) {
     <div class="notice n-info" style="margin-top:10px">Al aplicar la baja queda con fecha ${fmtDate(x.ultimo_dia)} y motivo "${esc(x.motivo)}". Después puedes generar su finiquito en Documentos.</div>${fieldsHtml(f)}`, actions: acts });
 }
 // El líder agrega a alguien que RH no ha dado de alta: queda como alta pendiente en su grupo
-const canAddToList = (g) => g.tipo !== 'lideres' && (is('developer') || (is('tl') && g.tl_id === S.me.id));
+const canAddToList = (g) => g.tipo !== 'lideres' && !g.es_bolsa && (is('developer') || (is('tl') && g.tl_id === S.me.id));
+// "Sin equipo": el líder saca a alguien que no es de su equipo; queda en espera hasta que otro líder lo reclame
+const canSoltar = () => { const g = S.groups.find((x) => x.id === LS.group);
+  return !!g && g.tipo !== 'lideres' && !g.es_bolsa && (is('developer') || (is('tl') && g.tl_id === S.me.id) || (is('rh_general', 'rh_area', 'supervisor') && S.myAreas.includes(g.area_id))); };
+function soltarForm(e, done) {
+  const f = [{ k: 'motivo', label: '¿Por qué sale de tu equipo?', type: 'textarea', req: true, full: true, hint: 'Ej. es del equipo de otro líder / se registró en el equipo equivocado' }];
+  modal({ title: 'Pasar a Sin equipo · ' + fullName(e), body: `<div class="notice n-info">No es una baja: sale de tu lista y queda en <b>Sin equipo</b> de ${esc(areaName(e.area_id))} hasta que su líder lo reclame. Mientras tanto Supervisión le pasa lista.</div>${fieldsHtml(f)}`,
+    actions: [{ label: 'Cancelar' }, { label: 'Pasar a Sin equipo', cls: 'primary', run: async ({ el }) => {
+      const v = readFields(el, f); await rpc('equipo_soltar', { p_emp: e.id, p_motivo: v.motivo }); toast('Listo: quedó en Sin equipo'); done && done();
+    } }] });
+}
+function cambioEquipoForm(e, done) {
+  const opts = S.groups.filter((g) => g.active && g.area_id === e.area_id && g.tipo !== 'lideres' && !g.es_bolsa && g.id !== e.group_id);
+  if (!opts.length) return toast('No hay otro equipo en su área', true);
+  const f = [{ k: 'grupo', label: 'Pasar al equipo', type: 'select', req: true, options: opts.map((g) => [g.id, groupLabel(g) + (g.tl_id ? ' — ' + profName(g.tl_id) : '')]) },
+    { k: 'motivo', label: 'Motivo', type: 'textarea', req: true, full: true }];
+  modal({ title: 'Solicitar cambio de equipo · ' + fullName(e), body: `<div class="notice n-info">Ahora está en <b>${esc(groupName(e.group_id))}</b>. El cambio se aplica cuando RH lo acepte.</div>${fieldsHtml(f)}`,
+    actions: [{ label: 'Cancelar' }, { label: 'Enviar a RH', cls: 'primary', run: async ({ el }) => { const v = readFields(el, f); await rpc('cambio_equipo_solicitar', { p_emp: e.id, p_group: v.grupo, p_motivo: v.motivo }); toast('Solicitud enviada a RH'); done && done(); } }] });
+}
+function sinEquipoForm(rows, g, done) {
+  const destinos = S.groups.filter((x) => x.active && x.tipo !== 'lideres' && !x.es_bolsa && (is('tl') ? x.tl_id === S.me.id : (is('developer') || S.myAreas.includes(x.area_id))));
+  const m = modal({ title: 'Sin equipo · esperan a su líder', wide: true, body: `<div class="notice n-info">Personas que otro líder sacó de su equipo porque no eran de ahí. Si es de tu equipo, pásala a tu lista: no se da de alta otra vez.</div>
+    <div class="list" style="margin-top:8px">${rows.map((x) => { const ds = destinos.filter((d) => d.area_id === x.area_id);
+      return `<div class="item" style="gap:10px;flex-wrap:wrap"><span class="grow" style="min-width:0"><span class="nm">${esc(x.nombre)}</span><br><span class="small muted">${esc(areaName(x.area_id))}${x.de_equipo ? ' · estaba en ' + esc(x.de_equipo) : ''}${x.soltado_por ? ' · lo sacó ' + esc(x.soltado_por) : ''}${x.desde ? ' · ' + fmtDateTime(x.desde) : ''}</span>${x.motivo ? `<br><span class="small">“${esc(x.motivo)}”</span>` : ''}</span>
+        ${ds.length ? `${ds.length > 1 ? `<select class="inp" data-sed="${x.employee_id}" style="max-width:200px">${ds.map((d) => `<option value="${d.id}"${g && d.id === g.id ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select>` : ''}<button type="button" class="btn sm primary" data-sea="${x.employee_id}" data-g="${ds[0].id}">${is('tl') ? 'Es de mi equipo · pasarla' : is('supervisor') ? 'Solicitar a RH' : 'Asignar'}</button>` : ''}</div>`; }).join('')}</div>`,
+    actions: [{ label: 'Cerrar' }] });
+  $$('[data-sea]', m.el).forEach((b) => b.onclick = async () => {
+    const sel = $(`[data-sed="${b.dataset.sea}"]`, m.el); b.disabled = true;
+    try {
+      if (is('supervisor')) { await rpc('cambio_equipo_solicitar', { p_emp: b.dataset.sea, p_group: sel ? sel.value : b.dataset.g, p_motivo: 'Asignar equipo (estaba en Sin equipo)' }); toast('Solicitud enviada a RH'); }
+      else { await rpc('equipo_reclamar', { p_emp: b.dataset.sea, p_group: sel ? sel.value : b.dataset.g }); toast('Listo: ya está en el equipo'); }
+      m.close(); done && done();
+    }
+    catch (e) { toast(e.message, true); b.disabled = false; }
+  });
+}
 function addPersonForm(g, onDone) {
   const f = [
     { k: 'nombre', label: 'Nombre(s)', req: true },
@@ -667,10 +705,22 @@ function addPersonForm(g, onDone) {
     { k: 'fecha_ingreso', label: 'Fecha en que empezó', type: 'date', req: true, val: LS.fecha || todayMX(), max: todayMX() }
   ];
   modal({ title: `Agregar a ${groupLabel(g)} · ${areaName(g.area_id)}`,
-    body: `<div class="notice n-info">Úsalo solo si la persona ya está trabajando y RH no la ha dado de alta. Queda como <b>Alta pendiente</b>: RH completa sus datos y Daniel confirma el alta. Mientras tanto puedes pasarle lista.</div>${fieldsHtml(f)}`,
+    body: `<div class="notice n-info">Úsalo solo si la persona ya está trabajando y RH no la ha dado de alta. Queda como <b>Alta pendiente</b>: RH completa sus datos y Daniel confirma el alta. Mientras tanto puedes pasarle lista.</div>${fieldsHtml(f)}<div id="ap_dup"></div>`,
     actions: [{ label: 'Cancelar' }, { label: 'Agregar a mi lista', cls: 'primary', run: async ({ el }) => {
       const v = readFields(el, f);
       if (v.fecha_ingreso > todayMX()) throw new Error('La fecha no puede ser futura.');
+      const key = [v.nombre, v.apellido_paterno, v.apellido_materno].join('|');
+      if (addPersonForm._ok !== key) {
+        const hits = await rpc('ya_registrado', { p_area: g.area_id, p_nombre: v.nombre, p_paterno: v.apellido_paterno, p_materno: v.apellido_materno || '' }).catch(() => []);
+        if (hits.length) {
+          const box = $('#ap_dup', el);
+          box.innerHTML = `<div class="notice n-warn" style="margin-top:10px"><b>Esta persona ya está registrada:</b>${hits.map((h) => `<div class="row" style="gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap"><span class="grow">${esc(h.nombre)} · ${h.sin_equipo ? '<b>Sin equipo</b> (la sacó otro líder)' : 'en ' + esc(h.grupo || 'sin grupo') + (h.lider ? ' de ' + esc(h.lider) : '')}</span>${h.sin_equipo ? `<button type="button" class="btn sm primary" data-claim="${h.employee_id}">Es ella/él · pasar a mi equipo</button>` : h.grupo === g.name ? '<span class="small">Ya está en tu lista</span>' : '<span class="small">Pide a su líder que la pase a Sin equipo</span>'}</div>`).join('')}
+            <div class="small" style="margin-top:6px">Si es otra persona con el mismo nombre, presiona de nuevo "Agregar a mi lista".</div></div>`;
+          $$('[data-claim]', box).forEach((b) => b.onclick = async () => { b.disabled = true; try { await rpc('equipo_reclamar', { p_emp: b.dataset.claim, p_group: g.id }); toast('Listo: ya está en tu lista'); { const mb = $$('.modal-bg').pop(); const xb = mb && $('.x', mb); if (xb) xb.click(); else if (mb) mb.remove(); } onDone && onDone(); } catch (e) { toast(e.message, true); b.disabled = false; } });
+          addPersonForm._ok = key; return false;
+        }
+      }
+      addPersonForm._ok = null;
       await db('employees').insert([{ ...v, area_id: g.area_id, group_id: g.id, status: 'alta_pendiente' }]);
       toast('Agregada · RH debe completar su alta'); onDone && onDone();
     } }] });
@@ -717,6 +767,7 @@ function personCard(e, r, faltas, locked, morning, vac, retiro) {
         </div>
       </section>
       ${r ? `<div class="small muted">Último cambio: ${esc(profName(r.updated_by))} · ${fmtDateTime(r.updated_at)}</div>` : ''}
+      ${!tarde && canSoltar() && ['activo', 'alta_pendiente'].includes(e.status) && !retiro ? '<button type="button" class="btn sm ghost" data-soltar style="align-self:flex-start">No es de mi equipo · pasar a Sin equipo</button>' : ''}
       ${e.status === 'activo' && !tarde ? (retiro ? `<div class="notice n-warn">Retiro solicitado: último día ${fmtDate(retiro.ultimo_dia)} (${esc(retiro.motivo)}). Sale de la lista desde el día siguiente.</div>` : '<button type="button" class="btn sm ghost" data-retiro style="align-self:flex-start">Ya no trabaja aquí · solicitar retiro de la lista</button>') : ''}
       ${e.status === 'alta_pendiente' ? '<div class="notice n-warn">Esta persona aún no tiene alta confirmada. Las solicitudes e incidencias de riesgo se habilitan cuando Daniel acepte el alta.</div>' : ''}
       ${canReportCase() && e.status === 'activo' ? `<section class="fbox">
@@ -781,6 +832,7 @@ function wirePerson(card, st, groups) {
   if (ie) ie.onclick = () => incModal(rec[id].incidencia);
   const vb = $('[data-vacbtn]', card); if (vb) vb.onclick = () => vacForm({ emps: [emp], employee: emp, onDone: () => viewLista() });
   const rb = $('[data-retiro]', card); if (rb) rb.onclick = () => retiroForm(emp, () => viewLista());
+  const sb = $('[data-soltar]', card); if (sb) sb.onclick = () => soltarForm(emp, () => viewLista());
   $$('[data-req]', card).forEach((b) => b.onclick = () => requestForm({ employee: emp, tipo: b.dataset.req, fecha: LS.fecha, onDone: () => toast(RIESGO[b.dataset.req] ? 'Incidencia de riesgo enviada a Daniel' : 'Solicitud enviada a Daniel') }));
 }
 
@@ -796,7 +848,9 @@ async function viewPersonal() {
   ]);
   emps.sort(sortName); EMP_CACHE = emps;
   const fx = Object.fromEntries(faltas.map((f) => [f.employee_id, f.faltas]));
-  const retiros = is('tl') ? [] : await db('retiros_lista').eq('estado', 'pendiente').order('created_at').get().catch(() => []);
+  const [retiros, cambios] = is('tl') ? [[], []] : await Promise.all([
+    db('retiros_lista').eq('estado', 'pendiente').order('created_at').get().catch(() => []),
+    db('cambios_equipo').eq('estado', 'pendiente').order('solicitado_at').get().catch(() => [])]);
   const counts = { activo: 0, alta_pendiente: 0, baja: 0, rechazado: 0 };
   emps.forEach((e) => { counts[e.status]++; });
   const areas = visibleAreas();
@@ -807,6 +861,9 @@ async function viewPersonal() {
     <div class="row" style="gap:6px">${canRequest ? '<button class="btn" id="bandDatos">Datos pendientes</button>' : ''}${canRequest ? `<button class="btn primary" id="newEmp">${is('developer') ? '+ Nuevo ingreso' : '+ Solicitar alta'}</button>` : ''}</div></div>
   ${retiros.length ? `<div class="card pad" style="margin-bottom:12px;border-color:var(--warn)"><div class="eyebrow" style="margin-bottom:6px;color:var(--warn)">Retiros de lista solicitados (${retiros.length})${is('developer') ? ' · aplica la baja' : ''}</div><div class="list">${retiros.map((x) => { const e = emps.find((y) => y.id === x.employee_id);
     return `<button type="button" class="item" data-ret="${x.id}"><span class="grow"><span class="nm">${esc(e ? fullName(e) : 'Persona')}</span><br><span class="small muted">${e ? esc(areaName(e.area_id)) + ' · ' + esc(groupName(e.group_id)) + ' · ' : ''}último día ${fmtDate(x.ultimo_dia)} · ${esc(x.motivo)} · pidió ${esc(profName(x.solicitado_by))}</span></span><span class="badge b-warn">Pendiente</span></button>`; }).join('')}</div></div>` : ''}
+  ${cambios.length ? `<div class="card pad" style="margin-bottom:12px;border-color:var(--accent)"><div class="eyebrow" style="margin-bottom:6px;color:var(--accent)">Cambios de equipo solicitados (${cambios.length})${is('developer', 'rh_general', 'rh_area') ? ' · acepta o rechaza' : ' · esperando a RH'}</div><div class="list">${cambios.map((x) => { const e = emps.find((y) => y.id === x.employee_id); const de = S.groups.find((g) => g.id === x.de_group), a = S.groups.find((g) => g.id === x.a_group);
+    return `<div class="item" style="gap:8px;flex-wrap:wrap"><span class="grow" style="min-width:0"><span class="nm">${esc(e ? fullName(e) : 'Persona')}</span><br><span class="small muted">${esc(de ? groupLabel(de) : 'sin equipo')} → <b>${esc(a ? groupLabel(a) : 'otro equipo')}</b> · pidió ${esc(profName(x.solicitado_by))} · ${fmtDateTime(x.solicitado_at)}</span><br><span class="small">“${esc(x.motivo)}”</span></span>
+      ${is('developer', 'rh_general', 'rh_area') ? `<button type="button" class="btn sm" data-cer="${x.id}">Rechazar</button><button type="button" class="btn sm primary" data-cea="${x.id}">Aceptar</button>` : '<span class="badge b-warn">Pendiente</span>'}</div>`; }).join('')}</div></div>` : ''}
   <div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
     <input class="inp" id="pq" type="search" placeholder="Buscar por nombre, número o puesto" value="${esc(PS.q)}" aria-label="Buscar">
     <div class="row">
@@ -834,6 +891,9 @@ async function viewPersonal() {
   if ($('#pa')) $('#pa').onchange = (e) => { PS.area = e.target.value; PS.group = ''; viewPersonal(); };
   $('#pg').onchange = (e) => { PS.group = e.target.value; draw(); };
   if ($('#newEmp')) $('#newEmp').onclick = () => altaForm();
+  $$('[data-cea]').forEach((b) => b.onclick = async () => { b.disabled = true; try { await rpc('cambio_equipo_resolver', { p_id: b.dataset.cea, p_aprobar: true, p_nota: null }); toast('Cambio aceptado'); await loadCatalogs(); viewPersonal(); } catch (e) { toast(e.message, true); b.disabled = false; } });
+  $$('[data-cer]').forEach((b) => b.onclick = () => { const f = [{ k: 'nota', label: 'Motivo del rechazo', type: 'textarea', req: true, full: true }];
+    modal({ title: 'Rechazar cambio de equipo', body: fieldsHtml(f), actions: [{ label: 'Cancelar' }, { label: 'Rechazar', cls: 'danger solid', run: async ({ el }) => { const v = readFields(el, f); await rpc('cambio_equipo_resolver', { p_id: b.dataset.cer, p_aprobar: false, p_nota: v.nota }); toast('Solicitud rechazada'); viewPersonal(); } }] }); });
   if ($('#bandDatos')) $('#bandDatos').onclick = () => bandejaDatos().catch((er) => toast(er.message, true));
   $$('[data-ret]').forEach((b) => b.onclick = () => { const x = retiros.find((y) => y.id === b.dataset.ret); retiroResolver(x, emps.find((y) => y.id === x.employee_id), () => viewPersonal()); });
 }
@@ -923,7 +983,7 @@ async function openEmployee(id, fx = {}) {
       <div class="kv" style="margin-top:10px"><span>No. empleado</span><span>${esc(e.num_empleado || '—')}</span><span>Puesto</span><span>${esc(e.puesto || '—')}</span>
       <span>Área</span><span>${esc(areaName(e.area_id))}</span><span>Grupo</span><span>${esc(groupName(e.group_id))}${g && g.tl_id ? ' · TL ' + esc(profName(g.tl_id)) : ''}</span>
       <span>Ingreso</span><span>${fmtDate(e.fecha_ingreso)}${e.fecha_ingreso ? ' · ' + esc(antiguedad(e.fecha_ingreso)) : ''}</span></div>`,
-    actions: [{ label: 'Cerrar' }, ...(canMove ? [{ label: 'Cambiar grupo', cls: 'primary', run: () => { setTimeout(() => moveGroup(e), 0); } }] : [])]
+    actions: [{ label: 'Cerrar' }, ...(canMove ? [{ label: 'Solicitar cambio de equipo', cls: 'primary', run: () => { setTimeout(() => cambioEquipoForm(e, () => viewPersonal()), 0); } }] : [])]
   });
 }
 
@@ -961,6 +1021,7 @@ async function viewExpediente(id) {
   if (is('developer') && e.status === 'alta_pendiente') { acts.push(['rechazar', 'Rechazar alta', 'danger']); acts.push(['aceptar', 'Aceptar alta', 'primary']); }
   if (is('developer') || (is('rh_general', 'rh_area') && inMyArea)) acts.push(['editar', 'Editar datos', '']);
   if ((is('developer') || (is('rh_general', 'rh_area') && inMyArea)) && ['activo', 'alta_pendiente'].includes(e.status)) acts.push(['grupo', 'Cambiar grupo', '']);
+  if (is('supervisor') && inMyArea && ['activo', 'alta_pendiente'].includes(e.status)) acts.push(['cambio_sol', 'Solicitar cambio de equipo', '']);
   if (is('nomina') && e.status === 'activo') acts.push(['banco', 'Datos bancarios', '']);
   if ((is('developer') || (is('rh_general', 'rh_area') && inMyArea)) && ['activo', 'alta_pendiente'].includes(e.status)) acts.push(['linkdatos', 'Link para sus datos', '']);
   if (!is('developer') && canDocFin(e.area_id) && ['activo', 'baja'].includes(e.status)) acts.push(['finiq', 'Finiquito / liquidación', '']);
@@ -1006,6 +1067,7 @@ async function expAction(k, { e, p }) {
   if (k === 'rechazar') { if (!(await confirmBox('Rechazar alta', `¿Rechazar la solicitud de <b>${esc(fullName(e))}</b>?`, { danger: true, okLabel: 'Rechazar' }))) return; await mustUpdate(db('employees').eq('id', e.id).update({ status: 'rechazado' })); toast('Alta rechazada'); return done(); }
   if (k === 'editar') return editEmployee(e, priv0(p), { basic: is('developer') || (is('rh_general', 'rh_area') && e.status === 'alta_pendiente'), priv: true });
   if (k === 'grupo') return moveGroup(e);
+  if (k === 'cambio_sol') return cambioEquipoForm(e, done);
   if (k === 'banco') return bancoForm(e, priv0(p));
   if (k === 'linkdatos') return linkRegistro({ id: e.id, nombre: e.nombre, nombreCompleto: fullName(e), telefono: p && p.telefono }).catch((er) => toast(er.message, true));
   if (k === 'area') return moveArea(e);
