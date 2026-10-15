@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.19.1';
+const APP_VERSION = '0.20.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -3735,7 +3735,7 @@ const bancoDeClabe = (c) => BANCOS[clabeDigits(c).slice(0, 3)] || '';
 const NOM_PERC = [['chips', 'Pago de chips'], ['pendiente', 'Pendiente de pago'], ['com_admin', 'Comisión administrativo'], ['bono_referido', 'Bono de referido'],
   ['com_asesores', 'Comisión asesores'], ['com_lideres', 'Comisión líderes'], ['hrs_dobles', 'Horas dobles'], ['horas_extras', 'Horas extras']];
 const NOM_DED = [['otras_deducciones', 'Otras deducciones'], ['multas_disciplina', 'Multas por disciplina'], ['multas_retardo', 'Multas por retardo']];
-const NOM_AUTO = { salario_diario: 'Salario diario', dias_no_lab: 'Días no laborados', faltas: 'Faltas', festivo: 'Pago día festivo', prima_vacacional: 'Prima vacacional', ajuste_anterior: 'Ajuste quincena anterior', clabe: 'CLABE', banco: 'Banco', beneficiario: 'Beneficiario' };
+const NOM_AUTO = { salario_diario: 'Salario diario', dias_no_lab: 'Días no laborados', faltas: 'Faltas', festivo: 'Pago día festivo', prima_vacacional: 'Prima vacacional', ajuste_anterior: 'Ajuste quincena anterior', sin_lista: 'Días sin pase de lista', clabe: 'CLABE', banco: 'Banco', beneficiario: 'Beneficiario' };
 const NS = { periodo: null, q: '', filtro: '', tab: null, sec: 'nomina' };
 const num = (n) => Number(n || 0);
 const r2 = (n) => Math.round((num(n) + Number.EPSILON) * 100) / 100;
@@ -3791,13 +3791,14 @@ function lineaAlertas(l) {
   if (!l.fecha_ingreso) a.push(['warn', 'sining', 'Sin fecha de ingreso en la app']);
   if (num(l.dias_no_lab)) a.push(['info', 'parcial', `${l.dias_no_lab} días no laborados (${l.fecha_baja ? 'baja ' + fmtDate(l.fecha_baja) : 'ingreso ' + fmtDate(l.fecha_ingreso)})`]);
   if (num(l.faltas) > 3) a.push(['warn', 'faltas', `${l.faltas} faltas en el periodo`]);
+  if (num(l.sin_lista)) a.push(['warn', 'sinlista', `${l.sin_lista} día${num(l.sin_lista) === 1 ? '' : 's'} sin pase de lista (no se paga${num(l.sin_lista) === 1 ? '' : 'n'})`]);
   if (num(l.vacaciones_dias)) a.push(['info', 'vacaciones', `${l.vacaciones_dias} días de vacaciones`]);
   if (num(l.ajuste_anterior)) a.push(['warn', 'anterior', `Ajuste de la quincena anterior ${num(l.ajuste_anterior) > 0 ? '+' : '−'}${money(Math.abs(num(l.ajuste_anterior)))}`]);
   if ((l.ajustados || []).length) a.push(['info', 'ajuste', 'Ajustado a mano: ' + l.ajustados.map((k) => NOM_AUTO[k] || k).join(', ')]);
   if (num(l.neto) <= 0) a.push(['bad', 'neto', 'Neto en cero o negativo']);
   return a;
 }
-const ALERTA_FILTROS = [['anterior', 'Ajuste de la quincena anterior'], ['sinsal', 'Sin salario'], ['sinclabe', 'Sin CLABE'], ['tercero', 'Cuenta de tercero'], ['sining', 'Sin fecha de ingreso'], ['parcial', 'Ingreso/baja en el periodo'], ['faltas', 'Más de 3 faltas'], ['ajuste', 'Ajustes manuales'], ['vacaciones', 'Con vacaciones'], ['neto', 'Neto en cero']];
+const ALERTA_FILTROS = [['sinlista', 'Sin pase de lista'], ['anterior', 'Ajuste de la quincena anterior'], ['sinsal', 'Sin salario'], ['sinclabe', 'Sin CLABE'], ['tercero', 'Cuenta de tercero'], ['sining', 'Sin fecha de ingreso'], ['parcial', 'Ingreso/baja en el periodo'], ['faltas', 'Más de 3 faltas'], ['ajuste', 'Ajustes manuales'], ['vacaciones', 'Con vacaciones'], ['neto', 'Neto en cero']];
 const nivelBadge = { bad: 'b-bad', warn: 'b-warn', info: 'b-acc' };
 
 // ───── Pre-nómina al día: calendario de la quincena con lo devengado en tiempo real ─────
@@ -3815,12 +3816,14 @@ function quincenaMover(ini, n) {
   const yy = Math.floor(k / 24); k -= yy * 24; const mm = Math.floor(k / 2) + 1; const half = k % 2;
   return quincenaDe(`${yy}-${String(mm).padStart(2, '0')}-${half ? '16' : '01'}`).ini;
 }
-const prnTabs = (on) => `<div class="ex-tabs" role="tablist" style="margin-bottom:14px"><button type="button" role="tab" data-ptab="dia" class="${on === 'dia' ? 'on' : ''}">Al día</button><button type="button" role="tab" data-ptab="periodos" class="${on === 'periodos' ? 'on' : ''}">Periodos y autorización</button></div>`;
+const prnTabs = (on) => `<div class="ex-tabs" role="tablist" style="margin-bottom:14px">${[['guia', 'Quincena'], ['dia', 'Calendario'], ['periodos', 'Tabla completa']].map(([k, l]) => `<button type="button" role="tab" data-ptab="${k}" class="${on === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
 function bindPrnTabs() { $$('[data-ptab]').forEach((b) => b.onclick = () => { NS.tab = b.dataset.ptab; viewPrenomina(); }); }
 async function viewPrenomina() {
   clearInterval(AD.timer);
-  if ((NS.tab || 'dia') === 'periodos') { await viewPrenominaPeriodos(); $('#view').insertAdjacentHTML('afterbegin', prnTabs('periodos')); bindPrnTabs(); return; }
-  return viewPrenominaDia();
+  const tab = NS.tab || 'guia';
+  if (tab === 'periodos') { await viewPrenominaPeriodos(); $('#view').insertAdjacentHTML('afterbegin', prnTabs('periodos')); bindPrnTabs(); return; }
+  if (tab === 'dia') return viewPrenominaDia();
+  return viewPrenominaGuia();
 }
 
 // Acumulado real: cada día transcurrido paga solo si la persona tiene registro (asistencia, retardo, vacaciones u otra
@@ -3921,7 +3924,7 @@ async function viewPrenominaDia() {
   const sa = $('#ad_area'); if (sa) sa.onchange = (e) => { AD.area = e.target.value; AD.grupo = ''; viewPrenomina(); };
   $('#ad_grupo').onchange = (e) => { AD.grupo = e.target.value; viewPrenomina(); };
   $$('[data-day]').forEach((b) => b.onclick = () => detalleDia(c, c.porDia.find((p) => p.d === b.dataset.day)));
-  if (enCurso) AD.timer = setInterval(() => { if (S.view !== 'prenomina' || (NS.tab || 'dia') !== 'dia' || !$('#ad_tbl')) { clearInterval(AD.timer); return; } if (!document.hidden && !$('.modal-bg')) viewPrenominaDia().catch(() => {}); }, 60000);
+  if (enCurso) AD.timer = setInterval(() => { if (S.view !== 'prenomina' || NS.tab !== 'dia' || !$('#ad_tbl')) { clearInterval(AD.timer); return; } if (!document.hidden && !$('.modal-bg')) viewPrenominaDia().catch(() => {}); }, 60000);
 }
 
 function detalleDia(c, p) {
@@ -3969,12 +3972,135 @@ function dibujarAvance(box, c) {
   hit.addEventListener('pointerleave', () => { tip.hidden = true; cx.setAttribute('visibility', 'hidden'); });
 }
 
+// Por si el corte del servidor (12:00) no corrió: la app lo revisa una vez al abrir la pre-nómina
+async function nominaAutoCheck() {
+  if (!is('nomina', 'developer') || nominaAutoCheck._done) return;
+  nominaAutoCheck._done = true;
+  try { const r = await rpc('nomina_auto'); const x = Array.isArray(r) ? r[0] : r; if (x) toast(x === 'creada' ? 'Se creó la pre-nómina de la quincena (corte de las 12:00)' : 'Se aplicó el corte de la quincena'); } catch (e) { /* sin permiso o sin red */ }
+}
+
+// ───── Pre-nómina guiada: una quincena, pasos claros y una sola acción principal por paso ─────
+async function viewPrenominaGuia() {
+  const v = $('#view'); NOM_PERSONAS = null;
+  const ed = is('nomina', 'developer');
+  await nominaAutoCheck();
+  const periodos = await db('nomina_periodos').order('fecha_inicio', false).get();
+  const q = quincenaDe(todayMX());
+  const actual = periodos.find((x) => x.fecha_inicio === q.ini);
+  if (NS.periodo && !periodos.some((x) => x.id === NS.periodo)) NS.periodo = null;
+  if (!NS.periodo && NS.periodo !== 'actual') NS.periodo = actual ? actual.id : 'actual';
+  const p = periodos.find((x) => x.id === NS.periodo);
+  const opciones = [...(actual ? [] : [['actual', periodoTitulo({ fecha_inicio: q.ini, fecha_fin: q.fin }) + ' · en curso']]), ...periodos.map((x) => [x.id, periodoTitulo(x) + (x.estado === 'autorizado' ? ' ✓' : '')])];
+  const head = `<div class="pagehead"><div><h1>Pre-nómina</h1><div class="muted small">Sigue los pasos de arriba a abajo. Todo lo del pase de lista se llena solo.</div></div>
+      <select class="inp" id="pg_sel" aria-label="Quincena" style="max-width:300px">${opciones.map(([id, t]) => `<option value="${id}"${id === NS.periodo ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select></div>`;
+  const bindSel = () => { $('#pg_sel').onchange = (e) => { NS.periodo = e.target.value; NS.pf = ''; viewPrenomina(); }; bindPrnTabs(); };
+
+  // Quincena en curso todavía sin pre-nómina: cuánto va y cuándo se crea
+  if (!p) {
+    const all = await rpc('nomina_al_dia_real', { p_ini: q.ini, p_fin: q.fin }).catch(() => []);
+    const c = calcAlDia(all, q.ini, q.fin);
+    const corte = q.fin.slice(8) === '31' ? addDays(q.fin, -1) : q.fin;
+    v.innerHTML = prnTabs('guia') + head + `
+      <div class="card pad pg-hero"><div class="eyebrow">Quincena en curso · ${esc(periodoTitulo({ fecha_inicio: q.ini, fecha_fin: q.fin }))}</div>
+        <div class="pg-big">${money(c.acumulado)}</div><div class="small muted">acumulado real a hoy · proyección al cierre ${money(c.proyeccion)}</div>
+        <div class="row" style="gap:14px;margin-top:10px;flex-wrap:wrap"><span class="badge b-bad">${c.faltas} falta${c.faltas === 1 ? '' : 's'}</span><span class="badge b-warn">${c.sinLista} sin pase de lista · ${money(c.pendiente)}</span><span class="badge b-mut">${all.length} personas</span></div></div>
+      <div class="card pad" style="margin-top:12px"><div class="pg-t">La pre-nómina se crea sola el ${fmtDate(corte)} a las 12:00</div>
+        <div class="small muted" style="margin-top:4px">A esa hora se toma el pase de lista y se calcula a todos. Lo que se registre después pasa a la siguiente quincena con su comentario.</div>
+        <div class="row" style="gap:6px;margin-top:10px"><button class="btn" id="pg_cal">Ver calendario de la quincena</button>${ed ? '<button class="btn primary" id="pg_now">Crearla ahora</button>' : ''}</div></div>`;
+    bindSel();
+    $('#pg_cal').onclick = () => { NS.tab = 'dia'; viewPrenomina(); };
+    const b = $('#pg_now'); if (b) b.onclick = async () => {
+      b.disabled = true;
+      try {
+        const [n] = await db('nomina_periodos').insert([{ fecha_inicio: q.ini, fecha_fin: q.fin, dias: 15, festivos: festivosEn(q.ini, q.fin).map(([d]) => d) }]);
+        const [r] = await rpc('nomina_generar', { p_periodo: n.id }); NS.periodo = n.id;
+        toast(`Pre-nómina creada · ${r.lineas} personas`); viewPrenomina();
+      } catch (e) { toast(e.message, true); b.disabled = false; }
+    };
+    return;
+  }
+
+  const prev = periodos.find((x) => x.fecha_fin === addDays(p.fecha_inicio, -1));
+  const [lineas, fins, pagos, prevL] = await Promise.all([
+    db('nomina_lineas').eq('periodo_id', p.id).order('nombre').getAll(),
+    db('nomina_finiquitos').eq('periodo_id', p.id).order('nombre').getAll(),
+    db('nomina_pagos').eq('periodo_id', p.id).order('nombre').getAll(),
+    prev ? db('nomina_lineas').select('neto').eq('periodo_id', prev.id).getAll() : Promise.resolve([])]);
+  const borr = p.estado === 'borrador', edit = ed && borr;
+  const cortada = p.corte_at && new Date(p.corte_at) <= new Date();
+  const al = new Map(lineas.map((l) => [l.id, lineaAlertas(l)]));
+  const sum = (xs, k) => r2(xs.reduce((s, x) => s + num(typeof k === 'function' ? k(x) : x[k]), 0));
+  const neto = sum(lineas, 'neto'), totFin = sum(fins, 'total'), totPag = sum(pagos, 'monto'), total = r2(neto + totFin + totPag);
+  const prevNeto = sum(prevL, 'neto');
+  const faltas = sum(lineas, 'faltas'), sl = sum(lineas, 'sin_lista'), slM = sum(lineas, 'sin_lista_monto');
+  const conAjuste = lineas.filter((l) => num(l.ajuste_anterior));
+  const malos = lineas.filter((l) => al.get(l.id).some((x) => x[0] === 'bad'));
+  const terceros = lineas.filter((l) => al.get(l.id).some((x) => x[1] === 'tercero'));
+  const extras = sum(lineas, (l) => NOM_PERC.reduce((s2, [k]) => s2 + num(l[k]), 0));
+  const deducc = sum(lineas, (l) => NOM_DED.reduce((s2, [k]) => s2 + num(l[k]), 0));
+  const finBad = fins.filter((f) => finiquitoAlertas(f).some((x) => x[0] === 'bad'));
+  const estado = !borr ? `<span class="badge b-ok">Autorizada · ${esc(profName(p.autorizado_by))} ${fmtDateTime(p.autorizado_at)}</span>`
+    : cortada ? '<span class="badge b-acc">Cortada · lista para revisar</span>' : `<span class="badge b-warn">En curso · corte ${fmtDateTime(p.corte_at)}</span>`;
+  const step = (n, ok, title, status, actions) => `<div class="card pad pg-step${ok ? ' ok' : ''}"><div class="pg-num">${ok ? '✓' : n}</div>
+    <div class="grow" style="min-width:0"><div class="pg-t">${title}</div><div class="small${ok ? ' muted' : ''}">${status}</div>${actions ? `<div class="row" style="gap:6px;margin-top:8px">${actions}</div>` : ''}</div></div>`;
+  const pasos = !ed ? '' : !borr ? `<div class="card pad" style="margin-top:12px"><div class="pg-t">Quincena autorizada</div><div class="small muted">Ya no se modifica. Si hace falta corregir algo, reábrela con un motivo.</div>
+      <div class="row" style="gap:6px;margin-top:8px">${can('prenomina.excel') ? '<button class="btn primary" id="pg_xls">Descargar Excel</button>' : ''}<button class="btn" id="pg_open">Reabrir</button></div></div>` : `
+    <div class="pg-steps">
+      ${step(1, !sl, 'Pase de lista', `${faltas} falta${faltas === 1 ? '' : 's'} · ${sl ? `<b style="color:var(--warn)">${sl} día${sl === 1 ? '' : 's'} sin pase de lista (−${money(slM)})</b>` : 'todos los días tienen pase de lista'}${conAjuste.length ? ` · ${conAjuste.length} con ajuste de la quincena anterior` : ''}`,
+        `<button class="btn sm" id="pg_cal">Ver calendario</button>${sl ? '<button class="btn sm" data-pf="lista">Ver quién (' + lineas.filter((l) => num(l.sin_lista)).length + ')</button>' : ''}<button class="btn sm" id="pg_calc">Volver a calcular</button>`)}
+      ${step(2, !malos.length, 'Datos de pago', malos.length ? `<b style="color:var(--bad)">${malos.length} persona${malos.length === 1 ? '' : 's'} sin salario, sin CLABE o con neto en cero</b>${terceros.length ? ` · ${terceros.length} cuenta${terceros.length === 1 ? '' : 's'} de tercero` : ''}` : `Todos tienen salario y cuenta${terceros.length ? ` · ${terceros.length} cuenta${terceros.length === 1 ? '' : 's'} de tercero por confirmar` : ''}`,
+        malos.length || terceros.length ? `<button class="btn sm${malos.length ? ' primary' : ''}" data-pf="pago">Corregir (${malos.length + terceros.length})</button>` : '')}
+      ${step(3, true, 'Comisiones y extras <span class="small muted" style="font-weight:400">(opcional)</span>', `Capturado: ${money(extras)} en percepciones${deducc ? ` · ${money(deducc)} en deducciones` : ''}`,
+        '<button class="btn sm primary" id="pg_paste">Pegar comisiones desde Excel</button><button class="btn sm" id="pg_one">Capturar a una persona</button>')}
+      ${step(4, !finBad.length, 'Finiquitos y pagos pendientes', `${fins.length} finiquito${fins.length === 1 ? '' : 's'} (${money(totFin)}) · ${pagos.length} pago${pagos.length === 1 ? '' : 's'} pendiente${pagos.length === 1 ? '' : 's'} (${money(totPag)})${finBad.length ? ` · <b style="color:var(--bad)">${finBad.length} por revisar</b>` : ''}`,
+        '<button class="btn sm" id="pg_fin">Ver finiquitos</button><button class="btn sm" id="pg_pag">Pagos pendientes</button>')}
+      ${step(5, false, 'Revisar y autorizar', malos.length || sl ? `Antes de autorizar revisa ${[malos.length ? 'los datos de pago (paso 2)' : '', sl ? 'los días sin pase de lista (paso 1)' : ''].filter(Boolean).join(' y ')}.` : 'Todo listo. Descarga el Excel si lo necesitas y autoriza.',
+        `${can('prenomina.excel') ? '<button class="btn sm" id="pg_xls">Descargar Excel</button>' : ''}<button class="btn sm primary" id="pg_auth">Autorizar quincena</button>`)}
+    </div>`;
+  const PF = { '': 'Todos', atencion: 'Con algo que revisar', pago: 'Datos de pago', lista: 'Faltas o sin lista', ajuste: 'Ajuste anterior' };
+  const pf = PF[NS.pf] ? NS.pf || '' : '';
+  const match = (l) => { const xs = al.get(l.id);
+    return pf === '' ? true : pf === 'atencion' ? xs.some((x) => x[0] !== 'info') : pf === 'pago' ? xs.some((x) => x[0] === 'bad' || x[1] === 'tercero')
+      : pf === 'lista' ? num(l.faltas) || num(l.sin_lista) : num(l.ajuste_anterior); };
+  const qq = norm(NS.q);
+  const rows = lineas.filter((l) => match(l) && (!qq || norm(`${l.nombre} ${l.num_empleado || ''} ${l.departamento || ''}`).includes(qq)));
+  v.innerHTML = prnTabs('guia') + head + `
+    <div class="card pad pg-hero"><div class="row" style="gap:8px;align-items:center">${estado}<span class="small muted grow">${esc(periodoTitulo(p))} · ${lineas.length} personas</span></div>
+      <div class="eyebrow" style="margin-top:10px">Total a dispersar</div><div class="pg-big">${money(total)}</div>
+      <div class="small muted">Nómina ${money(neto)}${fins.length ? ` + finiquitos ${money(totFin)}` : ''}${pagos.length ? ` + pagos ${money(totPag)}` : ''}${prev ? ` · vs quincena anterior ${neto - prevNeto >= 0 ? '+' : '−'}${money(Math.abs(r2(neto - prevNeto)))} (${prevL.length} → ${lineas.length} personas)` : ''}</div></div>
+    ${pasos}
+    <div class="card pad" style="margin-top:12px">
+      <div class="row" style="gap:8px;margin-bottom:8px"><b class="grow">Personas</b>${edit ? '<button class="btn sm" id="pg_add">+ Agregar persona</button>' : ''}</div>
+      <div class="row" style="gap:6px;margin-bottom:8px;flex-wrap:wrap">${Object.entries(PF).map(([k, t]) => `<button type="button" class="btn sm${pf === k ? ' primary' : ''}" data-pf="${k}">${t}</button>`).join('')}</div>
+      <input class="inp" id="pg_q" type="search" style="width:100%" placeholder="Buscar por nombre, número o puesto" value="${esc(NS.q)}" aria-label="Buscar persona">
+      <div class="list" id="pg_list" style="margin-top:8px">${rows.slice(0, 400).map((l) => { const xs = al.get(l.id).filter((x) => x[0] !== 'info');
+        const det = [`${l.dias_pagados} días`, num(l.faltas) ? `${l.faltas} falta${num(l.faltas) === 1 ? '' : 's'}` : '', num(l.sin_lista) ? `${l.sin_lista} sin lista` : '', num(l.ajuste_anterior) ? `ajuste ${num(l.ajuste_anterior) > 0 ? '+' : '−'}${money(Math.abs(num(l.ajuste_anterior)))}` : ''].filter(Boolean).join(' · ');
+        return `<button type="button" class="item pg-row" data-pl="${l.id}"><span class="grow" style="min-width:0"><span class="nm">${esc(l.nombre)}</span><br><span class="small muted">${esc(l.departamento || '')} · ${det}</span>${xs.length ? `<br>${xs.map(([n, , t]) => `<span class="badge ${nivelBadge[n]}" style="margin:2px 2px 0 0">${esc(t)}</span>`).join('')}` : ''}</span><b class="mono" style="white-space:nowrap">${money(l.neto)}</b></button>`; }).join('') || '<div class="empty small">Nadie coincide.</div>'}</div>
+    </div>`;
+  bindSel();
+  $$('[data-pf]').forEach((b) => b.onclick = () => { NS.pf = b.dataset.pf; viewPrenomina().then(() => { const x = $('#pg_list'); if (x) x.scrollIntoView({ block: 'start', behavior: 'smooth' }); }); });
+  $('#pg_q').oninput = (e) => { NS.q = e.target.value; clearTimeout(viewPrenominaGuia._t); viewPrenominaGuia._t = setTimeout(() => viewPrenomina().then(() => { const i = $('#pg_q'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }), 300); };
+  $$('[data-pl]').forEach((b) => b.onclick = () => lineaForm(p, lineas.find((l) => l.id === b.dataset.pl)));
+  const on = (id, fn) => { const b = $(id); if (b) b.onclick = fn; };
+  on('#pg_cal', () => { NS.tab = 'dia'; AD.ini = p.fecha_inicio; viewPrenomina(); });
+  on('#pg_calc', async (ev) => { const b = ev.currentTarget; b.disabled = true; try { const [r] = await rpc('nomina_generar', { p_periodo: p.id }); toast(`Calculada de nuevo · ${r.lineas} personas`); viewPrenomina(); } catch (e) { toast(e.message, true); b.disabled = false; } });
+  on('#pg_paste', () => pegarCapturas(p, lineas));
+  on('#pg_one', () => { const i = $('#pg_q'); i.scrollIntoView({ block: 'center' }); i.focus(); toast('Busca a la persona y tócala para capturar'); });
+  on('#pg_add', () => agregarPersona(p, lineas));
+  on('#pg_fin', () => { NS.tab = 'periodos'; NS.sec = 'fin'; viewPrenomina(); });
+  on('#pg_pag', () => { NS.tab = 'periodos'; NS.sec = 'pagos'; viewPrenomina(); });
+  on('#pg_xls', async (ev) => { const b = ev.currentTarget; b.disabled = true; try { await exportPrenomina(p, lineas, fins, pagos); } catch (e) { toast(e.message, true); } finally { b.disabled = false; } });
+  on('#pg_auth', async () => {
+    if (sl && !(await confirmBox('Días sin pase de lista', `<p style="margin-top:0">Hay <b>${sl} día${sl === 1 ? '' : 's'}</b> sin pase de lista que <b>no se van a pagar</b> (−${money(slM)}).</p><p class="small muted">Si alguien sí vino, pide que registren su asistencia y vuelve a calcular, o corrige a la persona tocándola en la lista.</p>`, { okLabel: 'Entendido, continuar' }))) return;
+    autorizarPeriodo(p, lineas, al, fins, pagos);
+  });
+  on('#pg_open', () => modal({ title: 'Reabrir pre-nómina', body: fieldsHtml([{ k: 'motivo', label: 'Motivo', type: 'textarea', req: true, full: true }]),
+    actions: [{ label: 'Cancelar' }, { label: 'Reabrir', cls: 'primary', run: async ({ el }) => { const { motivo } = readFields(el, [{ k: 'motivo', label: 'Motivo', req: true }]); await rpc('nomina_reabrir', { p_periodo: p.id, p_motivo: motivo }); toast('Pre-nómina reabierta'); viewPrenomina(); } }] }));
+}
+
 async function viewPrenominaPeriodos() {
   const v = $('#view'); NOM_PERSONAS = null;
-  if (is('nomina', 'developer') && !viewPrenominaPeriodos._auto) {   // por si el corte del servidor no corrió
-    viewPrenominaPeriodos._auto = true;
-    try { const r = await rpc('nomina_auto'); const x = Array.isArray(r) ? r[0] : r; if (x) toast(x === 'creada' ? 'Se creó la pre-nómina de la quincena (corte de las 12:00)' : 'Se aplicó el corte de la quincena'); } catch (e) { /* sin permiso o sin red */ }
-  }
+  await nominaAutoCheck();
   const periodos = await db('nomina_periodos').order('fecha_inicio', false).get();
   const canEdit = is('nomina', 'developer');
   if (!periodos.length) {
@@ -4367,6 +4493,7 @@ async function lineaForm(p, l) {
     { k: 'salario_diario', label: 'Salario diario', type: 'number', val: l.salario_diario },
     { k: 'dias_no_lab', label: 'Días no laborados (ingreso / baja)', type: 'number', val: l.dias_no_lab },
     { k: 'faltas', label: 'Faltas', type: 'number', val: l.faltas },
+    { k: 'sin_lista', label: 'Días sin pase de lista (no se pagan)', type: 'number', val: num(l.sin_lista), hint: 'Días ya pasados en que no se registró nada de la persona' },
     { k: 'festivo', label: 'Pago día festivo', type: 'number', val: l.festivo },
     { k: 'prima_vacacional', label: `Prima vacacional 25 % (${num(l.vacaciones_dias)} días de vacaciones)`, type: 'number', val: l.prima_vacacional },
     { k: 'ajuste_anterior', label: 'Ajuste de la quincena anterior (+ reembolso / − descuento)', type: 'number', val: num(l.ajuste_anterior), hint: 'Lo registrado después del corte de la quincena pasada' }
@@ -4375,13 +4502,21 @@ async function lineaForm(p, l) {
   const dedF = [{ k: 'permisos', label: 'Permisos sin goce (horas:minutos)', val: hhmm(l.permisos_min), hint: 'Ej. 2:30 = dos horas y media' }, ...NOM_DED.map(([k, label]) => ({ k, label, type: 'number', val: num(l[k]) || '' }))];
   const pagoF = [{ k: 'clabe', label: 'CLABE', val: l.clabe || '', ac: 'off' }, { k: 'banco', label: 'Banco', val: l.banco || '', upper: true }, { k: 'beneficiario', label: 'Beneficiario', val: l.beneficiario || '', upper: true, full: true }];
   const notaF = [{ k: 'notas', label: 'Notas / motivo del ajuste', type: 'textarea', full: true, val: l.notas || '' }];
-  const ro = (fs) => `<div class="kv">${fs.map((f) => `<span>${esc(f.label)}</span><span class="mono">${f.type === 'number' ? (f.k === 'faltas' || f.k === 'dias_no_lab' ? esc(f.val || 0) : money(f.val || 0)) : esc(f.val || '—')}${NOM_AUTO[f.k] ? (aj.has(f.k) ? ' <span class="badge b-acc">ajustado</span>' : '') : ''}</span>`).join('')}</div>`;
+  const ro = (fs) => `<div class="kv">${fs.map((f) => `<span>${esc(f.label)}</span><span class="mono">${f.type === 'number' ? (f.k === 'faltas' || f.k === 'dias_no_lab' || f.k === 'sin_lista' ? esc(f.val || 0) : money(f.val || 0)) : esc(f.val || '—')}${NOM_AUTO[f.k] ? (aj.has(f.k) ? ' <span class="badge b-acc">ajustado</span>' : '') : ''}</span>`).join('')}</div>`;
   const alerts = lineaAlertas(l);
   const attHtml = att.length ? `<div class="scrollx"><table class="tbl sub"><tbody>${att.map((a) => `<tr><td class="mono small">${fmtDate(a.fecha)}${a.turno === 'tarde' ? ' tarde' : ''}${p.festivos.includes(a.fecha) ? ' <span class="badge b-acc">festivo</span>' : ''}</td><td class="small">${attBadges(a)}</td><td class="small muted">${esc(a.comentario || '')}</td></tr>`).join('')}</tbody></table></div>` : '<span class="small muted">Sin registros del pase de lista en el periodo.</span>';
   const body = `
     <div class="kv"><span>Departamento</span><span>${esc(l.departamento || '—')}</span><span>Ingreso</span><span>${fmtDate(l.fecha_ingreso)}</span>${l.fecha_baja ? `<span>Baja</span><span>${fmtDate(l.fecha_baja)}</span>` : ''}
       <span>Días pagados</span><span class="mono">${l.dias_pagados} de ${p.dias}</span><span>Del pase de lista</span><span>${l.retardos} retardos · ${l.dias_permiso} días con permiso · ${l.festivos_lab} festivos trabajados${num(l.vacaciones_dias) ? ` · ${l.vacaciones_dias} días de vacaciones` : ''}</span></div>
     ${alerts.length ? `<div class="row" style="gap:4px;margin-top:8px">${alerts.map(([n, , t]) => `<span class="badge ${nivelBadge[n]}">${esc(t)}</span>`).join('')}</div>` : ''}
+    <div class="card pad" style="margin-top:10px;background:var(--soft)"><div class="eyebrow" style="margin-bottom:6px">Recibo de la quincena</div><div class="kv">
+      <span>${l.dias_pagados} días × ${money(l.salario_diario)}</span><span class="mono">${money(l.nomina)}</span>
+      ${r2(num(l.total_percepciones) - num(l.nomina)) ? `<span>+ Comisiones, festivos y otros</span><span class="mono">+${money(r2(num(l.total_percepciones) - num(l.nomina)))}</span>` : ''}
+      ${num(l.faltas) ? `<span>− Faltas (${l.faltas})</span><span class="mono">−${money(l.faltas_monto)}</span>` : ''}
+      ${num(l.sin_lista) ? `<span>− Sin pase de lista (${l.sin_lista})</span><span class="mono">−${money(l.sin_lista_monto)}</span>` : ''}
+      ${r2(num(l.otras_deducciones) + num(l.permisos_monto) + num(l.multas_disciplina) + num(l.multas_retardo)) ? `<span>− Otras deducciones</span><span class="mono">−${money(r2(num(l.otras_deducciones) + num(l.permisos_monto) + num(l.multas_disciplina) + num(l.multas_retardo)))}</span>` : ''}
+      ${num(l.ajuste_anterior) ? `<span>${num(l.ajuste_anterior) > 0 ? '+' : '−'} Ajuste quincena anterior</span><span class="mono">${num(l.ajuste_anterior) > 0 ? '+' : '−'}${money(Math.abs(num(l.ajuste_anterior)))}</span>` : ''}
+      <span><b>Neto a pagar</b></span><span class="mono"><b>${money(l.neto)}</b></span></div></div>
     ${l.ajuste_detalle ? `<div class="notice n-warn" style="margin-top:10px">${esc(l.ajuste_detalle)}</div>` : ''}
     <div class="eyebrow" style="margin:14px 0 6px">Base</div>
     ${edit ? fieldsHtml(baseF) : ro(baseF)}
@@ -4396,17 +4531,17 @@ async function lineaForm(p, l) {
     const v = readFields(el, allF.filter((f) => f.k !== 'permisos'));
     const out = { notas: v.notas, clabe: v.clabe ? clabeDigits(v.clabe) : null, banco: v.banco, beneficiario: v.beneficiario, permisos_min: parseHHMM($('#f_permisos', el).value) };
     for (const f of [...baseF, ...percF, ...NOM_DED.map(([k]) => ({ k }))]) out[f.k] = num(v[f.k]);
-    for (const k of ['dias_no_lab', 'faltas']) if (!Number.isInteger(out[k])) throw new Error(`${k === 'faltas' ? 'Faltas' : 'Días no laborados'}: escribe un número entero.`);
+    for (const k of ['dias_no_lab', 'faltas', 'sin_lista']) if (!Number.isInteger(out[k])) throw new Error(`${{ faltas: 'Faltas', sin_lista: 'Días sin pase de lista', dias_no_lab: 'Días no laborados' }[k]}: escribe un número entero.`);
     return out;
   };
   const preview = (el) => {
     let x; try { x = collect(el); } catch { return; }
     const dias = p.dias - x.dias_no_lab, nom = r2(x.salario_diario * dias);
     const perc = r2(nom + x.festivo + x.prima_vacacional + NOM_PERC.reduce((s, [k]) => s + x[k], 0));
-    const fm = r2(x.salario_diario * x.faltas), pm = r2(x.salario_diario / 8 * x.permisos_min / 60);
-    const neto = r2(perc - fm - pm - NOM_DED.reduce((s, [k]) => s + x[k], 0) + num(x.ajuste_anterior));
+    const fm = r2(x.salario_diario * x.faltas), pm = r2(x.salario_diario / 8 * x.permisos_min / 60), slm = r2(x.salario_diario * x.sin_lista);
+    const neto = r2(perc - fm - slm - pm - NOM_DED.reduce((s, [k]) => s + x[k], 0) + num(x.ajuste_anterior));
     $('#nl_prev', el).innerHTML = `<div class="kv"><span>Nómina (${dias} días)</span><span class="mono">${money(nom)}</span><span>Total percepciones</span><span class="mono">${money(perc)}</span>
-      <span>Faltas (${x.faltas})</span><span class="mono">−${money(fm)}</span><span>Permisos (${hhmm(x.permisos_min) || '0:00'} h)</span><span class="mono">−${money(pm)}</span>
+      <span>Faltas (${x.faltas})</span><span class="mono">−${money(fm)}</span>${x.sin_lista ? `<span>Sin pase de lista (${x.sin_lista})</span><span class="mono">−${money(slm)}</span>` : ''}${num(x.ajuste_anterior) ? `<span>Ajuste quincena anterior</span><span class="mono">${num(x.ajuste_anterior) > 0 ? '+' : '−'}${money(Math.abs(num(x.ajuste_anterior)))}</span>` : ''}<span>Permisos (${hhmm(x.permisos_min) || '0:00'} h)</span><span class="mono">−${money(pm)}</span>
       <span><b>Neto</b></span><span class="mono"><b style="color:${neto > 0 ? 'var(--ok)' : 'var(--bad)'}">${money(neto)}</b></span></div>`;
     const cl = $('#f_clabe', el); if (cl) {
       const d = clabeDigits(cl.value), h = $('#cl_hint', el);
@@ -4600,23 +4735,23 @@ function prenominaSheets(p, lineas, att, fins = [], pagos = []) {
   const titulo = `PERIODO ${p.numero ? p.numero + ' ' : ''}DEL ${periodoTitulo({ ...p, numero: null }).toUpperCase()}`;
   const H = ['#', 'NOMBRE', 'Salario diario', 'Nomina \nquincenal', `PAGO DIA FESTIVO${p.festivos.length ? ' ' + p.festivos.map((d) => Number(d.slice(8)) + ' ' + MESES[Number(d.slice(5, 7)) - 1].toUpperCase()).join(', ') : ''}`, 'PAGO DE CHIPS ', 'FECHA DE INGRESO', 'PENDIENTE DE PAGO',
     'COMISION ADMINISTRATIVO', 'BONO DE REFERIDO', 'COMISION ASESORES', 'COMISION LIDERES', 'TOTAL', 'Hrs\nDobles', 'HORAS \nEXTRAS', '#', 'FALTAS', 'OTRAS\nDEDUCCIONES', 'TOTAL',
-    'PERMISOS EN LA QUINCENA', 'HRS / MINUTOS', 'MULTAS POR DISCIPLINA', 'MULTAS POR RETARDO', 'DEPARTAMENTO', 'CLAVE', 'BANCO', 'BENEFICIARIO', 'FIRMA DEL EMPLEADO', 'DÍAS PAGADOS', 'DÍAS DE VACACIONES', 'PRIMA VACACIONAL', 'NOTAS / AJUSTES', 'AJUSTE QUINCENA ANTERIOR'];
+    'PERMISOS EN LA QUINCENA', 'HRS / MINUTOS', 'MULTAS POR DISCIPLINA', 'MULTAS POR RETARDO', 'DEPARTAMENTO', 'CLAVE', 'BANCO', 'BENEFICIARIO', 'FIRMA DEL EMPLEADO', 'DÍAS PAGADOS', 'DÍAS DE VACACIONES', 'PRIMA VACACIONAL', 'NOTAS / AJUSTES', 'AJUSTE QUINCENA ANTERIOR', 'DESCUENTO SIN PASE DE LISTA'];
   const rows = [[null, { v: titulo, s: XS.title }], [], H.map((h) => ({ v: h, s: XS.head }))];
   rows[1][12] = { v: 'PERCEP', s: XS.bold }; rows[1][16] = { v: 'DEDUCC', s: XS.bold };
   lineas.forEach((l, i) => {
     const r = first + i, aj = new Set(l.ajustados || []);
     const mon = (v, k) => ({ v: num(v), s: aj.has(k) ? XS.adj : XS.money });
-    const notas = [(l.ajustados || []).length ? 'Ajustado: ' + l.ajustados.map((k) => NOM_AUTO[k] || k).join(', ') : '', num(l.dias_no_lab) ? `${l.dias_no_lab} días no laborados (${l.fecha_baja ? 'baja ' + fmtDate(l.fecha_baja) : 'ingreso ' + fmtDate(l.fecha_ingreso)})` : '', l.ajuste_detalle || '', l.notas || ''].filter(Boolean).join(' · ');
+    const notas = [(l.ajustados || []).length ? 'Ajustado: ' + l.ajustados.map((k) => NOM_AUTO[k] || k).join(', ') : '', num(l.dias_no_lab) ? `${l.dias_no_lab} días no laborados (${l.fecha_baja ? 'baja ' + fmtDate(l.fecha_baja) : 'ingreso ' + fmtDate(l.fecha_ingreso)})` : '', num(l.sin_lista) ? `${l.sin_lista} día(s) sin pase de lista: ${(((l.fechas_aplicadas || {}).sl) || []).map((d) => fmtDate(d)).join(', ')}` : '', l.ajuste_detalle || '', l.notas || ''].filter(Boolean).join(' · ');
     rows.push([
       { v: i + 1, s: XS.int }, { v: l.nombre, s: XS.text }, mon(l.salario_diario, 'salario_diario'),
       { f: `ROUND(C${r}*AC${r},2)`, v: num(l.nomina), s: XS.money }, mon(l.festivo, 'festivo'), mon(l.chips),
       l.fecha_ingreso ? { v: xlDate(l.fecha_ingreso), s: XS.date } : { v: '', s: XS.text }, mon(l.pendiente), mon(l.com_admin), mon(l.bono_referido), mon(l.com_asesores), mon(l.com_lideres),
       { f: `D${r}+E${r}+F${r}+H${r}+I${r}+J${r}+K${r}+L${r}+N${r}+O${r}+AE${r}`, v: num(l.total_percepciones), s: XS.money }, mon(l.hrs_dobles), mon(l.horas_extras),
       { v: num(l.faltas), s: aj.has('faltas') ? XS.adj : XS.int }, { f: `ROUND(C${r}*P${r},2)`, v: num(l.faltas_monto), s: XS.money }, mon(l.otras_deducciones),
-      { f: `M${r}-Q${r}-R${r}-T${r}-V${r}-W${r}+AG${r}`, v: num(l.neto), s: XS.money },
+      { f: `M${r}-Q${r}-R${r}-T${r}-V${r}-W${r}+AG${r}-AH${r}`, v: num(l.neto), s: XS.money },
       { f: `ROUND(C${r}/8*U${r}*24,2)`, v: num(l.permisos_monto), s: XS.money }, { v: num(l.permisos_min) / 1440, s: XS.time },
       mon(l.multas_disciplina), mon(l.multas_retardo), { v: l.departamento || '', s: XS.text }, { v: l.clabe || '', s: l.clabe ? XS.text : XS.warn },
-      { v: l.banco || '', s: XS.text }, { v: l.beneficiario || '', s: XS.text }, { v: '', s: XS.text }, { v: num(l.dias_pagados), s: aj.has('dias_no_lab') ? XS.adj : XS.int }, { v: num(l.vacaciones_dias), s: XS.int }, mon(l.prima_vacacional, 'prima_vacacional'), { v: notas, s: XS.wrap }, { v: num(l.ajuste_anterior), s: aj.has('ajuste_anterior') ? XS.adj : XS.money }
+      { v: l.banco || '', s: XS.text }, { v: l.beneficiario || '', s: XS.text }, { v: '', s: XS.text }, { v: num(l.dias_pagados), s: aj.has('dias_no_lab') ? XS.adj : XS.int }, { v: num(l.vacaciones_dias), s: XS.int }, mon(l.prima_vacacional, 'prima_vacacional'), { v: notas, s: XS.wrap }, { v: num(l.ajuste_anterior), s: aj.has('ajuste_anterior') ? XS.adj : XS.money }, { v: num(l.sin_lista_monto), s: aj.has('sin_lista') ? XS.adj : XS.money }
     ]);
   });
   const sum = (c, k) => ({ f: `SUM(${c}${first}:${c}${last})`, v: r2(lineas.reduce((s, l) => s + num(typeof k === 'function' ? k(l) : l[k]), 0)), s: XS.total });
@@ -4624,14 +4759,14 @@ function prenominaSheets(p, lineas, att, fins = [], pagos = []) {
     const t = []; t[1] = { v: 'TOTALES', s: XS.bold };
     const cols = { D: 'nomina', E: 'festivo', F: 'chips', H: 'pendiente', I: 'com_admin', J: 'bono_referido', K: 'com_asesores', L: 'com_lideres', M: 'total_percepciones', N: 'hrs_dobles', O: 'horas_extras', Q: 'faltas_monto', R: 'otras_deducciones', S: 'neto', T: 'permisos_monto', V: 'multas_disciplina', W: 'multas_retardo' };
     for (const [c, k] of Object.entries(cols)) t[c.charCodeAt(0) - 65] = sum(c, k);
-    t[30] = sum('AE', 'prima_vacacional'); t[32] = sum('AG', 'ajuste_anterior');
+    t[30] = sum('AE', 'prima_vacacional'); t[32] = sum('AG', 'ajuste_anterior'); t[33] = sum('AH', 'sin_lista_monto');
     t[15] = { f: `SUM(P${first}:P${last})`, v: lineas.reduce((s, l) => s + num(l.faltas), 0), s: XS.int };
     rows.push(t);
     rows.push([]); rows.push([null, { v: 'NETO A PAGAR', s: XS.bold }, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, { f: `S${tr}`, v: r2(lineas.reduce((s, l) => s + num(l.neto), 0)), s: XS.total }]);
     rows.push([]); rows.push([null, { v: `Generado en Enterprise HR el ${fmtDateTime(new Date().toISOString())} · ${p.estado === 'autorizado' ? `Autorizado por ${profName(p.autorizado_by)} el ${fmtDateTime(p.autorizado_at)}` : 'BORRADOR (sin autorizar)'} · Celdas amarillas = ajustadas a mano. Permisos en horas:minutos. Salario diario × días pagados.`, s: XS.sub }]);
   }
   const nomina = { name: 'NOMINA', rows, freeze: [2, 3], zoom: 90, merges: ['B1:S1', 'Q2:R2'], heights: { 2: 45 },
-    cols: [5, 38, 12, 12, 12, 11, 12, 12, 13, 11, 13, 12, 12, 8, 9, 6, 11, 12, 13, 13, 10, 11, 11, 23, 22, 15, 36, 26, 9, 11, 13, 48, 14] };
+    cols: [5, 38, 12, 12, 12, 11, 12, 12, 13, 11, 13, 12, 12, 8, 9, 6, 11, 12, 13, 13, 10, 11, 11, 23, 22, 15, 36, 26, 9, 11, 13, 48, 14, 14] };
   // INCIDENCIAS: pase de lista del periodo (fuente de faltas, retardos y permisos)
   const dias = []; for (let d = p.fecha_inicio; d <= p.fecha_fin; d = addDays(d, 1)) dias.push(d);
   const byEmp = {}; for (const a of att) ((byEmp[a.employee_id] = byEmp[a.employee_id] || {})[a.fecha] = byEmp[a.employee_id][a.fecha] || []).push(a);
