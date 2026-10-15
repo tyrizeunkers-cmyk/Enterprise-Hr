@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.21.0';
+const APP_VERSION = '0.22.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -256,6 +256,8 @@ function faltasBadge(n) {
 // ───────────────────────── arranque ─────────────────────────
 async function boot() {
   if (!CFG.url || !CFG.key) { $('#app').innerHTML = `<div class="login"><div class="card"><b>Falta configurar</b><span class="muted">Edita config.js con la URL y la clave pública del proyecto.</span></div></div>`; return; }
+  const rg = location.hash.match(/^#\/registro\/([a-f0-9]{64})$/);
+  if (rg) return renderRegistro(rg[1]);
   S.session = store.get('hr.session');
   if (!S.session) return renderLogin();
   try {
@@ -753,7 +755,7 @@ async function viewPersonal() {
   const statusOpts = [['activo', 'Activos'], ['alta_pendiente', 'Altas pendientes'], ['baja', 'Bajas'], ['', 'Todos']].filter(([k]) => !k || counts[k] || k === 'activo' || PS.status === k);
   v.innerHTML = `
   <div class="pagehead"><div><h1>Personal</h1><div class="muted small">${counts.activo} activos${counts.alta_pendiente ? ` · <b style="color:var(--warn)">${counts.alta_pendiente} altas pendientes</b>` : ''}</div></div>
-    ${canRequest ? `<button class="btn primary" id="newEmp">${is('developer') ? '+ Nuevo ingreso' : '+ Solicitar alta'}</button>` : ''}</div>
+    <div class="row" style="gap:6px">${canRequest ? '<button class="btn" id="bandDatos">Datos pendientes</button>' : ''}${canRequest ? `<button class="btn primary" id="newEmp">${is('developer') ? '+ Nuevo ingreso' : '+ Solicitar alta'}</button>` : ''}</div></div>
   ${retiros.length ? `<div class="card pad" style="margin-bottom:12px;border-color:var(--warn)"><div class="eyebrow" style="margin-bottom:6px;color:var(--warn)">Retiros de lista solicitados (${retiros.length})${is('developer') ? ' · aplica la baja' : ''}</div><div class="list">${retiros.map((x) => { const e = emps.find((y) => y.id === x.employee_id);
     return `<button type="button" class="item" data-ret="${x.id}"><span class="grow"><span class="nm">${esc(e ? fullName(e) : 'Persona')}</span><br><span class="small muted">${e ? esc(areaName(e.area_id)) + ' · ' + esc(groupName(e.group_id)) + ' · ' : ''}último día ${fmtDate(x.ultimo_dia)} · ${esc(x.motivo)} · pidió ${esc(profName(x.solicitado_by))}</span></span><span class="badge b-warn">Pendiente</span></button>`; }).join('')}</div></div>` : ''}
   <div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
@@ -783,13 +785,14 @@ async function viewPersonal() {
   if ($('#pa')) $('#pa').onchange = (e) => { PS.area = e.target.value; PS.group = ''; viewPersonal(); };
   $('#pg').onchange = (e) => { PS.group = e.target.value; draw(); };
   if ($('#newEmp')) $('#newEmp').onclick = () => altaForm();
+  if ($('#bandDatos')) $('#bandDatos').onclick = () => bandejaDatos().catch((er) => toast(er.message, true));
   $$('[data-ret]').forEach((b) => b.onclick = () => { const x = retiros.find((y) => y.id === b.dataset.ret); retiroResolver(x, emps.find((y) => y.id === x.employee_id), () => viewPersonal()); });
 }
 
 const PRIV_FIELDS = [
   { k: 'curp', label: 'CURP', upper: true }, { k: 'rfc', label: 'RFC', upper: true }, { k: 'nss', label: 'NSS' },
   { k: 'fecha_nacimiento', label: 'Fecha de nacimiento', type: 'date' }, { k: 'telefono', label: 'Teléfono', type: 'tel' },
-  { k: 'correo', label: 'Correo personal', type: 'email' }, { k: 'domicilio', label: 'Domicilio', full: true },
+  { k: 'correo', label: 'Correo personal', type: 'email' }, { k: 'domicilio', label: 'Domicilio', full: true }, { k: 'contacto_emergencia', label: 'Contacto de emergencia', full: true },
   { k: 'salario_diario', label: 'Salario diario', type: 'number' }, { k: 'salario_mensual', label: 'Salario mensual', type: 'number' },
   { k: 'clabe', label: 'CLABE interbancaria', hint: '18 dígitos' }, { k: 'banco', label: 'Banco', upper: true }, { k: 'beneficiario', label: 'Beneficiario de la cuenta', upper: true, full: true, hint: 'Vacío si la cuenta es del trabajador' }
 ];
@@ -910,6 +913,7 @@ async function viewExpediente(id) {
   if (is('developer') || (is('rh_general', 'rh_area') && inMyArea)) acts.push(['editar', 'Editar datos', '']);
   if ((is('developer') || (is('rh_general', 'rh_area') && inMyArea)) && ['activo', 'alta_pendiente'].includes(e.status)) acts.push(['grupo', 'Cambiar grupo', '']);
   if (is('nomina') && e.status === 'activo') acts.push(['banco', 'Datos bancarios', '']);
+  if ((is('developer') || (is('rh_general', 'rh_area') && inMyArea)) && ['activo', 'alta_pendiente'].includes(e.status)) acts.push(['linkdatos', 'Link para sus datos', '']);
   if (!is('developer') && canDocFin(e.area_id) && ['activo', 'baja'].includes(e.status)) acts.push(['finiq', 'Finiquito / liquidación', '']);
   if (is('developer')) {
     if (e.status === 'activo') acts.push(['area', 'Cambiar área', '']);
@@ -954,6 +958,7 @@ async function expAction(k, { e, p }) {
   if (k === 'editar') return editEmployee(e, priv0(p), { basic: is('developer') || (is('rh_general', 'rh_area') && e.status === 'alta_pendiente'), priv: true });
   if (k === 'grupo') return moveGroup(e);
   if (k === 'banco') return bancoForm(e, priv0(p));
+  if (k === 'linkdatos') return linkRegistro({ id: e.id, nombre: e.nombre, nombreCompleto: fullName(e), telefono: p && p.telefono }).catch((er) => toast(er.message, true));
   if (k === 'area') return moveArea(e);
   if (k === 'doc') return newDocPicker({ employee: e });
   if (k === 'finiq') return newDocPicker({ employee: e });
@@ -5294,4 +5299,127 @@ if ('serviceWorker' in navigator && location.protocol === 'https:' && !CFG.demo)
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
   }).catch(() => {}));
 }
+// ───────────────────────── Link personal para registrar datos ─────────────────────────
+// RH o Daniel generan un link por persona (24 horas, una sola vez). La persona lo abre sin usuario y llena su hoja de datos.
+const regUrl = (tok) => `${location.origin}${location.pathname}#/registro/${tok}`;
+const restante = (ms) => { if (ms <= 0) return '0 minutos'; const m = Math.ceil(ms / 60000), h = Math.floor(m / 60), mm = m % 60;
+  return h ? `${h} hora${h === 1 ? '' : 's'}${mm ? ` y ${mm} minuto${mm === 1 ? '' : 's'}` : ''}` : `${mm} minuto${mm === 1 ? '' : 's'}`; };
+
+async function linkRegistro(emp, done) {
+  const r = await rpc('registro_link_crear', { p_emp: emp.id });
+  const x = Array.isArray(r) ? r[0] : r; const url = regUrl(x.token);
+  const nombre = String(emp.nombre || '').trim().split(/\s+/)[0] || '';
+  const msg = `Hola ${nombre}, para completar tu alta en ${EMPRESA} registra tus datos en este link. Tienes 24 horas y solo sirve una vez:\n${url}`;
+  const tel = String(emp.telefono || '').replace(/\D/g, '').slice(-10);
+  const wa = `https://wa.me/${tel.length === 10 ? '52' + tel : ''}?text=${encodeURIComponent(msg)}`;
+  const m = modal({ title: 'Link para sus datos · ' + (emp.nombreCompleto || emp.nombre), body: `
+    <div class="notice n-info">Mándaselo solo a esa persona. Vence el <b>${fmtDateTime(x.expires_at)}</b> (24 horas) y sirve una sola vez. Si generas otro, este deja de funcionar.</div>
+    <label class="field" style="margin-top:10px">Link<input id="rl_url" readonly value="${esc(url)}" style="font-size:12px"></label>
+    <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap"><button type="button" class="btn primary" id="rl_copy">Copiar mensaje y link</button><a class="btn" id="rl_wa" href="${esc(wa)}" target="_blank" rel="noopener">Enviar por WhatsApp${tel.length === 10 ? '' : ' (elegir contacto)'}</a></div>
+    <div class="small muted" style="margin-top:10px">Lo que llene se guarda directo en su ficha y se quita la marca de "Datos pendientes".</div>`,
+    actions: [{ label: 'Listo', cls: 'primary' }], onClose: () => done && done() });
+  $('#rl_copy', m.el).onclick = async () => {
+    try { await navigator.clipboard.writeText(msg); toast('Mensaje copiado'); }
+    catch { const i = $('#rl_url', m.el); i.select(); document.execCommand('copy'); toast('Link copiado'); }
+  };
+}
+
+async function bandejaDatos() {
+  let rows = await rpc('registro_pendientes');
+  const st = { q: '' };
+  const estado = (r) => {
+    const now = Date.now();
+    if (r.bloqueado) return ['b-bad', 'Revisar: ' + r.bloqueado];
+    if (!r.falta) return ['b-ok', 'Completo ✓' + (r.link_usado ? ' · se registró ' + fmtDateTime(r.link_usado) : '')];
+    if (!r.link_creado || r.link_anulado) return ['b-mut', 'Sin link'];
+    if (r.link_usado) return ['b-ok', 'Se registró ' + fmtDateTime(r.link_usado)];
+    if (new Date(r.link_vence) <= now) return ['b-bad', 'Link vencido sin llenar'];
+    return [r.link_abierto ? 'b-acc' : 'b-warn', `${r.link_abierto ? 'Lo abrió' : 'Link enviado'} · vence en ${restante(new Date(r.link_vence) - now)}`];
+  };
+  const m = modal({ title: 'Datos pendientes del personal', wide: true, body: `
+    <div class="notice n-info">Personal activo o con alta pendiente al que le faltan datos. Genera su link y mándaselo: tiene 24 horas para llenarlo.</div>
+    <input class="inp" id="bd_q" type="search" placeholder="Buscar por nombre" style="width:100%;margin:8px 0" aria-label="Buscar">
+    <div class="small muted" id="bd_n"></div><div class="list" id="bd_l" style="margin-top:6px;max-height:60vh;overflow:auto"></div>`,
+    actions: [{ label: 'Cerrar' }] });
+  const paint = () => {
+    const q = norm(st.q); const xs = rows.filter((r) => !q || norm(r.nombre).includes(q));
+    $('#bd_n', m.el).textContent = `${rows.filter((r) => r.falta).length} con datos pendientes · ${rows.filter((r) => r.link_creado && !r.link_usado && !r.link_anulado && new Date(r.link_vence) > Date.now()).length} con link activo`;
+    $('#bd_l', m.el).innerHTML = xs.length ? xs.map((r) => { const [c, t] = estado(r);
+      return `<div class="item pg-row" style="gap:10px"><span class="grow" style="min-width:0"><span class="nm">${esc(r.nombre)}</span><br><span class="small muted">${esc(areaName(r.area_id))} · ${esc(groupName(r.group_id))}${r.status === 'alta_pendiente' ? ' · alta pendiente' : ''}</span>
+        ${r.falta ? `<br><span class="small">Falta: ${esc(r.falta)}</span>` : ''}<br><span class="badge ${c}" style="margin-top:3px">${esc(t)}</span></span>
+        ${r.falta ? `<button type="button" class="btn sm${r.link_creado && !r.link_anulado && !r.link_usado && new Date(r.link_vence) > Date.now() ? '' : ' primary'}" data-bdl="${r.employee_id}">${r.link_creado ? 'Nuevo link' : 'Generar link'}</button>` : ''}</div>`; }).join('') : '<div class="empty small">Nadie tiene datos pendientes.</div>';
+    $$('[data-bdl]', m.el).forEach((b) => b.onclick = async () => {
+      const r = rows.find((x) => x.employee_id === b.dataset.bdl); b.disabled = true;
+      try { await linkRegistro({ id: r.employee_id, nombre: r.nombre, nombreCompleto: r.nombre, telefono: r.telefono }, async () => { rows = await rpc('registro_pendientes'); paint(); }); }
+      catch (e) { toast(e.message, true); b.disabled = false; }
+    });
+  };
+  $('#bd_q', m.el).oninput = (e) => { st.q = e.target.value; paint(); };
+  paint();
+}
+
+// Página pública (sin usuario): la persona ve cuánto tiempo le queda y llena sus datos
+async function renderRegistro(tok) {
+  const app = $('#app');
+  const shell = (inner) => `<div class="reg"><div class="card pad reg-card"><div class="row" style="gap:10px;align-items:center;margin-bottom:12px"><div class="logo" style="width:40px;height:40px;font-size:15px">HR</div><div><b>${esc(EMPRESA)}</b><div class="small muted">Registro de datos del personal</div></div></div>${inner}</div></div>`;
+  const msgBox = (t, s) => { app.innerHTML = shell(`<h1 style="font-size:20px;margin:6px 0">${t}</h1><p class="muted" style="margin:0">${s}</p>`); };
+  app.innerHTML = shell('<div class="empty">Cargando…</div>');
+  let info;
+  try { info = await http('/rest/v1/rpc/registro_info', { method: 'POST', body: { p_token: tok }, auth: false }); }
+  catch (e) { return msgBox('No se pudo abrir', esc(e.message)); }
+  if (info.estado === 'usado') return msgBox('Ya registraste tus datos', 'Este link ya se usó. Si necesitas corregir algo, comunícate con RH.');
+  if (info.estado === 'vencido') return msgBox('El tiempo para registrarte terminó', 'Este link venció. Pide a RH que te mande uno nuevo.');
+  if (info.estado !== 'ok') return msgBox('Link no válido', 'Revisa que hayas abierto el link completo o pide uno nuevo a RH.');
+  const fin = Date.now() + (new Date(info.vence) - new Date(info.ahora));
+  const f = [
+    { k: 'curp', label: 'CURP', req: true, upper: true, hint: '18 caracteres' },
+    { k: 'rfc', label: 'RFC con homoclave', req: true, upper: true, hint: '13 caracteres' },
+    { k: 'nss', label: 'Número de Seguro Social (NSS)', req: true, hint: '11 dígitos', type: 'tel' },
+    { k: 'fecha_nacimiento', label: 'Fecha de nacimiento', type: 'date', req: true },
+    { k: 'telefono', label: 'Teléfono celular', type: 'tel', req: true, hint: '10 dígitos' },
+    { k: 'correo', label: 'Correo personal', type: 'email' },
+    { k: 'domicilio', label: 'Domicilio completo', type: 'textarea', req: true, full: true, hint: 'Calle, número, colonia, alcaldía o municipio, estado y código postal' },
+    { k: 'contacto_emergencia', label: 'Contacto de emergencia', full: true, hint: 'Nombre, parentesco y teléfono' },
+    { k: 'clabe', label: 'CLABE interbancaria para tu pago', type: 'tel', full: true, hint: '18 dígitos. Si aún no tienes cuenta, déjalo vacío.' }];
+  app.innerHTML = shell(`
+    <h1 style="font-size:22px;margin:4px 0">Hola, ${esc(info.nombre)}</h1>
+    <div class="reg-time" id="rg_t"></div>
+    <p class="muted small" style="margin:8px 0 12px">Llena tus datos una sola vez. Solo el área de Recursos Humanos puede verlos.</p>
+    <form id="rg_f" novalidate>${fieldsHtml(f)}
+      <div id="rg_bh" class="small" style="margin-top:4px"></div>
+      <label class="row small" style="gap:8px;margin-top:10px;align-items:flex-start;flex-wrap:nowrap"><input type="checkbox" id="rg_otro" style="margin-top:3px"> La cuenta está a nombre de otra persona</label>
+      <div id="rg_ben" hidden>${fieldsHtml([{ k: 'beneficiario', label: 'Nombre del titular de la cuenta', upper: true, full: true }])}</div>
+      <div class="notice n-info small" style="margin-top:12px"><b>Aviso de privacidad.</b> ${esc(EMPRESA)} usa estos datos solo para tu contratación, tu alta ante el IMSS y el SAT y el pago de tu nómina. Se guardan de forma confidencial y solo los consulta Recursos Humanos. Puedes pedir su corrección o cancelación a RH.</div>
+      <label class="row" style="gap:8px;margin-top:10px;align-items:flex-start;flex-wrap:nowrap"><input type="checkbox" id="rg_ok" style="margin-top:3px"> <span>Leí el aviso de privacidad y acepto que mis datos se usen para lo anterior.</span></label>
+      <div id="rg_err"></div>
+      <button class="btn primary" type="submit" id="rg_send" style="width:100%;margin-top:14px;min-height:46px">Enviar mis datos</button>
+    </form>`);
+  const tick = () => { const ms = fin - Date.now(); const el = $('#rg_t'); if (!el) return clearInterval(t);
+    if (ms <= 0) { clearInterval(t); return msgBox('El tiempo para registrarte terminó', 'Este link venció. Pide a RH que te mande uno nuevo.'); }
+    el.className = 'reg-time' + (ms < 3600000 ? ' urge' : ''); el.innerHTML = `Tienes <b>${restante(ms)}</b> para registrarte`; };
+  const t = setInterval(tick, 20000); tick();
+  $('#rg_otro').onchange = (e) => { $('#rg_ben').hidden = !e.target.checked; };
+  $('#f_clabe').addEventListener('input', () => { const d = clabeDigits($('#f_clabe').value); $('#rg_bh').innerHTML = !d ? '' : d.length < 18 ? `<span class="muted">${d.length} de 18 dígitos</span>` : clabeOk(d) ? `<span style="color:var(--ok)">CLABE válida${bancoDeClabe(d) ? ' · ' + esc(bancoDeClabe(d)) : ''}</span>` : '<span style="color:var(--bad)">La CLABE no es válida, revísala</span>'; });
+  $('#rg_f').onsubmit = async (ev) => {
+    ev.preventDefault(); const err = $('#rg_err'); err.innerHTML = ''; const b = $('#rg_send');
+    try {
+      const v = readFields(ev.target, f);
+      const curp = String(v.curp || '').replace(/\s/g, ''), rfc = String(v.rfc || '').replace(/\s/g, '');
+      if (!/^[A-Z]{4}\d{6}[HMX][A-Z]{5}[A-Z0-9]\d$/.test(curp)) throw new Error('La CURP no es válida: deben ser 18 caracteres.');
+      if (!/^[A-ZÑ&]{4}\d{6}[A-Z0-9]{3}$/.test(rfc)) throw new Error('El RFC no es válido: deben ser 13 caracteres con homoclave.');
+      if (String(v.nss || '').replace(/\D/g, '').length !== 11) throw new Error('El NSS debe tener 11 dígitos.');
+      if (String(v.telefono || '').replace(/\D/g, '').length !== 10) throw new Error('El teléfono debe tener 10 dígitos.');
+      const clabe = v.clabe ? clabeDigits(v.clabe) : null;
+      if (clabe && !clabeOk(clabe)) throw new Error('La CLABE no es válida: revisa los 18 dígitos.');
+      const otro = $('#rg_otro').checked, ben = otro ? (readFields(ev.target, [{ k: 'beneficiario', label: 'Nombre del titular de la cuenta', upper: true, req: true }]).beneficiario) : null;
+      if (!$('#rg_ok').checked) throw new Error('Para continuar acepta el aviso de privacidad.');
+      b.disabled = true; b.textContent = 'Enviando…';
+      const r = await http('/rest/v1/rpc/registro_enviar', { method: 'POST', auth: false, body: { p_token: tok, p_datos: { ...v, curp, rfc, clabe, banco: clabe ? bancoDeClabe(clabe) || null : null, beneficiario: ben, acepto: 'true' } } });
+      clearInterval(t);
+      if (r && r.ok === false) return msgBox('No se pudo completar', esc(r.mensaje || 'Comunícate con RH.'));
+      msgBox(`¡Listo, ${esc(info.nombre)}!`, 'Tus datos quedaron registrados. Ya puedes cerrar esta página.');
+    } catch (e) { err.innerHTML = `<div class="notice n-bad" style="margin-top:10px">${esc(e.message)}</div>`; b.disabled = false; b.textContent = 'Enviar mis datos'; err.scrollIntoView({ block: 'nearest' }); }
+  };
+}
+
 boot();
