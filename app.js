@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.22.0';
+const APP_VERSION = '0.23.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -77,7 +77,8 @@ const seesAllAreas = () => is('developer', 'director', 'nomina');
 const visibleAreas = () => S.areas.filter((a) => a.active && (seesAllAreas() || S.myAreas.includes(a.id) || (is('tl') && myGroups().some((g) => g.area_id === a.id))));
 const myGroups = () => S.groups.filter((g) => g.tl_id === S.me.id && g.active);
 const canWriteAttendance = () => is('developer', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl');
-const writableGroups = () => is('tl') ? myGroups() : (is('developer', 'nomina') ? S.groups.filter((g) => g.active) : S.groups.filter((g) => g.active && S.myAreas.includes(g.area_id)));
+const supGroups = () => S.groups.filter((g) => g.active && g.tl_id !== S.me.id && (S.suplencias || []).some((x) => x.group_id === g.id));
+const writableGroups = () => is('tl') ? [...myGroups(), ...supGroups()] : (is('developer', 'nomina') ? S.groups.filter((g) => g.active) : S.groups.filter((g) => g.active && S.myAreas.includes(g.area_id)));
 const canSeePrivate = (emp) => is('developer', 'director', 'rh_general', 'rh_area') || (is('nomina') && emp.status === 'activo');
 
 // ───────────────────────── red / sesión ─────────────────────────
@@ -348,7 +349,8 @@ const PERM_ACC = {
   'vac.registrar': { label: 'Registrar vacaciones', roles: ['developer', 'rh_general', 'rh_area', 'supervisor', 'tl'], dar: ['director', 'nomina'], db: true },
   'doc.finiquito': { label: 'Generar finiquitos y liquidaciones', roles: ['developer', 'nomina', 'rh_general', 'rh_area'], dar: ['director', 'supervisor'], db: true },
   'grupos.editar': { label: 'Editar grupos y mover personal (Áreas y grupos)', roles: ['developer', 'rh_general', 'rh_area'], dar: ['supervisor'], db: true },
-  'prenomina.excel': { label: 'Descargar Excel de pre-nómina', roles: ['developer', 'director', 'nomina'], dar: [], db: false }
+  'prenomina.excel': { label: 'Descargar Excel de pre-nómina', roles: ['developer', 'director', 'nomina'], dar: [], db: false },
+  'nomina.opera': { label: 'Operar la pre-nómina (crear, capturar bonos, autorizar)', roles: ['developer', 'nomina'], dar: ['director'], db: true }
 };
 const MOD_DB = ['prenomina', 'documentos', 'reclutamiento', 'bitacora', 'informes'];   // al quitarlos también se bloquean en la base de datos
 const myPerm = () => (S.me && S.me.permisos) || {};
@@ -489,14 +491,25 @@ const sortGroups = (gs) => gs.sort((a, b) => ((is('supervisor') && a.tipo === 'l
   .localeCompare((is('supervisor') && b.tipo === 'lideres' ? '0' : '1') + areaName(b.area_id) + (b.tipo === 'lideres' ? '0' : '1') + b.name, 'es'));
 async function viewLista() {
   const v = $('#view');
+  if (is('tl') && (!S.supAt || Date.now() - S.supAt > 120000)) {   // suplencias de hoy (otro líder me dejó su grupo): se revisan en segundo plano
+    S.supAt = Date.now();
+    (async () => {
+      const prev = JSON.stringify(S.suplencias || []);
+      S.suplencias = await db('grupo_descansos').select('group_id,fecha').eq('suplente_id', S.me.id).eq('tipo', 'suplente').gte('fecha', addDays(todayMX(), -1)).lte('fecha', todayMX()).is('cancelado_at', 'null').get();
+      const miss = S.suplencias.map((x) => x.group_id).filter((id) => !S.groups.some((g) => g.id === id));
+      if (miss.length) S.groups.push(...await db('groups').in('id', [...new Set(miss)]).get());
+      if (JSON.stringify(S.suplencias) !== prev && S.view === 'lista' && !$('.modal-bg')) viewLista().catch(() => {});
+    })().catch(() => {});
+  }
   const groups = sortGroups(writableGroups());
   if (!groups.length) { v.innerHTML = `<div class="card empty">${is('tl') ? 'Aún no tienes un grupo asignado. Pide a Daniel que te asigne uno.' : 'No hay grupos en tus áreas.'}</div>`; return; }
   if (!LS.group || !groups.some((g) => g.id === LS.group)) LS.group = (store.get('hr.lista.group') && groups.some((g) => g.id === store.get('hr.lista.group'))) ? store.get('hr.lista.group') : groups[0].id;
   if (!LS.fecha) LS.fecha = todayMX();
   const g = groups.find((x) => x.id === LS.group);
-  const [emps, day] = await Promise.all([
+  const [emps, day, desc] = await Promise.all([
     db('employees').select('id,nombre,apellido_paterno,apellido_materno,puesto,group_id,area_id,status,origen').eq('group_id', g.id).in('status', ['activo', 'alta_pendiente']).get(),
-    db('attendance_days').eq('group_id', g.id).eq('fecha', LS.fecha).get()
+    db('attendance_days').eq('group_id', g.id).eq('fecha', LS.fecha).get(),
+    db('grupo_descansos').eq('group_id', g.id).gte('fecha', addDays(todayMX(), -1)).is('cancelado_at', 'null').order('fecha').get().catch(() => [])
   ]);
   emps.sort(sortName);
   const ids = emps.map((e) => e.id);
@@ -523,7 +536,37 @@ async function viewLista() {
   if (falta.length && !lockedDay && LS.fecha <= todayMX()) {
     try { (await db('attendance').insert(falta.map((id) => ({ employee_id: id, fecha: LS.fecha, turno: 'manana', status: null, aviso: null, incidencia: 'vacaciones', comentario: 'Vacaciones autorizadas por RH', incidencias: [] })), { onConflict: 'employee_id,fecha,turno' })).forEach((r) => { recM[r.employee_id] = r; }); } catch { /* lo registra el pase normal */ }
   }
-  renderLista({ emps, recM, recT, fx, d, lockedDay, g, vac, retirados, rets }, groups);
+  const ayer = addDays(todayMX(), -1); let pendAyer = false;
+  if (LS.fecha === todayMX() && desc.some((x) => x.fecha === ayer && x.tipo === 'posponer')) {
+    const dy = await db('attendance_days').eq('group_id', g.id).eq('fecha', ayer).get().catch(() => []);
+    pendAyer = !(dy[0] && dy[0].sent_at);
+  }
+  renderLista({ emps, recM, recT, fx, d, lockedDay, g, vac, retirados, rets, desc, pendAyer }, groups);
+}
+const canDescanso = (g) => is('developer') || (is('tl') && g.tl_id === S.me.id) || (is('rh_general', 'rh_area', 'supervisor') && S.myAreas.includes(g.area_id));
+async function descansoForm(g, desc, done) {
+  let lideres = [];
+  try { lideres = await rpc('lideres_suplentes', { p_group: g.id }); } catch (e) { toast(e.message, true); }
+  const hoy = todayMX();
+  const m = modal({ title: 'Día de descanso · ' + groupLabel(g), body: `
+    <div class="notice n-info">Ese día no se descuenta a nadie del grupo por falta de pase de lista. Elige quién pasa la lista.</div>
+    <label class="field" style="margin-top:10px">Fecha del descanso<input type="date" id="ds_f" value="${hoy}" min="${addDays(hoy, -1)}" max="${addDays(hoy, 30)}"></label>
+    <div class="list" style="margin-top:10px">
+      <label class="item" style="gap:10px"><input type="radio" name="ds_t" value="suplente" checked> <span class="grow"><b>Lo pasa otro líder</b><br><span class="small muted">Ese día verá y pasará la lista de este grupo.</span></span></label>
+      <label class="item" style="gap:10px"><input type="radio" name="ds_t" value="posponer"> <span class="grow"><b>Lo paso yo al día siguiente</b><br><span class="small muted">Al regresar, eliges la fecha del descanso y pasas la lista.</span></span></label>
+    </div>
+    <label class="field" id="ds_sw" style="margin-top:10px">Líder que cubre<select id="ds_s">${lideres.length ? lideres.map((x) => `<option value="${x.id}">${esc(x.full_name)}</option>`).join('') : '<option value="">No hay otros líderes en el área</option>'}</select></label>
+    <label class="field" style="margin-top:10px">Comentario (opcional)<input id="ds_m" placeholder="Ej. descanso semanal"></label>
+    ${desc.length ? `<div class="eyebrow" style="margin:14px 0 6px">Descansos marcados</div><div class="list">${desc.map((x) => `<div class="item small" style="gap:8px"><span class="grow">${esc(dayLabel(x.fecha))} · ${x.tipo === 'suplente' ? 'cubre ' + esc(x.suplente_nombre || (lideres.find((l) => l.id === x.suplente_id) || {}).full_name || profName(x.suplente_id)) : 'se pasa al día siguiente'}</span><button type="button" class="btn sm" data-dsc="${x.fecha}">Cancelar</button></div>`).join('')}</div>` : ''}`,
+    actions: [{ label: 'Cerrar' }, { label: 'Guardar descanso', cls: 'primary', run: async ({ el }) => {
+      const tipo = $('input[name=ds_t]:checked', el).value, f = $('#ds_f', el).value, sup = $('#ds_s', el).value;
+      if (!f) throw new Error('Elige la fecha');
+      if (tipo === 'suplente' && !sup) throw new Error('No hay otro líder en el área; elige "Lo paso yo al día siguiente".');
+      await rpc('grupo_descanso', { p_group: g.id, p_fecha: f, p_tipo: tipo, p_suplente: tipo === 'suplente' ? sup : null, p_motivo: $('#ds_m', el).value });
+      toast(tipo === 'suplente' ? 'Listo: ese día pasa lista ' + ((lideres.find((l) => l.id === sup) || {}).full_name || 'el otro líder') : 'Listo: ese día lo pasas al día siguiente'); done();
+    } }] });
+  $$('input[name=ds_t]', m.el).forEach((r) => r.onchange = () => { $('#ds_sw', m.el).hidden = $('input[name=ds_t]:checked', m.el).value !== 'suplente'; });
+  $$('[data-dsc]', m.el).forEach((b) => b.onclick = async () => { b.disabled = true; try { await rpc('grupo_descanso_cancelar', { p_group: g.id, p_fecha: b.dataset.dsc }); toast('Descanso cancelado'); m.close(); done(); } catch (e) { toast(e.message, true); b.disabled = false; } });
 }
 function renderLista(st, groups) {
   const v = $('#view');
@@ -549,6 +592,10 @@ function renderLista(st, groups) {
     <div class="turnos" role="group" aria-label="Turno">${segBtn('manana')}${segBtn('tarde')}</div>
     <div class="row"><div class="prog"><i style="width:${pct}%"></i></div><span style="font-size:13px;font-weight:600">${done} de ${total}</span></div>
   </div>
+  ${is('tl') && g.tl_id !== S.me.id ? `<div class="notice n-info" style="margin-bottom:10px"><b>Suplencia:</b> cubres el grupo de ${esc(g.tl_id ? profName(g.tl_id) : groupLabel(g))} por su día de descanso.</div>` : ''}
+  ${(() => { const x = (st.desc || []).find((y) => y.fecha === LS.fecha); return x ? `<div class="notice n-info" style="margin-bottom:10px"><b>Día de descanso del líder.</b> ${x.tipo === 'suplente' ? 'Este día pasa lista ' + esc(x.suplente_id === S.me.id ? 'tú' : (x.suplente_nombre || profName(x.suplente_id))) + '.' : 'La lista de este día se pasa al día siguiente.'}</div>` : ''; })()}
+  ${st.pendAyer ? `<div class="notice n-warn" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="grow">Tienes pendiente el pase de lista de <b>ayer</b> (tu día de descanso).</span><button type="button" class="btn sm" id="lf_ayer">Pasar lista de ayer</button></div>` : ''}
+  ${canDescanso(g) && !(is('tl') && g.tl_id !== S.me.id) ? '<div class="row" style="margin-bottom:10px;justify-content:flex-end"><button type="button" class="btn sm" id="lf_desc">Día de descanso / suplente</button></div>' : ''}
   ${lockedDay ? `<div class="notice n-warn" style="margin-bottom:10px">Nómina ya revisó este día (${fmtDateTime(d.reviewed_at)}). Para corregir, pídelo a Nómina.</div>` : ''}
   ${d.reviewed_at && !lockedDay ? `<div class="notice n-info" style="margin-bottom:10px">Día revisado por ${esc(profName(d.reviewed_by))} · ${fmtDateTime(d.reviewed_at)}. Puedes corregir porque tienes rol de ${esc(ROLES[role()])}.</div>` : ''}
   ${tarde && !open ? `<div class="notice n-info" style="margin-bottom:10px">El pase de la tarde (cierre) se habilita a partir de las <b>${areaCierre(g.area_id)}</b>.</div>` : ''}
@@ -565,6 +612,8 @@ function renderLista(st, groups) {
   $('#lf_date').onchange = (e) => { const val = e.target.value; if (!val || val > todayMX()) { e.target.value = LS.fecha; return toast('No se puede pasar lista a futuro', true); } LS.fecha = val; LS.turno = null; reload(); };
   if ($('#lf_group')) $('#lf_group').onchange = (e) => { LS.group = e.target.value; store.set('hr.lista.group', LS.group); LS.open = null; LS.turno = null; reload(); };
   if ($('#addPerson')) $('#addPerson').onclick = () => addPersonForm(g, reload);
+  if ($('#lf_desc')) $('#lf_desc').onclick = () => descansoForm(g, st.desc || [], reload);
+  if ($('#lf_ayer')) $('#lf_ayer').onclick = () => { LS.fecha = addDays(todayMX(), -1); LS.turno = null; reload(); };
   $$('[data-turno]').forEach((b) => b.onclick = () => { if (LS.turno === b.dataset.turno) return; LS.turno = b.dataset.turno; renderLista(st, groups); });
   if ($('#allok')) $('#allok').onclick = async (ev) => {
     const pend = emps.filter((e) => !rec[e.id]); if (!pend.length) return;
@@ -3840,6 +3889,8 @@ function calcAlDia(rows, ini, fin) {
   const factor = 15 / dias.length;                 // la quincena se paga a 15 días
   const fest = new Set(festivosEn(ini, fin).map(([d]) => d));
   const descanso = new Set((rows[0] && rows[0].descanso) || []);
+  // Días en que cada grupo sí pasó lista: si el líder no pasó lista, ese día se paga a su gente
+  const grpDias = new Map(); rows.forEach((r) => { if (!r.group_id) return; const s0 = grpDias.get(r.group_id) || new Set(); (r.registrados || r.asistencias || []).forEach((d) => s0.add(d)); grpDias.set(r.group_id, s0); });
   const porDia = dias.map((d) => ({ d, real: d <= hoy, monto: 0, faltas: [], sinLista: [], pendiente: 0, altas: [], bajas: [], festivoLab: 0, activos: 0, descanso: descanso.has(d) }));
   const personas = rows.map((r) => {
     const sal = num(r.salario_diario), fs = new Set(r.faltas || []), as = new Set(r.asistencias || []), reg = new Set(r.registrados || r.asistencias || []);
@@ -3854,7 +3905,7 @@ function calcAlDia(rows, ini, fin) {
       let m = sal * factor;
       if (pd.real) {
         if (fs.has(d) && !fest.has(d)) { m -= sal; ahorro += sal; faltasHoy++; pd.faltas.push(r.nombre); }
-        else if (!reg.has(d) && !fest.has(d) && !descanso.has(d)) {   // sin pase de lista: no se paga todavía
+        else if (!reg.has(d) && !fest.has(d) && !descanso.has(d) && r.group_id && (grpDias.get(r.group_id) || new Set()).has(d)) {   // sin pase de lista (su grupo sí pasó lista): no se paga todavía
           pend += m; sinLista++; pd.sinLista.push(r.nombre); pd.pendiente += m; proy += m; return;
         }
         diasTrans++;
@@ -3979,7 +4030,7 @@ function dibujarAvance(box, c) {
 
 // Por si el corte del servidor (12:00) no corrió: la app lo revisa una vez al abrir la pre-nómina
 async function nominaAutoCheck() {
-  if (!is('nomina', 'developer') || nominaAutoCheck._done) return;
+  if (!can('nomina.opera') || nominaAutoCheck._done) return;
   nominaAutoCheck._done = true;
   try { const r = await rpc('nomina_auto'); const x = Array.isArray(r) ? r[0] : r; if (x) toast(x === 'creada' ? 'Se creó la pre-nómina de la quincena (corte de las 12:00)' : 'Se aplicó el corte de la quincena'); } catch (e) { /* sin permiso o sin red */ }
 }
@@ -3995,7 +4046,7 @@ const variacion = (l, prevMap) => {
 
 async function viewPrenominaGuia() {
   const v = $('#view'); NOM_PERSONAS = null;
-  const ed = is('nomina', 'developer');
+  const ed = can('nomina.opera');
   await nominaAutoCheck();
   const periodos = await db('nomina_periodos').order('fecha_inicio', false).get();
   const q = quincenaDe(todayMX()), hoy = todayMX();
@@ -4157,7 +4208,7 @@ function detalleDiaNomina(c, x, dd, pago) {
 
 // Bonos y comisiones: una lista con buscador; se escribe el monto y se guarda solo. Se puede corregir en cualquier momento.
 function bonosPanel(p, lineas) {
-  const edit = is('nomina', 'developer') && p.estado === 'borrador';
+  const edit = can('nomina.opera') && p.estado === 'borrador';
   const st = { k: NS.bk || 'bono_referido', q: '', solo: false };
   const m = modal({ title: 'Bonos y comisiones · ' + periodoTitulo(p), wide: true, body: `
     ${edit ? '' : '<div class="notice n-warn">La quincena está autorizada: solo consulta. Reábrela para corregir.</div>'}
@@ -4283,7 +4334,7 @@ async function viewPrenominaPeriodos() {
   const v = $('#view'); NOM_PERSONAS = null;
   await nominaAutoCheck();
   const periodos = await db('nomina_periodos').order('fecha_inicio', false).get();
-  const canEdit = is('nomina', 'developer');
+  const canEdit = can('nomina.opera');
   if (!periodos.length) {
     v.innerHTML = `<div class="pagehead"><div><h1>Pre-nómina</h1><div class="muted small">Aún no hay periodos</div></div>${canEdit ? '<button class="btn primary" id="np_new">+ Nuevo periodo</button>' : ''}</div>
       <div class="card empty">${canEdit ? 'Crea el primer periodo: la app toma a todo el personal activo, su salario y las faltas del pase de lista.' : 'Nómina todavía no ha armado ninguna pre-nómina.'}</div>`;
@@ -4536,7 +4587,7 @@ async function agregarFiniquito(p, fins, pendFin) {
   });
 }
 async function finiquitoForm(p, f, periodos) {
-  const edit = is('nomina', 'developer') && p.estado === 'borrador';
+  const edit = can('nomina.opera') && p.estado === 'borrador';
   const aj = new Set(f.ajustados || []);
   const tag = (k) => aj.has(k) ? ` <span class="badge b-acc">ajustado</span>${edit ? ` <button type="button" class="btn sm ghost" data-frest="${k}" style="min-height:24px;padding:0 6px">restaurar</button>` : ''}` : ' <span class="small muted">(automático)</span>';
   const baseF = [
@@ -4624,7 +4675,7 @@ async function finiquitoForm(p, f, periodos) {
   preview(m.el);
 }
 async function pagoForm(p, x) {
-  const edit = is('nomina', 'developer') && p.estado === 'borrador';
+  const edit = can('nomina.opera') && p.estado === 'borrador';
   const fs = [{ k: 'concepto', label: 'Concepto', req: true, full: true, val: x ? x.concepto : '', hint: 'Ej. Diferencia de la quincena anterior, comisión de agosto, reembolso' },
     { k: 'monto', label: 'Monto (MXN)', type: 'number', req: true, val: x ? x.monto : '' },
     { k: 'clabe', label: 'CLABE', val: x ? x.clabe || '' : '', hint: x ? '' : 'Vacía = la de su ficha' }, { k: 'banco', label: 'Banco', upper: true, val: x ? x.banco || '' : '' },
@@ -4666,7 +4717,7 @@ async function autorizarPeriodo(p, lineas, al, fins = [], pagos = []) {
 }
 
 async function lineaForm(p, l) {
-  const edit = is('nomina', 'developer') && p.estado === 'borrador';
+  const edit = can('nomina.opera') && p.estado === 'borrador';
   const att = l.employee_id ? await db('attendance').select('fecha,turno,status,incidencia,comentario').eq('employee_id', l.employee_id).gte('fecha', p.fecha_inicio).lte('fecha', p.fecha_fin).order('fecha').get().catch(() => []) : [];
   const aj = new Set(l.ajustados || []);
   const tag = (k) => aj.has(k) ? ` <span class="badge b-acc">ajustado</span>${edit ? ` <button type="button" class="btn sm ghost" data-rest="${k}" style="min-height:24px;padding:0 6px">restaurar</button>` : ''}` : ' <span class="small muted">(automático)</span>';
