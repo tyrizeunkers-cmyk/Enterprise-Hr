@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.20.0';
+const APP_VERSION = '0.21.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -3816,7 +3816,7 @@ function quincenaMover(ini, n) {
   const yy = Math.floor(k / 24); k -= yy * 24; const mm = Math.floor(k / 2) + 1; const half = k % 2;
   return quincenaDe(`${yy}-${String(mm).padStart(2, '0')}-${half ? '16' : '01'}`).ini;
 }
-const prnTabs = (on) => `<div class="ex-tabs" role="tablist" style="margin-bottom:14px">${[['guia', 'Quincena'], ['dia', 'Calendario'], ['periodos', 'Tabla completa']].map(([k, l]) => `<button type="button" role="tab" data-ptab="${k}" class="${on === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+const prnTabs = (on) => `<div class="ex-tabs" role="tablist" style="margin-bottom:14px">${[['guia', 'Quincena'], ['dia', 'Acumulado'], ['periodos', 'Tabla completa']].map(([k, l]) => `<button type="button" role="tab" data-ptab="${k}" class="${on === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
 function bindPrnTabs() { $$('[data-ptab]').forEach((b) => b.onclick = () => { NS.tab = b.dataset.ptab; viewPrenomina(); }); }
 async function viewPrenomina() {
   clearInterval(AD.timer);
@@ -3980,122 +3980,298 @@ async function nominaAutoCheck() {
 }
 
 // ───── Pre-nómina guiada: una quincena, pasos claros y una sola acción principal por paso ─────
+// Día de pago = día de corte (15, o 30 / último día del mes)
+const diaPago = (fin) => fin.slice(8) === '31' ? addDays(fin, -1) : fin;
+const enDias = (d, hoy) => { const n = Math.round((Date.parse(d) - Date.parse(hoy)) / 86400000); return n === 0 ? 'hoy' : n === 1 ? 'mañana' : n === -1 ? 'ayer' : n > 0 ? `en ${n} días` : `hace ${-n} días`; };
+const variacion = (l, prevMap) => {
+  const pv = prevMap.get(l.employee_id); if (pv == null) return null;
+  const d = r2(num(l.neto) - pv); return Math.abs(d) >= Math.max(200, Math.abs(pv) * 0.2) ? d : null;
+};
+
 async function viewPrenominaGuia() {
   const v = $('#view'); NOM_PERSONAS = null;
   const ed = is('nomina', 'developer');
   await nominaAutoCheck();
   const periodos = await db('nomina_periodos').order('fecha_inicio', false).get();
-  const q = quincenaDe(todayMX());
+  const q = quincenaDe(todayMX()), hoy = todayMX();
   const actual = periodos.find((x) => x.fecha_inicio === q.ini);
-  if (NS.periodo && !periodos.some((x) => x.id === NS.periodo)) NS.periodo = null;
-  if (!NS.periodo && NS.periodo !== 'actual') NS.periodo = actual ? actual.id : 'actual';
-  const p = periodos.find((x) => x.id === NS.periodo);
-  const opciones = [...(actual ? [] : [['actual', periodoTitulo({ fecha_inicio: q.ini, fecha_fin: q.fin }) + ' · en curso']]), ...periodos.map((x) => [x.id, periodoTitulo(x) + (x.estado === 'autorizado' ? ' ✓' : '')])];
-  const head = `<div class="pagehead"><div><h1>Pre-nómina</h1><div class="muted small">Sigue los pasos de arriba a abajo. Todo lo del pase de lista se llena solo.</div></div>
-      <select class="inp" id="pg_sel" aria-label="Quincena" style="max-width:300px">${opciones.map(([id, t]) => `<option value="${id}"${id === NS.periodo ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select></div>`;
-  const bindSel = () => { $('#pg_sel').onchange = (e) => { NS.periodo = e.target.value; NS.pf = ''; viewPrenomina(); }; bindPrnTabs(); };
-
-  // Quincena en curso todavía sin pre-nómina: cuánto va y cuándo se crea
-  if (!p) {
-    const all = await rpc('nomina_al_dia_real', { p_ini: q.ini, p_fin: q.fin }).catch(() => []);
-    const c = calcAlDia(all, q.ini, q.fin);
-    const corte = q.fin.slice(8) === '31' ? addDays(q.fin, -1) : q.fin;
-    v.innerHTML = prnTabs('guia') + head + `
-      <div class="card pad pg-hero"><div class="eyebrow">Quincena en curso · ${esc(periodoTitulo({ fecha_inicio: q.ini, fecha_fin: q.fin }))}</div>
-        <div class="pg-big">${money(c.acumulado)}</div><div class="small muted">acumulado real a hoy · proyección al cierre ${money(c.proyeccion)}</div>
-        <div class="row" style="gap:14px;margin-top:10px;flex-wrap:wrap"><span class="badge b-bad">${c.faltas} falta${c.faltas === 1 ? '' : 's'}</span><span class="badge b-warn">${c.sinLista} sin pase de lista · ${money(c.pendiente)}</span><span class="badge b-mut">${all.length} personas</span></div></div>
-      <div class="card pad" style="margin-top:12px"><div class="pg-t">La pre-nómina se crea sola el ${fmtDate(corte)} a las 12:00</div>
-        <div class="small muted" style="margin-top:4px">A esa hora se toma el pase de lista y se calcula a todos. Lo que se registre después pasa a la siguiente quincena con su comentario.</div>
-        <div class="row" style="gap:6px;margin-top:10px"><button class="btn" id="pg_cal">Ver calendario de la quincena</button>${ed ? '<button class="btn primary" id="pg_now">Crearla ahora</button>' : ''}</div></div>`;
-    bindSel();
-    $('#pg_cal').onclick = () => { NS.tab = 'dia'; viewPrenomina(); };
-    const b = $('#pg_now'); if (b) b.onclick = async () => {
-      b.disabled = true;
-      try {
-        const [n] = await db('nomina_periodos').insert([{ fecha_inicio: q.ini, fecha_fin: q.fin, dias: 15, festivos: festivosEn(q.ini, q.fin).map(([d]) => d) }]);
-        const [r] = await rpc('nomina_generar', { p_periodo: n.id }); NS.periodo = n.id;
-        toast(`Pre-nómina creada · ${r.lineas} personas`); viewPrenomina();
-      } catch (e) { toast(e.message, true); b.disabled = false; }
-    };
-    return;
+  if (NS.periodo && NS.periodo !== 'actual' && !periodos.some((x) => x.id === NS.periodo)) NS.periodo = null;
+  if (!NS.periodo) NS.periodo = actual ? actual.id : 'actual';
+  const p = periodos.find((x) => x.id === NS.periodo) || null;
+  const ini = p ? p.fecha_inicio : q.ini, fin = p ? p.fecha_fin : q.fin;
+  const prev = p ? periodos.find((x) => x.fecha_fin === addDays(ini, -1)) : null;
+  const [rows, att, lineas, fins, pagos, prevL] = await Promise.all([
+    rpc('nomina_al_dia_real', { p_ini: ini, p_fin: fin }).catch(() => []),
+    db('attendance').select('employee_id,fecha,turno,status,incidencia,comentario').gte('fecha', ini).lte('fecha', fin).order('fecha').getAll().catch(() => []),
+    p ? db('nomina_lineas').eq('periodo_id', p.id).order('nombre').getAll() : Promise.resolve([]),
+    p ? db('nomina_finiquitos').eq('periodo_id', p.id).order('nombre').getAll() : Promise.resolve([]),
+    p ? db('nomina_pagos').eq('periodo_id', p.id).order('nombre').getAll() : Promise.resolve([]),
+    prev ? db('nomina_lineas').select('employee_id,neto').eq('periodo_id', prev.id).getAll() : Promise.resolve([])]);
+  const c = calcAlDia(rows, ini, fin);
+  const nombreDe = new Map(rows.map((r) => [r.employee_id, r.nombre]));
+  lineas.forEach((l) => { if (!nombreDe.has(l.employee_id)) nombreDe.set(l.employee_id, l.nombre); });
+  // Detalle por día: retardos, permisos, vacaciones y otras incidencias del pase de lista
+  const det = new Map(c.dias.map((d) => [d, { retardos: [], permisos: [], vacaciones: [], otras: [] }]));
+  const vistos = new Set();
+  for (const a of att) {
+    const x = det.get(a.fecha); if (!x) continue; const n = nombreDe.get(a.employee_id); if (!n) continue;
+    const key = (t) => { const k = `${a.fecha}|${a.employee_id}|${t}`; if (vistos.has(k)) return false; vistos.add(k); return true; };
+    if (a.turno === 'manana' && a.status === 'retardo' && key('r')) x.retardos.push(n);
+    if (a.incidencia === 'permiso' && key('p')) x.permisos.push(n + (a.comentario ? ` · ${a.comentario}` : ''));
+    else if (a.incidencia === 'vacaciones' && key('v')) x.vacaciones.push(n);
+    else if (a.incidencia && a.incidencia !== 'permiso' && a.incidencia !== 'vacaciones' && key('o')) x.otras.push(`${n} · ${a.incidencia}${a.comentario ? ': ' + a.comentario : ''}`);
   }
-
-  const prev = periodos.find((x) => x.fecha_fin === addDays(p.fecha_inicio, -1));
-  const [lineas, fins, pagos, prevL] = await Promise.all([
-    db('nomina_lineas').eq('periodo_id', p.id).order('nombre').getAll(),
-    db('nomina_finiquitos').eq('periodo_id', p.id).order('nombre').getAll(),
-    db('nomina_pagos').eq('periodo_id', p.id).order('nombre').getAll(),
-    prev ? db('nomina_lineas').select('neto').eq('periodo_id', prev.id).getAll() : Promise.resolve([])]);
-  const borr = p.estado === 'borrador', edit = ed && borr;
-  const cortada = p.corte_at && new Date(p.corte_at) <= new Date();
+  const borr = !p || p.estado === 'borrador', edit = ed && !!p && p.estado === 'borrador';
+  const cortada = p && p.corte_at && new Date(p.corte_at) <= new Date();
+  const pago = diaPago(fin);
   const al = new Map(lineas.map((l) => [l.id, lineaAlertas(l)]));
   const sum = (xs, k) => r2(xs.reduce((s, x) => s + num(typeof k === 'function' ? k(x) : x[k]), 0));
   const neto = sum(lineas, 'neto'), totFin = sum(fins, 'total'), totPag = sum(pagos, 'monto'), total = r2(neto + totFin + totPag);
+  const prevMap = new Map(prevL.map((x) => [x.employee_id, num(x.neto)]));
   const prevNeto = sum(prevL, 'neto');
-  const faltas = sum(lineas, 'faltas'), sl = sum(lineas, 'sin_lista'), slM = sum(lineas, 'sin_lista_monto');
-  const conAjuste = lineas.filter((l) => num(l.ajuste_anterior));
   const malos = lineas.filter((l) => al.get(l.id).some((x) => x[0] === 'bad'));
-  const terceros = lineas.filter((l) => al.get(l.id).some((x) => x[1] === 'tercero'));
-  const extras = sum(lineas, (l) => NOM_PERC.reduce((s2, [k]) => s2 + num(l[k]), 0));
-  const deducc = sum(lineas, (l) => NOM_DED.reduce((s2, [k]) => s2 + num(l[k]), 0));
   const finBad = fins.filter((f) => finiquitoAlertas(f).some((x) => x[0] === 'bad'));
-  const estado = !borr ? `<span class="badge b-ok">Autorizada · ${esc(profName(p.autorizado_by))} ${fmtDateTime(p.autorizado_at)}</span>`
+  const cambios = lineas.filter((l) => variacion(l, prevMap) != null);
+  const extras = sum(lineas, (l) => NOM_PERC.reduce((s2, [k]) => s2 + num(l[k]), 0));
+  const bajasQ = rows.filter((r) => r.fecha_baja && r.fecha_baja >= ini && r.fecha_baja <= fin);
+
+  // Recordatorios
+  const recs = [];
+  if (!p) recs.push(['info', `<b>Corte y pago: ${dayLabel(pago)}</b> (${enDias(pago, hoy)}) a las 12:00. La pre-nómina se crea sola a esa hora.`]);
+  else if (!borr) recs.push(['ok', `<b>Autorizada</b> · pago ${dayLabel(pago)} (${enDias(pago, hoy)}). ${pago >= hoy ? 'Descarga la dispersión para pagar.' : ''}`]);
+  else if (cortada) recs.push([pago < hoy ? 'bad' : 'warn', `<b>Ya pasó el corte.</b> Pago ${dayLabel(pago)} (${enDias(pago, hoy)}): revisa y autoriza.`]);
+  else recs.push(['info', `<b>Corte y pago: ${dayLabel(pago)}</b> (${enDias(pago, hoy)}) a las 12:00. Hasta entonces todo se sigue actualizando solo.`]);
+  if (hoy >= ini && hoy <= fin && borr) {
+    const activosHoy = rows.filter((r) => (!r.fecha_ingreso || r.fecha_ingreso <= hoy) && (!r.fecha_baja || r.fecha_baja >= hoy));
+    const porGrupo = new Map(); activosHoy.forEach((r) => { const g = r.group_id || ''; const o = porGrupo.get(g) || { n: 0, reg: 0 }; o.n++; if ((r.registrados || []).includes(hoy)) o.reg++; porGrupo.set(g, o); });
+    const sinLista = [...porGrupo].filter(([g, o]) => g && !o.reg).map(([g]) => (S.groups.find((x) => x.id === g) || {}).name || 'Grupo');
+    if (sinLista.length && !c.porDia.find((x) => x.d === hoy)?.descanso) recs.push(['warn', `<b>Hoy aún no pasan lista ${sinLista.length} grupo${sinLista.length === 1 ? '' : 's'}:</b> ${esc(sinLista.slice(0, 6).join(', '))}${sinLista.length > 6 ? '…' : ''}`]);
+  }
+  if (c.sinLista) recs.push(['warn', `<b>${c.sinLista} día${c.sinLista === 1 ? '' : 's'}-persona sin pase de lista</b> (${money(c.pendiente)}): no se pagan si no se registran antes del corte.`]);
+  if (malos.length) recs.push(['bad', `<b>${malos.length} persona${malos.length === 1 ? '' : 's'}</b> sin salario, sin CLABE o con neto en cero. <button type="button" class="btn sm" data-pf="pago">Ver</button>`]);
+  if (bajasQ.length) recs.push(['info', `<b>${bajasQ.length} baja${bajasQ.length === 1 ? '' : 's'} en la quincena:</b> se les pagan los días trabajados y su finiquito.${finBad.length ? ` <b style="color:var(--bad)">${finBad.length} finiquito${finBad.length === 1 ? '' : 's'} por revisar.</b>` : ''} <button type="button" class="btn sm" id="pg_bajas2">Ver</button>`]);
+  if (cambios.length) recs.push(['info', `<b>${cambios.length} persona${cambios.length === 1 ? '' : 's'}</b> cobra${cambios.length === 1 ? '' : 'n'} muy distinto a la quincena anterior. <button type="button" class="btn sm" data-pf="variacion">Ver</button>`]);
+  const nb = { ok: 'n-ok', info: 'n-info', warn: 'n-warn', bad: 'n-bad' };
+
+  const opciones = [...(actual ? [] : [['actual', periodoTitulo({ fecha_inicio: q.ini, fecha_fin: q.fin }) + ' · en curso']]), ...periodos.map((x) => [x.id, periodoTitulo(x) + (x.estado === 'autorizado' ? ' ✓' : '')])];
+  const estado = !p ? '<span class="badge b-warn">En curso · aún sin pre-nómina</span>' : !borr ? `<span class="badge b-ok">Autorizada · ${esc(profName(p.autorizado_by))} ${fmtDateTime(p.autorizado_at)}</span>`
     : cortada ? '<span class="badge b-acc">Cortada · lista para revisar</span>' : `<span class="badge b-warn">En curso · corte ${fmtDateTime(p.corte_at)}</span>`;
-  const step = (n, ok, title, status, actions) => `<div class="card pad pg-step${ok ? ' ok' : ''}"><div class="pg-num">${ok ? '✓' : n}</div>
-    <div class="grow" style="min-width:0"><div class="pg-t">${title}</div><div class="small${ok ? ' muted' : ''}">${status}</div>${actions ? `<div class="row" style="gap:6px;margin-top:8px">${actions}</div>` : ''}</div></div>`;
-  const pasos = !ed ? '' : !borr ? `<div class="card pad" style="margin-top:12px"><div class="pg-t">Quincena autorizada</div><div class="small muted">Ya no se modifica. Si hace falta corregir algo, reábrela con un motivo.</div>
-      <div class="row" style="gap:6px;margin-top:8px">${can('prenomina.excel') ? '<button class="btn primary" id="pg_xls">Descargar Excel</button>' : ''}<button class="btn" id="pg_open">Reabrir</button></div></div>` : `
-    <div class="pg-steps">
-      ${step(1, !sl, 'Pase de lista', `${faltas} falta${faltas === 1 ? '' : 's'} · ${sl ? `<b style="color:var(--warn)">${sl} día${sl === 1 ? '' : 's'} sin pase de lista (−${money(slM)})</b>` : 'todos los días tienen pase de lista'}${conAjuste.length ? ` · ${conAjuste.length} con ajuste de la quincena anterior` : ''}`,
-        `<button class="btn sm" id="pg_cal">Ver calendario</button>${sl ? '<button class="btn sm" data-pf="lista">Ver quién (' + lineas.filter((l) => num(l.sin_lista)).length + ')</button>' : ''}<button class="btn sm" id="pg_calc">Volver a calcular</button>`)}
-      ${step(2, !malos.length, 'Datos de pago', malos.length ? `<b style="color:var(--bad)">${malos.length} persona${malos.length === 1 ? '' : 's'} sin salario, sin CLABE o con neto en cero</b>${terceros.length ? ` · ${terceros.length} cuenta${terceros.length === 1 ? '' : 's'} de tercero` : ''}` : `Todos tienen salario y cuenta${terceros.length ? ` · ${terceros.length} cuenta${terceros.length === 1 ? '' : 's'} de tercero por confirmar` : ''}`,
-        malos.length || terceros.length ? `<button class="btn sm${malos.length ? ' primary' : ''}" data-pf="pago">Corregir (${malos.length + terceros.length})</button>` : '')}
-      ${step(3, true, 'Comisiones y extras <span class="small muted" style="font-weight:400">(opcional)</span>', `Capturado: ${money(extras)} en percepciones${deducc ? ` · ${money(deducc)} en deducciones` : ''}`,
-        '<button class="btn sm primary" id="pg_paste">Pegar comisiones desde Excel</button><button class="btn sm" id="pg_one">Capturar a una persona</button>')}
-      ${step(4, !finBad.length, 'Finiquitos y pagos pendientes', `${fins.length} finiquito${fins.length === 1 ? '' : 's'} (${money(totFin)}) · ${pagos.length} pago${pagos.length === 1 ? '' : 's'} pendiente${pagos.length === 1 ? '' : 's'} (${money(totPag)})${finBad.length ? ` · <b style="color:var(--bad)">${finBad.length} por revisar</b>` : ''}`,
-        '<button class="btn sm" id="pg_fin">Ver finiquitos</button><button class="btn sm" id="pg_pag">Pagos pendientes</button>')}
-      ${step(5, false, 'Revisar y autorizar', malos.length || sl ? `Antes de autorizar revisa ${[malos.length ? 'los datos de pago (paso 2)' : '', sl ? 'los días sin pase de lista (paso 1)' : ''].filter(Boolean).join(' y ')}.` : 'Todo listo. Descarga el Excel si lo necesitas y autoriza.',
-        `${can('prenomina.excel') ? '<button class="btn sm" id="pg_xls">Descargar Excel</button>' : ''}<button class="btn sm primary" id="pg_auth">Autorizar quincena</button>`)}
-    </div>`;
-  const PF = { '': 'Todos', atencion: 'Con algo que revisar', pago: 'Datos de pago', lista: 'Faltas o sin lista', ajuste: 'Ajuste anterior' };
+  const DOW = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+  const pad = (new Date(ini + 'T12:00:00Z').getUTCDay() + 6) % 7;
+  const tg = (n, t, col, title) => n ? `<span class="ad-f" style="background:${col}" title="${title}">${n}${t}</span>` : '';
+  const cal = `<div class="ad-cal">${DOW.map((d) => `<div class="ex-dow">${d}</div>`).join('')}${'<div></div>'.repeat(pad)}
+    ${c.porDia.map((x) => { const dd = det.get(x.d); return `<button type="button" class="ad-day${x.real ? '' : ' fut'}${x.d === c.hoy ? ' hoy' : ''}${x.d === pago ? ' pago' : ''}" data-day="${x.d}">
+      <span class="row" style="justify-content:space-between;flex-wrap:nowrap"><b>${Number(x.d.slice(8))}</b>${x.d === pago ? '<span class="pg-pago">PAGO</span>' : c.fest.has(x.d) ? '<span title="Día festivo">★</span>' : x.descanso && x.real ? '<span class="small muted">desc.</span>' : ''}</span>
+      <span class="pg-tags">${tg(x.faltas.length, 'F', 'var(--bad)', 'Faltas')}${tg(dd.retardos.length, 'R', '#b7791f', 'Retardos')}${tg(dd.permisos.length, 'P', 'var(--accent)', 'Permisos')}${tg(dd.vacaciones.length, 'V', '#2f855a', 'Vacaciones')}${tg(x.sinLista.length, 'SL', 'var(--warn)', 'Sin pase de lista')}${tg(x.bajas.length, 'B', '#6b46c1', 'Bajas')}</span>
+      <span class="ad-a" title="Acumulado: ${esc(money(x.acum))}">Σ ${kMoney(x.acum)}</span></button>`; }).join('')}</div>
+    <div class="small muted" style="margin-top:8px">F falta · R retardo · P permiso · V vacaciones · SL sin pase de lista · B baja · Σ acumulado real. Toca un día para ver quién.</div>`;
+
+  const PF = { '': 'Todos', atencion: 'Con algo que revisar', pago: 'Datos de pago', lista: 'Faltas o sin lista', bonos: 'Con bonos', variacion: 'Cambió vs anterior', bajas: 'Bajas', ajuste: 'Ajuste anterior' };
   const pf = PF[NS.pf] ? NS.pf || '' : '';
   const match = (l) => { const xs = al.get(l.id);
     return pf === '' ? true : pf === 'atencion' ? xs.some((x) => x[0] !== 'info') : pf === 'pago' ? xs.some((x) => x[0] === 'bad' || x[1] === 'tercero')
-      : pf === 'lista' ? num(l.faltas) || num(l.sin_lista) : num(l.ajuste_anterior); };
+      : pf === 'lista' ? num(l.faltas) || num(l.sin_lista) : pf === 'bonos' ? NOM_PERC.some(([k]) => num(l[k])) : pf === 'variacion' ? variacion(l, prevMap) != null
+      : pf === 'bajas' ? !!l.fecha_baja : num(l.ajuste_anterior); };
   const qq = norm(NS.q);
-  const rows = lineas.filter((l) => match(l) && (!qq || norm(`${l.nombre} ${l.num_empleado || ''} ${l.departamento || ''}`).includes(qq)));
-  v.innerHTML = prnTabs('guia') + head + `
-    <div class="card pad pg-hero"><div class="row" style="gap:8px;align-items:center">${estado}<span class="small muted grow">${esc(periodoTitulo(p))} · ${lineas.length} personas</span></div>
-      <div class="eyebrow" style="margin-top:10px">Total a dispersar</div><div class="pg-big">${money(total)}</div>
-      <div class="small muted">Nómina ${money(neto)}${fins.length ? ` + finiquitos ${money(totFin)}` : ''}${pagos.length ? ` + pagos ${money(totPag)}` : ''}${prev ? ` · vs quincena anterior ${neto - prevNeto >= 0 ? '+' : '−'}${money(Math.abs(r2(neto - prevNeto)))} (${prevL.length} → ${lineas.length} personas)` : ''}</div></div>
-    ${pasos}
-    <div class="card pad" style="margin-top:12px">
-      <div class="row" style="gap:8px;margin-bottom:8px"><b class="grow">Personas</b>${edit ? '<button class="btn sm" id="pg_add">+ Agregar persona</button>' : ''}</div>
+  const rowsL = lineas.filter((l) => match(l) && (!qq || norm(`${l.nombre} ${l.num_empleado || ''} ${l.departamento || ''}`).includes(qq)));
+  const personas = !p ? '' : `<div class="card pad" style="margin-top:12px">
+      <div class="row" style="gap:8px;margin-bottom:8px"><b class="grow">Personas (${lineas.length})</b>${edit ? '<button class="btn sm" id="pg_add">+ Agregar persona</button>' : ''}</div>
       <div class="row" style="gap:6px;margin-bottom:8px;flex-wrap:wrap">${Object.entries(PF).map(([k, t]) => `<button type="button" class="btn sm${pf === k ? ' primary' : ''}" data-pf="${k}">${t}</button>`).join('')}</div>
       <input class="inp" id="pg_q" type="search" style="width:100%" placeholder="Buscar por nombre, número o puesto" value="${esc(NS.q)}" aria-label="Buscar persona">
-      <div class="list" id="pg_list" style="margin-top:8px">${rows.slice(0, 400).map((l) => { const xs = al.get(l.id).filter((x) => x[0] !== 'info');
-        const det = [`${l.dias_pagados} días`, num(l.faltas) ? `${l.faltas} falta${num(l.faltas) === 1 ? '' : 's'}` : '', num(l.sin_lista) ? `${l.sin_lista} sin lista` : '', num(l.ajuste_anterior) ? `ajuste ${num(l.ajuste_anterior) > 0 ? '+' : '−'}${money(Math.abs(num(l.ajuste_anterior)))}` : ''].filter(Boolean).join(' · ');
-        return `<button type="button" class="item pg-row" data-pl="${l.id}"><span class="grow" style="min-width:0"><span class="nm">${esc(l.nombre)}</span><br><span class="small muted">${esc(l.departamento || '')} · ${det}</span>${xs.length ? `<br>${xs.map(([n, , t]) => `<span class="badge ${nivelBadge[n]}" style="margin:2px 2px 0 0">${esc(t)}</span>`).join('')}` : ''}</span><b class="mono" style="white-space:nowrap">${money(l.neto)}</b></button>`; }).join('') || '<div class="empty small">Nadie coincide.</div>'}</div>
+      <div class="list" id="pg_list" style="margin-top:8px">${rowsL.slice(0, 400).map((l) => { const xs = al.get(l.id).filter((x) => x[0] !== 'info'); const vr = variacion(l, prevMap);
+        const det2 = [`${l.dias_pagados} días`, num(l.faltas) ? `${l.faltas} falta${num(l.faltas) === 1 ? '' : 's'}` : '', num(l.sin_lista) ? `${l.sin_lista} sin lista` : '', l.fecha_baja ? `baja ${fmtDate(l.fecha_baja)}` : '', num(l.ajuste_anterior) ? `ajuste ${num(l.ajuste_anterior) > 0 ? '+' : '−'}${money(Math.abs(num(l.ajuste_anterior)))}` : ''].filter(Boolean).join(' · ');
+        const bon = NOM_PERC.filter(([k]) => num(l[k])).map(([k, t]) => `${t} ${money(l[k])}`).join(' · ');
+        return `<button type="button" class="item pg-row" data-pl="${l.id}"><span class="grow" style="min-width:0"><span class="nm">${esc(l.nombre)}</span><br><span class="small muted">${esc(l.departamento || '')} · ${det2}</span>${bon ? `<br><span class="small" style="color:var(--ok)">${esc(bon)}</span>` : ''}${xs.length ? `<br>${xs.map(([n, , t]) => `<span class="badge ${nivelBadge[n]}" style="margin:2px 2px 0 0">${esc(t)}</span>`).join('')}` : ''}</span>
+          <span style="text-align:right;white-space:nowrap"><b class="mono">${money(l.neto)}</b>${vr != null ? `<br><span class="small" style="color:${vr > 0 ? 'var(--ok)' : 'var(--bad)'}" title="Contra la quincena anterior">${vr > 0 ? '▲ +' : '▼ −'}${money(Math.abs(vr))}</span>` : ''}</span></button>`; }).join('') || '<div class="empty small">Nadie coincide.</div>'}</div>
     </div>`;
-  bindSel();
+
+  v.innerHTML = prnTabs('guia') + `<div class="pagehead"><div><h1>Nómina de la quincena</h1><div class="muted small">Calendario, recordatorios, bonos y descargas en un solo lugar.</div></div>
+      <select class="inp" id="pg_sel" aria-label="Quincena" style="max-width:300px">${opciones.map(([id, t]) => `<option value="${id}"${id === NS.periodo ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select></div>
+    <div class="card pad pg-hero"><div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">${estado}<span class="small muted grow">${esc(periodoTitulo(p || { fecha_inicio: ini, fecha_fin: fin }))} · ${p ? lineas.length : rows.length} personas</span></div>
+      ${p ? `<div class="eyebrow" style="margin-top:10px">Total a dispersar</div><div class="pg-big">${money(total)}</div>
+        <div class="small muted">Nómina ${money(neto)}${fins.length ? ` + finiquitos ${money(totFin)}` : ''}${pagos.length ? ` + pagos ${money(totPag)}` : ''}${extras ? ` · incluye ${money(extras)} en bonos y comisiones` : ''}${prev ? ` · vs quincena anterior ${neto - prevNeto >= 0 ? '+' : '−'}${money(Math.abs(r2(neto - prevNeto)))} (${prevL.length} → ${lineas.length} personas)` : ''}</div>`
+      : `<div class="eyebrow" style="margin-top:10px">Acumulado real a hoy</div><div class="pg-big">${money(c.acumulado)}</div><div class="small muted">proyección al cierre ${money(c.proyeccion)} · ${c.faltas} falta${c.faltas === 1 ? '' : 's'}</div>`}
+      <div class="row pg-acts" style="gap:6px;margin-top:12px;flex-wrap:wrap">
+        ${ed && borr ? '<button class="btn primary" id="pg_bonos">Bonos y comisiones</button>' : ''}
+        <button class="btn" id="pg_bajas">Bajas y finiquitos${bajasQ.length || fins.length ? ` (${Math.max(bajasQ.length, fins.length)})` : ''}</button>
+        <button class="btn" id="pg_desc">Descargas</button>
+        ${edit ? '<button class="btn" id="pg_calc">Volver a calcular</button><button class="btn primary" id="pg_auth">Autorizar quincena</button>' : ''}
+        ${ed && p && !borr ? '<button class="btn" id="pg_open">Reabrir</button>' : ''}
+        ${ed && !p ? '<button class="btn" id="pg_now">Crear la pre-nómina ahora</button>' : ''}
+      </div></div>
+    <div class="pg-recs">${recs.map(([n, t]) => `<div class="notice ${nb[n]}">${t}</div>`).join('')}</div>
+    <div class="card pad" style="margin-top:12px"><div class="row" style="margin-bottom:8px"><b class="grow">Calendario de la quincena</b><span class="small muted">${c.porDia.filter((x) => x.real).length} de ${c.dias.length} días</span></div>${cal}</div>
+    ${personas}`;
+
+  bindPrnTabs();
+  $('#pg_sel').onchange = (e) => { NS.periodo = e.target.value; NS.pf = ''; viewPrenomina(); };
+  $$('[data-day]').forEach((b) => b.onclick = () => detalleDiaNomina(c, c.porDia.find((x) => x.d === b.dataset.day), det.get(b.dataset.day), pago));
   $$('[data-pf]').forEach((b) => b.onclick = () => { NS.pf = b.dataset.pf; viewPrenomina().then(() => { const x = $('#pg_list'); if (x) x.scrollIntoView({ block: 'start', behavior: 'smooth' }); }); });
-  $('#pg_q').oninput = (e) => { NS.q = e.target.value; clearTimeout(viewPrenominaGuia._t); viewPrenominaGuia._t = setTimeout(() => viewPrenomina().then(() => { const i = $('#pg_q'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }), 300); };
+  const qi = $('#pg_q'); if (qi) qi.oninput = (e) => { NS.q = e.target.value; clearTimeout(viewPrenominaGuia._t); viewPrenominaGuia._t = setTimeout(() => viewPrenomina().then(() => { const i = $('#pg_q'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }), 300); };
   $$('[data-pl]').forEach((b) => b.onclick = () => lineaForm(p, lineas.find((l) => l.id === b.dataset.pl)));
   const on = (id, fn) => { const b = $(id); if (b) b.onclick = fn; };
-  on('#pg_cal', () => { NS.tab = 'dia'; AD.ini = p.fecha_inicio; viewPrenomina(); });
-  on('#pg_calc', async (ev) => { const b = ev.currentTarget; b.disabled = true; try { const [r] = await rpc('nomina_generar', { p_periodo: p.id }); toast(`Calculada de nuevo · ${r.lineas} personas`); viewPrenomina(); } catch (e) { toast(e.message, true); b.disabled = false; } });
-  on('#pg_paste', () => pegarCapturas(p, lineas));
-  on('#pg_one', () => { const i = $('#pg_q'); i.scrollIntoView({ block: 'center' }); i.focus(); toast('Busca a la persona y tócala para capturar'); });
+  const crear = async () => {
+    const [n] = await db('nomina_periodos').insert([{ fecha_inicio: q.ini, fecha_fin: q.fin, dias: 15, festivos: festivosEn(q.ini, q.fin).map(([d]) => d) }]);
+    const [r] = await rpc('nomina_generar', { p_periodo: n.id }); NS.periodo = n.id; toast(`Pre-nómina creada · ${r.lineas} personas`); return n;
+  };
+  on('#pg_now', async (ev) => { const b = ev.currentTarget; b.disabled = true; try { await crear(); viewPrenomina(); } catch (e) { toast(e.message, true); b.disabled = false; } });
+  on('#pg_bonos', async () => {
+    if (p) return bonosPanel(p, lineas);
+    if (!(await confirmBox('Bonos de la quincena', '<p style="margin-top:0">Para capturar bonos se crea ya la pre-nómina de la quincena en curso.</p><p class="small muted">Se sigue actualizando sola con el pase de lista hasta el corte.</p>', { okLabel: 'Crear y capturar' }))) return;
+    try { await crear(); await viewPrenomina(); const per = (await db('nomina_periodos').eq('id', NS.periodo).get())[0]; bonosPanel(per, await db('nomina_lineas').eq('periodo_id', per.id).order('nombre').getAll()); } catch (e) { toast(e.message, true); }
+  });
+  const verBajas = () => bajasPanel(p, rows.filter((r) => r.fecha_baja && r.fecha_baja >= ini && r.fecha_baja <= fin), lineas, fins, periodos);
+  on('#pg_bajas', verBajas); on('#pg_bajas2', verBajas);
+  on('#pg_desc', () => descargasPanel(p, { ini, fin, rows, att, c, det, lineas, fins, pagos }));
   on('#pg_add', () => agregarPersona(p, lineas));
-  on('#pg_fin', () => { NS.tab = 'periodos'; NS.sec = 'fin'; viewPrenomina(); });
-  on('#pg_pag', () => { NS.tab = 'periodos'; NS.sec = 'pagos'; viewPrenomina(); });
-  on('#pg_xls', async (ev) => { const b = ev.currentTarget; b.disabled = true; try { await exportPrenomina(p, lineas, fins, pagos); } catch (e) { toast(e.message, true); } finally { b.disabled = false; } });
+  on('#pg_calc', async (ev) => { const b = ev.currentTarget; b.disabled = true; try { const [r] = await rpc('nomina_generar', { p_periodo: p.id }); toast(`Calculada de nuevo · ${r.lineas} personas`); viewPrenomina(); } catch (e) { toast(e.message, true); b.disabled = false; } });
   on('#pg_auth', async () => {
+    const sl = sum(lineas, 'sin_lista'), slM = sum(lineas, 'sin_lista_monto');
     if (sl && !(await confirmBox('Días sin pase de lista', `<p style="margin-top:0">Hay <b>${sl} día${sl === 1 ? '' : 's'}</b> sin pase de lista que <b>no se van a pagar</b> (−${money(slM)}).</p><p class="small muted">Si alguien sí vino, pide que registren su asistencia y vuelve a calcular, o corrige a la persona tocándola en la lista.</p>`, { okLabel: 'Entendido, continuar' }))) return;
     autorizarPeriodo(p, lineas, al, fins, pagos);
   });
   on('#pg_open', () => modal({ title: 'Reabrir pre-nómina', body: fieldsHtml([{ k: 'motivo', label: 'Motivo', type: 'textarea', req: true, full: true }]),
     actions: [{ label: 'Cancelar' }, { label: 'Reabrir', cls: 'primary', run: async ({ el }) => { const { motivo } = readFields(el, [{ k: 'motivo', label: 'Motivo', req: true }]); await rpc('nomina_reabrir', { p_periodo: p.id, p_motivo: motivo }); toast('Pre-nómina reabierta'); viewPrenomina(); } }] }));
+}
+
+function detalleDiaNomina(c, x, dd, pago) {
+  const lista = (t, xs, col) => xs.length ? `<div class="eyebrow" style="margin:12px 0 6px;${col ? 'color:' + col : ''}">${t} (${xs.length})</div><div class="list">${xs.map((n) => `<div class="item small">${esc(n)}</div>`).join('')}</div>` : '';
+  const nada = !x.faltas.length && !dd.retardos.length && !dd.permisos.length && !dd.vacaciones.length && !dd.otras.length && !x.sinLista.length;
+  modal({ title: `${dayLabel(x.d)}${c.fest.has(x.d) ? ' · ' + festivoNombre(x.d) : ''}`, body: `
+    ${x.d === pago ? '<div class="notice n-ok" style="margin-bottom:10px"><b>Día de pago de la quincena</b> (corte a las 12:00).</div>' : ''}
+    <div class="kv"><span>Estado</span><span>${x.real ? (x.d === c.hoy ? 'Hoy' : 'Día transcurrido') : 'Por venir'}</span><span>Personas activas</span><span>${x.activos}</span>
+      <span>Generado ese día</span><span class="mono">${money(x.monto)}</span><span>Acumulado</span><span class="mono"><b>${money(x.acum)}</b></span></div>
+    ${x.descanso && x.real ? '<div class="notice n-info" style="margin-top:10px">Nadie de la empresa pasó lista este día: se paga como día de descanso.</div>' : ''}
+    ${lista('Faltas', x.faltas, 'var(--bad)')}${lista('Retardos', dd.retardos)}${lista('Permisos', dd.permisos)}${lista('Vacaciones', dd.vacaciones)}${lista('Otras incidencias', dd.otras)}
+    ${x.sinLista.length ? lista(`Sin pase de lista · ${money(x.pendiente)} sin pagar`, x.sinLista, 'var(--warn)') : ''}
+    ${x.altas.length ? `<div class="eyebrow" style="margin:12px 0 6px">Ingresos</div><div class="small">${x.altas.map(esc).join(', ')}</div>` : ''}
+    ${x.bajas.length ? `<div class="eyebrow" style="margin:12px 0 6px">Último día (baja)</div><div class="small">${x.bajas.map(esc).join(', ')}</div>` : ''}
+    ${nada && x.real && !x.descanso ? '<div class="small muted" style="margin-top:10px">Todos registrados, sin faltas ni incidencias.</div>' : ''}`,
+    actions: [{ label: 'Cerrar' }] });
+}
+
+// Bonos y comisiones: una lista con buscador; se escribe el monto y se guarda solo. Se puede corregir en cualquier momento.
+function bonosPanel(p, lineas) {
+  const edit = is('nomina', 'developer') && p.estado === 'borrador';
+  const st = { k: NS.bk || 'bono_referido', q: '', solo: false };
+  const m = modal({ title: 'Bonos y comisiones · ' + periodoTitulo(p), wide: true, body: `
+    ${edit ? '' : '<div class="notice n-warn">La quincena está autorizada: solo consulta. Reábrela para corregir.</div>'}
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <label class="field grow" style="min-width:200px">Concepto<select class="inp" id="bn_k">${NOM_PEGAR.map(([k, t]) => `<option value="${k}"${k === st.k ? ' selected' : ''}>${esc(t)}${NOM_DED.some(([d]) => d === k) ? ' (descuento)' : ''}</option>`).join('')}</select></label>
+      <label class="row small" style="gap:6px;min-height:40px"><input type="checkbox" id="bn_solo"> Solo con monto</label>${edit ? '<button type="button" class="btn sm" id="bn_paste">Pegar desde Excel</button>' : ''}</div>
+    <input class="inp" id="bn_q" type="search" placeholder="Buscar persona por nombre o número" style="width:100%;margin:8px 0" aria-label="Buscar persona">
+    <div class="small muted" id="bn_tot"></div>
+    <div class="list" id="bn_l" style="margin-top:6px;max-height:55vh;overflow:auto"></div>
+    <div class="small muted" style="margin-top:8px">Escribe el monto y presiona Enter o cambia de renglón: se guarda solo. Para quitarlo, déjalo en 0.</div>`,
+    actions: [{ label: 'Listo', cls: 'primary' }], onClose: () => viewPrenomina() });
+  const tot = () => { const xs = lineas.filter((l) => num(l[st.k])); $('#bn_tot', m.el).textContent = `${(NOM_PEGAR.find(([k]) => k === st.k) || [])[1]}: ${xs.length} persona${xs.length === 1 ? '' : 's'} · ${money(xs.reduce((s, l) => s + num(l[st.k]), 0))}`; };
+  const paint = () => {
+    const q = norm(st.q);
+    const xs = lineas.filter((l) => (!st.solo || num(l[st.k])) && (!q || norm(`${l.nombre} ${l.num_empleado || ''} ${l.departamento || ''}`).includes(q)));
+    $('#bn_l', m.el).innerHTML = xs.length ? xs.map((l) => { const otros = NOM_PEGAR.filter(([k]) => k !== st.k && num(l[k])).map(([, t]) => t);
+      return `<div class="item pg-row" style="gap:10px"><span class="grow" style="min-width:0"><span class="nm">${esc(l.nombre)}</span><br><span class="small muted">${esc(l.num_empleado || '')} ${esc(l.departamento || '')} · neto <b data-bnn="${l.id}">${money(l.neto)}</b>${otros.length ? ` · también: ${esc(otros.join(', '))}` : ''}</span></span>
+        <input class="inp mono" data-bn="${l.id}" inputmode="decimal" style="width:120px;text-align:right" value="${num(l[st.k]) ? num(l[st.k]).toFixed(2) : ''}" placeholder="0.00"${edit ? '' : ' disabled'} aria-label="Monto de ${esc(l.nombre)}"><span data-bnok="${l.id}" style="width:16px"></span></div>`; }).join('') : '<div class="empty small">Nadie coincide.</div>';
+    $$('[data-bn]', m.el).forEach((i) => {
+      const save = async () => {
+        const l = lineas.find((x) => x.id === i.dataset.bn); const txt = i.value.replace(/[$,\s]/g, '');
+        const val = txt === '' ? 0 : Number(txt); const ok = $(`[data-bnok="${l.id}"]`, m.el);
+        if (!Number.isFinite(val) || val < 0) { ok.innerHTML = '<span style="color:var(--bad)">✕</span>'; return toast('Escribe un monto válido (sin negativos)', true); }
+        if (r2(val) === r2(num(l[st.k]))) return;
+        ok.textContent = '…';
+        try { const [u] = await mustUpdate(db('nomina_lineas').eq('id', l.id).update({ [st.k]: r2(val) }), 'la línea'); Object.assign(l, u || { [st.k]: r2(val) });
+          ok.innerHTML = '<span style="color:var(--ok)">✓</span>'; const nn = $(`[data-bnn="${l.id}"]`, m.el); if (nn) nn.textContent = money(l.neto); tot();
+        } catch (e) { ok.innerHTML = '<span style="color:var(--bad)">✕</span>'; toast(e.message, true); }
+      };
+      i.addEventListener('change', save);
+      i.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); const all = $$('[data-bn]', m.el); const nx = all[all.indexOf(i) + 1]; if (nx) nx.focus(); else i.blur(); } });
+    });
+    tot();
+  };
+  $('#bn_k', m.el).onchange = (e) => { st.k = NS.bk = e.target.value; paint(); };
+  const bp = $('#bn_paste', m.el); if (bp) bp.onclick = () => { m.close(); pegarCapturas(p, lineas); };
+  $('#bn_solo', m.el).onchange = (e) => { st.solo = e.target.checked; paint(); };
+  $('#bn_q', m.el).oninput = (e) => { st.q = e.target.value; paint(); };
+  paint(); setTimeout(() => { const i = $('#bn_q', m.el); if (i) i.focus(); }, 50);
+}
+
+// Bajas de la quincena: se les cuentan los días trabajados y se arma su finiquito
+function bajasPanel(p, bajas, lineas, fins, periodos) {
+  const finDe = new Map(fins.map((f) => [f.employee_id, f])), linDe = new Map(lineas.map((l) => [l.employee_id, l]));
+  const ids = [...new Set([...bajas.map((b) => b.employee_id), ...fins.map((f) => f.employee_id)])];
+  const nombre = (id) => (bajas.find((b) => b.employee_id === id) || finDe.get(id) || {}).nombre || '';
+  ids.sort((a, b) => nombre(a).localeCompare(nombre(b), 'es'));
+  const m = modal({ title: 'Bajas y finiquitos de la quincena', wide: true, body: ids.length ? `
+    <div class="notice n-info">Cada baja sigue contando en la quincena hasta su último día: se le pagan los días trabajados y, aparte, su finiquito.${p ? '' : ' Los finiquitos se calculan al crear la pre-nómina.'}</div>
+    <div class="list" style="margin-top:8px">${ids.map((id) => { const b = bajas.find((x) => x.employee_id === id) || {}; const l = linDe.get(id); const f = finDe.get(id); const fa = f ? finiquitoAlertas(f).filter((x) => x[0] !== 'info') : [];
+      return `<button type="button" class="item pg-row" data-bf="${id}"${f ? '' : ' disabled'}><span class="grow" style="min-width:0"><span class="nm">${esc(nombre(id))}</span><br>
+        <span class="small muted">Último día ${fmtDate(b.fecha_baja || (f && f.fecha_baja))}${l ? ` · ${l.dias_pagados} días pagados · nómina ${money(l.neto)}` : ''}</span>${fa.length ? `<br>${fa.map(([n, , t]) => `<span class="badge ${nivelBadge[n]}" style="margin:2px 2px 0 0">${esc(t)}</span>`).join('')}` : ''}</span>
+        <span style="text-align:right;white-space:nowrap">${f ? `<span class="small muted">Finiquito</span><br><b class="mono">${money(f.total)}</b>` : '<span class="small muted">Finiquito al crear la pre-nómina</span>'}</span></button>`; }).join('')}</div>
+    ${fins.length ? `<div class="small" style="margin-top:8px;text-align:right">Total finiquitos <b class="mono">${money(fins.reduce((s, f) => s + num(f.total), 0))}</b></div>` : ''}` : '<div class="empty">No hay bajas en esta quincena.</div>',
+    actions: [{ label: 'Cerrar' }] });
+  $$('[data-bf]', m.el).forEach((b) => b.onclick = () => { const f = finDe.get(b.dataset.bf); if (f) { m.close(); finiquitoForm(p, f, periodos); } });
+}
+
+// Descargas: pre-nómina en el formato de la empresa y listados de apoyo
+function descargasPanel(p, d) {
+  const sufijo = p ? `${p.numero ? 'P' + p.numero + '_' : ''}${p.fecha_inicio}_al_${p.fecha_fin}${p.estado === 'autorizado' ? '' : '_BORRADOR'}` : `${d.ini}_al_${d.fin}`;
+  const bajar = (sheets, nombre) => { const blob = xlsxBuild(sheets); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = nombre; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000); toast('Excel listo'); };
+  const head = (hs) => hs.map((h) => ({ v: h, s: XS.head })); const T = (v) => ({ v: v == null ? '' : v, s: XS.text }), M = (v) => ({ v: r2(v), s: XS.money }), I = (v) => ({ v: num(v), s: XS.int }), D = (iso) => iso ? { v: xlDate(iso), s: XS.date } : T('');
+  const hoja = (name, title, hs, rows, cols) => ({ name, freeze: [0, 3], cols, rows: [[{ v: title, s: XS.title }], [{ v: `${periodoTitulo(p || { fecha_inicio: d.ini, fecha_fin: d.fin })} · generado ${fmtDateTime(new Date().toISOString())}`, s: XS.sub }], head(hs), ...rows] });
+  const opts = [
+    ['prenomina', 'Pre-nómina (Excel, formato de la empresa)', 'La hoja de nómina con faltas, bonos, deducciones, finiquitos y pagos pendientes.', !!p],
+    ['incidencias', 'Incidencias por día (Excel)', 'Faltas, retardos, permisos, vacaciones y días sin pase de lista, fecha por fecha.', true],
+    ['bonos', 'Bonos y comisiones (Excel)', 'Quién recibe cada bono o comisión y cuánto.', !!p],
+    ['bajas', 'Bajas y finiquitos (Excel)', 'Bajas de la quincena, días pagados y desglose del finiquito.', !!p],
+    ['dispersion', 'Dispersión bancaria (Excel)', 'Una fila por cuenta con el importe a depositar (nómina + finiquito + pagos).', !!p],
+    ['recibos', 'Recibos para imprimir', 'Un recibo por persona con percepciones, deducciones y neto.', !!p]];
+  const m = modal({ title: 'Descargas', body: `<div class="list">${opts.map(([k, t, s, okk]) => `<button type="button" class="item" data-dl="${k}"${okk ? '' : ' disabled'}><span class="grow"><span class="nm">${t}</span><br><span class="small muted">${okk ? s : 'Disponible cuando exista la pre-nómina de la quincena.'}</span></span><span class="small muted">↓</span></button>`).join('')}</div>`, actions: [{ label: 'Cerrar' }] });
+  const run = {
+    prenomina: () => exportPrenomina(p, d.lineas, d.fins, d.pagos),
+    incidencias: () => {
+      const xs = []; const depto = new Map(d.rows.map((r) => [r.nombre, r.departamento]));
+      d.c.porDia.forEach((x) => { const dd = d.det.get(x.d);
+        const add = (tipo, ns) => ns.forEach((n) => { const [nm, ...rest] = n.split(' · '); xs.push([D(x.d), T(nm), T(depto.get(nm) || ''), T(tipo), T(rest.join(' · '))]); });
+        add('Falta', x.faltas); add('Retardo', dd.retardos); add('Permiso', dd.permisos); add('Vacaciones', dd.vacaciones); add('Otra incidencia', dd.otras); add('Sin pase de lista', x.sinLista); add('Baja (último día)', x.bajas); add('Ingreso', x.altas); });
+      const res = d.c.personas.slice().sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')).map((pp) => { const cnt = (arr) => d.c.porDia.reduce((s, x) => s + arr(x).filter((n) => n.split(' · ')[0] === pp.nombre).length, 0);
+        return [T(pp.nombre), T(pp.departamento || ''), I(pp.faltasHoy), I(cnt((x) => d.det.get(x.d).retardos)), I(cnt((x) => d.det.get(x.d).permisos)), I(cnt((x) => d.det.get(x.d).vacaciones)), I(pp.sinLista), D(pp.fecha_baja)]; });
+      bajar([hoja('POR DIA', 'INCIDENCIAS POR DÍA', ['Fecha', 'Nombre', 'Departamento', 'Tipo', 'Detalle'], xs, [12, 34, 26, 18, 40]),
+        hoja('POR PERSONA', 'RESUMEN POR PERSONA', ['Nombre', 'Departamento', 'Faltas', 'Retardos', 'Permisos', 'Vacaciones', 'Sin pase de lista', 'Baja'], res, [34, 26, 9, 9, 9, 11, 14, 12])], `Incidencias_${sufijo}.xlsx`);
+    },
+    bonos: () => {
+      const cols = NOM_PEGAR.filter(([k]) => d.lineas.some((l) => num(l[k])));
+      const xs = d.lineas.filter((l) => cols.some(([k]) => num(l[k]))).map((l) => [T(l.nombre), T(l.num_empleado || ''), T(l.departamento || ''), ...cols.map(([k]) => M(l[k]))]);
+      bajar([hoja('BONOS', 'BONOS Y COMISIONES', ['Nombre', 'No.', 'Departamento', ...cols.map(([, t]) => t.toUpperCase())], xs, [34, 10, 26, ...cols.map(() => 16)])], `Bonos_${sufijo}.xlsx`);
+    },
+    bajas: () => {
+      const lin = new Map(d.lineas.map((l) => [l.employee_id, l]));
+      const xs = d.fins.map((f) => { const l = lin.get(f.employee_id) || {}; return [T(f.nombre), T(f.num_empleado || ''), T(f.departamento || ''), D(f.fecha_ingreso), D(f.fecha_baja), I(l.dias_pagados), M(l.neto), M(f.vacaciones), M(f.prima_vacacional), M(f.aguinaldo), M(f.prima_antiguedad), M(f.total), T(f.motivo || '')]; });
+      bajar([hoja('BAJAS', 'BAJAS Y FINIQUITOS', ['Nombre', 'No.', 'Departamento', 'Ingreso', 'Último día', 'Días pagados', 'Nómina', 'Vacaciones', 'Prima vacacional', 'Aguinaldo', 'Prima antigüedad', 'Total finiquito', 'Motivo'], xs, [34, 10, 24, 12, 12, 10, 14, 13, 14, 13, 14, 15, 40])], `Bajas_finiquitos_${sufijo}.xlsx`);
+    },
+    dispersion: () => {
+      const acc = new Map();
+      const add = (id, o, monto, concepto) => { if (!num(monto)) return; const k = id || o.nombre; const x = acc.get(k) || { nombre: o.beneficiario || o.nombre, persona: o.nombre, clabe: o.clabe || '', banco: o.banco || '', monto: 0, conceptos: [] }; x.monto = r2(x.monto + num(monto)); x.conceptos.push(concepto); if (!x.clabe && o.clabe) { x.clabe = o.clabe; x.banco = o.banco || ''; } acc.set(k, x); };
+      d.lineas.forEach((l) => add(l.employee_id, l, l.neto, 'Nómina'));
+      d.fins.forEach((f) => add(f.employee_id, f, f.total, 'Finiquito'));
+      d.pagos.forEach((g) => add(g.employee_id, g, g.monto, g.concepto));
+      const xs = [...acc.values()].filter((x) => x.monto > 0).sort((a, b) => a.persona.localeCompare(b.persona, 'es'));
+      const rows = xs.map((x) => [T(x.persona), T(x.nombre), x.clabe ? T(x.clabe) : { v: 'SIN CLABE', s: XS.warn }, T(x.banco), M(x.monto), T(x.conceptos.join(' + '))]);
+      rows.push(['', '', '', { v: 'TOTAL', s: XS.bold }, { v: r2(xs.reduce((s, x) => s + x.monto, 0)), s: XS.total }, '']);
+      bajar([hoja('DISPERSION', 'DISPERSIÓN BANCARIA', ['Persona', 'Beneficiario', 'CLABE', 'Banco', 'Importe', 'Concepto'], rows, [34, 34, 22, 16, 15, 30])], `Dispersion_${sufijo}.xlsx`);
+      if (p.estado !== 'autorizado') toast('Ojo: la quincena aún no está autorizada (archivo de borrador)');
+    },
+    recibos: () => {
+      const emp = (latestTpl('general') || { bloques: {} }).bloques.empresa || EMPRESA;
+      const fila = (t, v) => num(v) ? `<tr><td>${esc(t)}</td><td style="text-align:right">${money(v)}</td></tr>` : '';
+      const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Recibos ${esc(periodoTitulo(p))}</title><style>@page{size:letter;margin:10mm}body{font-family:Arial,Helvetica,sans-serif;font-size:9.5pt;color:#111}.r{border:1px solid #999;padding:10px 12px;margin-bottom:10mm;page-break-inside:avoid}.r:nth-child(2n){page-break-after:always}h2{font-size:11pt;margin:0}table{width:100%;border-collapse:collapse}td{padding:2px 0}.cols{display:flex;gap:16px}.cols>div{flex:1}.tot{border-top:1px solid #111;font-weight:700}.firma{margin-top:24px;border-top:1px solid #111;width:60%;text-align:center;font-size:8pt;padding-top:3px}</style></head><body>
+        ${d.lineas.map((l) => `<div class="r"><div style="display:flex;justify-content:space-between"><div><b>${esc(emp)}</b><br><span style="font-size:8pt">Recibo de pago · ${esc(periodoTitulo(p))}</span></div><div style="text-align:right;font-size:8pt">${p.estado === 'autorizado' ? '' : '<b>BORRADOR</b><br>'}Pago ${fmtDate(diaPago(p.fecha_fin))}</div></div>
+          <h2 style="margin-top:6px">${esc(l.nombre)}</h2><div style="font-size:8pt">${esc(l.num_empleado || '')} · ${esc(l.departamento || '')} · ${l.dias_pagados} días pagados · salario diario ${money(l.salario_diario)}</div>
+          <div class="cols" style="margin-top:6px"><div><b>Percepciones</b><table>${fila('Nómina', l.nomina)}${fila('Día festivo', l.festivo)}${fila('Prima vacacional', l.prima_vacacional)}${NOM_PERC.map(([k, t]) => fila(t, l[k])).join('')}${num(l.ajuste_anterior) > 0 ? fila('Ajuste quincena anterior', l.ajuste_anterior) : ''}<tr class="tot"><td>Total</td><td style="text-align:right">${money(num(l.total_percepciones) + Math.max(num(l.ajuste_anterior), 0))}</td></tr></table></div>
+          <div><b>Deducciones</b><table>${fila(`Faltas (${l.faltas})`, l.faltas_monto)}${fila(`Sin pase de lista (${l.sin_lista})`, l.sin_lista_monto)}${fila('Permisos', l.permisos_monto)}${NOM_DED.map(([k, t]) => fila(t, l[k])).join('')}${num(l.ajuste_anterior) < 0 ? fila('Ajuste quincena anterior', -num(l.ajuste_anterior)) : ''}</table></div></div>
+          <div style="display:flex;justify-content:space-between;align-items:flex-end"><div class="firma">Firma de recibido</div><div style="font-size:12pt"><b>Neto ${money(l.neto)}</b></div></div></div>`).join('')}</body></html>`;
+      const w = window.open('', '_blank'); if (!w) return toast('Permite ventanas emergentes para imprimir', true);
+      w.document.open(); w.document.write(html); w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch { /* menú */ } }, 350);
+    } };
+  $$('[data-dl]', m.el).forEach((b) => b.onclick = async () => { b.disabled = true; try { await run[b.dataset.dl](); } catch (e) { toast(e.message, true); } finally { b.disabled = false; } });
 }
 
 async function viewPrenominaPeriodos() {
