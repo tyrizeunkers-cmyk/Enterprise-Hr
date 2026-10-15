@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.23.0';
+const APP_VERSION = '0.23.1';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -585,7 +585,7 @@ function renderLista(st, groups) {
   v.innerHTML = `
   <div class="att-head">
     <div class="row" style="justify-content:space-between">
-      <div><div class="eyebrow" style="color:#A9B6C2">${esc(areaName(g.area_id))}${g.tl_id ? ' · TL ' + esc(profName(g.tl_id)) : ''}${lider ? ' · Supervisión' : ''}</div><div style="font-size:20px;font-weight:700">${lider ? 'Pase de lista de líderes' : 'Pase de lista'}</div></div>
+      <div><div class="eyebrow" style="color:#A9B6C2">${esc(areaName(g.area_id))}${g.tl_id ? (lider ? ' · Supervisor ' : ' · TL ') + esc(profName(g.tl_id)) : lider ? ' · Supervisión' : ''}</div><div style="font-size:20px;font-weight:700">${lider ? 'Pase de lista de líderes' : 'Pase de lista'}</div></div>
       <input type="date" id="lf_date" value="${LS.fecha}" max="${todayMX()}" aria-label="Fecha" class="mono">
     </div>
     ${groups.length > 1 ? `<select id="lf_group" aria-label="Grupo">${groups.map((x) => `<option value="${x.id}"${x.id === g.id ? ' selected' : ''}>${multiArea ? esc(areaName(x.area_id)) + ' · ' : ''}${esc(groupLabel(x))}${x.tl_id && !is('tl') ? ' — ' + esc(profName(x.tl_id)) : ''}</option>`).join('')}</select>` : `<div style="font-weight:600">${esc(groupLabel(g))}</div>`}
@@ -1704,6 +1704,7 @@ async function viewCatalogos() {
   const byG = {}; emps.sort(sortName).forEach((e) => { (byG[e.group_id || '-'] = byG[e.group_id || '-'] || []).push(e); });
   const ret = new Map(retiros.map((x) => [x.employee_id, x.ultimo_dia]));
   const tls = S.profiles.filter((p) => p.role === 'tl' && p.active);
+  const sups = S.profiles.filter((p) => p.role === 'supervisor' && p.active);
   const minOf = (g) => g.tipo === 'lideres' ? 0 : num((S.areas.find((a) => a.id === g.area_id) || {}).min_por_grupo ?? 15);
   const groups = S.groups.filter((g) => areas.some((a) => a.id === g.area_id));
   const q = norm(CG.q);
@@ -1719,7 +1720,7 @@ async function viewCatalogos() {
         ${canEdit(g.area_id) ? `<td><select class="inp" data-mv="${e.id}" aria-label="Mover a otro grupo" style="min-height:32px;max-width:200px"><option value="">—</option>${otros.map((x) => `<option value="${x.id}">${esc(groupLabel(x))}</option>`).join('')}</select></td>` : ''}</tr>`).join('')}</tbody></table>`
       : `<span class="small muted">${q ? 'Nadie coincide con la búsqueda.' : 'Sin personal.'}</span>`}</td></tr>`; };
   const gRow = (g, showArea) => `<tr><td><button type="button" class="linkbtn" data-tg="${g.id}">${CG.open.has(g.id) ? '▾' : '▸'} <b>${esc(g.name)}</b></button>${g.tipo === 'lideres' ? ' <span class="badge b-acc">Líderes</span>' : ''}${g.active ? '' : ' <span class="badge b-mut">Inactivo</span>'}${showArea ? `<br><span class="small muted">${esc(areaName(g.area_id))}</span>` : ''}</td>
-      <td>${g.tipo === 'lideres' ? '<span class="small muted">Pasa lista: Supervisión</span>' : g.tl_id ? esc(profName(g.tl_id)) : '<span class="badge b-warn">Sin TL</span>'}</td>
+      <td>${g.tl_id ? esc(profName(g.tl_id)) + (g.tipo === 'lideres' ? ' <span class="small muted">(Supervisor)</span>' : '') : g.tipo === 'lideres' ? '<span class="small muted">Pasa lista: Supervisión</span>' : '<span class="badge b-warn">Sin TL</span>'}</td>
       <td style="white-space:nowrap">${cuenta(g)}</td>
       <td style="text-align:right;white-space:nowrap">${canEdit(g.area_id) ? `<button class="btn sm primary" data-ag="${g.id}">+ Agregar personal</button> <button class="btn sm" data-eg="${g.id}">Editar</button> <button class="btn sm danger" data-dg="${g.id}" aria-label="Eliminar ${esc(g.name)}">Eliminar</button>` : ''}</td></tr>
     ${CG.open.has(g.id) || q ? people(g) : ''}`;
@@ -1764,10 +1765,10 @@ async function viewCatalogos() {
     { k: 'area_id', label: 'Área', type: 'select', req: true, options: areaOpts, val: g ? g.area_id : (areaOpts[0] || [''])[0] },
     { k: 'name', label: 'Nombre del grupo', req: true, val: g ? g.name : '' },
     { k: 'tipo', label: 'Tipo', type: 'select', val: g ? g.tipo || 'agentes' : 'agentes', options: [['agentes', 'Agentes (lo pasa su TL)'], ['lideres', 'Líderes (lo pasa Supervisión)']] },
-    { k: 'tl_id', label: 'Team Leader', type: 'select', val: g ? g.tl_id || '' : '', options: [['', 'Sin TL'], ...tls.map((p) => [p.id, p.full_name])] },
+    { k: 'tl_id', label: 'Quién lo encabeza', type: 'select', val: g ? g.tl_id || '' : '', options: [['', 'Sin asignar'], ...tls.map((p) => [p.id, p.full_name + ' (Team Leader)']), ...sups.map((p) => [p.id, p.full_name + ' (Supervisor)'])], hint: 'Equipo de agentes: un Team Leader. Grupo de Líderes: el Supervisor del área.' },
     ...(g ? [{ k: 'active', label: 'Estado', type: 'select', val: g.active ? '1' : '0', options: [['1', 'Activo'], ['0', 'Inactivo']] }] : [])
   ];
-  const ng = $('#ng'); if (ng) ng.onclick = () => simpleForm('Nuevo grupo', gFields(null), (x) => db('groups').insert([{ ...x, tl_id: x.tipo === 'lideres' ? null : x.tl_id || null }]), 'Solo aparecen como TL los usuarios con rol Team Leader. Un grupo de Líderes no lleva TL.');
+  const ng = $('#ng'); if (ng) ng.onclick = () => simpleForm('Nuevo grupo', gFields(null), (x) => db('groups').insert([{ ...x, tl_id: x.tl_id || null }]), 'Un equipo de agentes lo encabeza un Team Leader; el grupo de Líderes de cada área, su Supervisor.');
   $$('[data-ag]').forEach((b) => b.onclick = () => addToGroupForm(S.groups.find((x) => x.id === b.dataset.ag)));
   $$('[data-dg]').forEach((b) => b.onclick = async () => {
     const g = S.groups.find((x) => x.id === b.dataset.dg);
@@ -1781,7 +1782,7 @@ async function viewCatalogos() {
       toast('Grupo eliminado'); viewCatalogos();
     } catch (e) { toast(e.message, true); }
   });
-  $$('[data-eg]').forEach((b) => b.onclick = () => { const g = S.groups.find((x) => x.id === b.dataset.eg); simpleForm('Editar grupo', gFields(g), (x) => mustUpdate(db('groups').eq('id', g.id).update({ area_id: x.area_id, name: x.name, tipo: x.tipo, tl_id: x.tipo === 'lideres' ? null : x.tl_id || null, active: x.active === '1' }), 'el grupo')); });
+  $$('[data-eg]').forEach((b) => b.onclick = () => { const g = S.groups.find((x) => x.id === b.dataset.eg); simpleForm('Editar grupo', gFields(g), (x) => mustUpdate(db('groups').eq('id', g.id).update({ area_id: x.area_id, name: x.name, tipo: x.tipo, tl_id: x.tl_id || null, active: x.active === '1' }), 'el grupo')); });
   const nb = $('#nb'); if (nb) nb.onclick = () => simpleForm('Bloquear cambio de área', [{ k: 'from_area', label: 'De', type: 'select', options: S.areas.map((a) => [a.id, a.name]) }, { k: 'to_area', label: 'A', type: 'select', options: S.areas.map((a) => [a.id, a.name]) }], (x) => { if (x.from_area === x.to_area) throw new Error('Elige áreas distintas'); return db('area_transfer_blocks').insert([x]); });
   $$('[data-db]').forEach((b) => b.onclick = async () => { const [fa, ta] = b.dataset.db.split('|'); try { await db('area_transfer_blocks').eq('from_area', fa).eq('to_area', ta).remove(); viewCatalogos(); } catch (e) { toast(e.message, true); } });
 }
