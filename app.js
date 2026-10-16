@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.24.0';
+const APP_VERSION = '0.25.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -2374,6 +2374,31 @@ async function refreshCaseBadge() {
   try { const cases = await db('cases').select('id,status,created_by').neq('status', 'cerrado').get(); updateCaseBadge(cases.filter(pendingForMe).length); } catch { /* sin conexión */ }
 }
 
+// Eliminar un caso (solo Daniel): para casos de prueba o capturados por error. Borra su seguimiento,
+// evidencias y los documentos generados desde el caso. La bitácora guarda quién lo eliminó.
+function deleteCaseForm(c, emp, files, docs, done) {
+  const f = [{ k: 'conf', label: 'Escribe ELIMINAR para confirmar', req: true, full: true }];
+  const items = [[files.length, 'archivos de evidencia'], [docs.length, 'documentos generados desde el caso']].filter(([n]) => n);
+  modal({ title: `Eliminar caso #${c.folio}`, body: `
+    <div class="notice n-bad">Se borrará para siempre el caso <b>#${esc(String(c.folio))}</b> de <b>${esc(emp ? fullName(emp) : '—')}</b> con todo su seguimiento${items.length ? ', y también:<ul style="margin:6px 0 0 18px">' + items.map(([n, t]) => `<li><b>${n}</b> ${t}</li>`).join('') + '</ul>' : '.'}
+    <div class="small" style="margin-top:6px">No se puede deshacer. Úsalo para casos de prueba o capturados por error; la persona y su asistencia no cambian.</div></div>
+    ${docs.some((d) => ['firmado', 'negativa'].includes(d.estado)) ? '<div class="notice n-warn">Hay documentos <b>firmados</b> ligados a este caso; también se borrarán. Si la baja ya se aplicó en Personal, no se revierte.</div>' : ''}
+    ${fieldsHtml(f)}`,
+    actions: [{ label: 'Cancelar' }, { label: 'Eliminar para siempre', cls: 'danger solid', run: async ({ el }) => {
+      const v = readFields(el, f);
+      if (v.conf.trim().toUpperCase() !== 'ELIMINAR') throw new Error('Escribe ELIMINAR para confirmar.');
+      if (docs.length) {
+        const full = await db('documents').select('id,firmado_path').eq('case_id', c.id).get().catch(() => []);
+        try { await storageRemove(DOC_BUCKET, full.map((x) => x.firmado_path).filter(Boolean)); } catch { /* quedan huérfanos pero inaccesibles */ }
+        if (full.length) await db('documents').in('id', full.map((x) => x.id)).remove();
+      }
+      try { await storageRemove('evidencias', files.map((x) => x.path)); } catch { /* idem */ }
+      const r = await db('cases').eq('id', c.id).remove();
+      if (!r || !r.length) throw new Error('No se pudo eliminar el caso.');
+      toast('Caso eliminado'); done && done();
+    } }] });
+}
+
 async function openCase(id) {
   const [c] = await db('cases').eq('id', id).get();
   if (!c) return toast('Caso no encontrado o sin permiso', true);
@@ -2426,6 +2451,7 @@ async function openCase(id) {
     c.decision === 'terminacion' ? 'Genera el aviso de rescisión desde este caso: al registrarse firmado o con negativa, la baja se aplica sola.' : null), 0); } });
   if (is('developer') && ['decidido', 'cerrado'].includes(c.status) && CASE_DOC[c.decision] && emp && emp.status === 'activo') actions.push({ label: 'Generar ' + DOC_TIPOS[CASE_DOC[c.decision]].label.toLowerCase(), cls: 'primary', run: () => { setTimeout(() => docForm({ tipo: CASE_DOC[c.decision], employee: emp, caseRow: c }), 0); } });
   if (is('developer')) actions.push({ label: 'Ver ficha laboral', run: () => { setTimeout(() => openEmployee(c.employee_id), 0); } });
+  if (is('developer')) actions.push({ label: 'Eliminar caso', cls: 'danger', run: () => { setTimeout(() => deleteCaseForm(c, emp, files, cdocs, () => { $$('.modal-bg').forEach((x) => x.remove()); reload(); }), 0); } });
   const cm = modal({ title: `Caso #${c.folio} · ${fullName(emp)}`, body, actions, wide: true });
   const add = $('#evid_add', cm.el);
   if (add) add.onclick = () => evidenceAddForm(c, () => { cm.close(); openCase(c.id); });
@@ -2886,6 +2912,166 @@ function printDoc(d, extra) {
   setTimeout(() => { f.contentWindow.focus(); f.contentWindow.print(); setTimeout(() => f.remove(), 2000); }, 350);
 }
 
+// ── PDF real del documento (para compartir por WhatsApp, imprimir o guardar desde el teléfono) ──
+// Se dibuja el documento con el mismo diseño en un área oculta del tamaño de una hoja carta y se copia
+// cada palabra, línea y fondo a un PDF con texto (Helvetica). No usa librerías externas.
+const PDF_W = 612, PDF_H = 792, PDF_ML = 48.19, PDF_MT = 45.35, PDF_K = 0.75, PDF_BOXW = 687;
+const PDF_PAGEPX = (PDF_H - 2 * PDF_MT) / PDF_K;
+const CP1252 = { 8364: 128, 8218: 130, 402: 131, 8222: 132, 8230: 133, 8224: 134, 8225: 135, 710: 136, 8240: 137, 352: 138, 8249: 139, 338: 140, 381: 142, 8216: 145, 8217: 146, 8220: 147, 8221: 148, 8226: 149, 8211: 150, 8212: 151, 732: 152, 8482: 153, 353: 154, 8250: 155, 339: 156, 382: 158, 376: 159 };
+const pdfTxt = (s) => [...s.normalize('NFC')].map((ch) => {
+  const c = ch.codePointAt(0); let b = c < 128 || (c >= 160 && c < 256) ? c : CP1252[c];
+  if (b == null) b = ch === '→' ? 62 : ch === '✓' || ch === '✔' ? 120 : ch === '☐' ? 91 : 63;
+  return b === 40 || b === 41 || b === 92 ? '\\' + String.fromCharCode(b) : b < 32 || b > 126 ? '\\' + b.toString(8).padStart(3, '0') : String.fromCharCode(b);
+}).join('');
+const pdfRgb = (c) => { const m = String(c).match(/rgba?\(([\d.]+)[, ]+([\d.]+)[, ]+([\d.]+)(?:[, /]+([\d.]+))?/); return m ? { r: +m[1], g: +m[2], b: +m[3], a: m[4] == null ? 1 : +m[4] } : null; };
+const pdfCol = (c) => [c.r, c.g, c.b].map((v) => (v / 255).toFixed(3)).join(' ');
+const pdfN = (n) => (Math.round(n * 100) / 100).toString();
+
+function docLayout(d, extra) {
+  const box = document.createElement('div');
+  box.setAttribute('aria-hidden', 'true');
+  box.style.cssText = `position:fixed;left:-20000px;top:0;width:${PDF_BOXW}px;background:#fff;pointer-events:none;contain:layout`;
+  box.innerHTML = docHtml(d, extra);
+  document.body.appendChild(box);
+  try {
+    const o = box.getBoundingClientRect();
+    const rel = (r) => ({ x: r.left - o.left, y: r.top - o.top, w: r.width, h: r.height, b: r.bottom - o.top });
+    const words = [], fills = [], lines = [], keep = [];
+    for (const el of box.querySelectorAll('*')) {
+      const cs = getComputedStyle(el); if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+      const r = rel(el.getBoundingClientRect());
+      const bg = pdfRgb(cs.backgroundColor);
+      if (bg && bg.a > 0.05 && !(bg.r > 250 && bg.g > 250 && bg.b > 250)) fills.push({ ...r, c: bg });
+      for (const [side, x1, y1, x2, y2] of [['Top', r.x, r.y, r.x + r.w, r.y], ['Bottom', r.x, r.b, r.x + r.w, r.b], ['Left', r.x, r.y, r.x, r.b], ['Right', r.x + r.w, r.y, r.x + r.w, r.b]]) {
+        const bw = parseFloat(cs[`border${side}Width`]) || 0, bc = pdfRgb(cs[`border${side}Color`]);
+        if (bw > 0 && cs[`border${side}Style`] !== 'none' && bc && bc.a > 0.05) {
+          const half = bw / 2, hz = side === 'Top' || side === 'Bottom', inset = side === 'Top' || side === 'Left' ? half : -half;
+          lines.push(hz ? { x1, x2, y1: y1 + inset, y2: y2 + inset, w: bw, c: bc } : { x1: x1 + inset, x2: x2 + inset, y1, y2, w: bw, c: bc });
+        }
+      }
+      if (el.tagName === 'TR' || /^H\d$/.test(el.tagName)) keep.push([r.y, r.b + (/^H\d$/.test(el.tagName) ? 34 : 0)]);
+      if (cs.breakInside === 'avoid' || cs.pageBreakInside === 'avoid') keep.push([r.y, r.b]);
+    }
+    const tw = document.createTreeWalker(box, NodeFilter.SHOW_TEXT); const rg = document.createRange();
+    for (let n = tw.nextNode(); n; n = tw.nextNode()) {
+      const cs = getComputedStyle(n.parentElement); if (cs.visibility === 'hidden') continue;
+      const fs = parseFloat(cs.fontSize) || 14, bold = (parseInt(cs.fontWeight, 10) || 400) >= 600, ital = cs.fontStyle === 'italic';
+      const col = pdfRgb(cs.color) || { r: 17, g: 17, b: 17 }, tt = cs.textTransform;
+      const re = /\S+/g; let m;
+      while ((m = re.exec(n.data))) {
+        rg.setStart(n, m.index); rg.setEnd(n, m.index + m[0].length);
+        const rs = rg.getClientRects(); if (!rs.length) continue;
+        const r = rel(rs[0]); if (!r.w) continue;
+        let t = m[0]; if (tt === 'uppercase') t = t.toUpperCase(); else if (tt === 'lowercase') t = t.toLowerCase();
+        words.push({ t, x: r.x, y: r.y, b: r.b, base: r.y + r.h * (0.905 / 1.117), fs, f: bold ? (ital ? 4 : 2) : ital ? 3 : 1, c: col });
+        keep.push([r.y, r.b]);
+      }
+    }
+    const total = Math.max(box.scrollHeight, ...words.map((w) => w.b), 1);
+    // Cortes de página sin partir renglones, filas de tabla, títulos ni bloques de firmas
+    const pages = []; let start = 0;
+    while (start < total - 1) {
+      let end = start + PDF_PAGEPX;
+      if (end >= total) { pages.push([start, total]); break; }
+      for (let moved = true; moved;) {
+        moved = false;
+        for (const [t, b] of keep) if (t < end && b > end + 0.5 && t > start + PDF_PAGEPX * 0.3) { end = t; moved = true; }
+      }
+      pages.push([start, end]); start = end;
+    }
+    return { pages, words, fills, lines };
+  } finally { box.remove(); }
+}
+
+function docPdfStreams(L) {
+  const Y = (y, p) => PDF_H - (PDF_MT + (y - L.pages[p][0]) * PDF_K), X = (x) => PDF_ML + x * PDF_K;
+  return L.pages.map(([ps, pe], p) => {
+    const out = [];
+    for (const f of L.fills) {
+      const t = Math.max(f.y, ps), b = Math.min(f.y + f.h, pe); if (b <= t) continue;
+      out.push(`${pdfCol(f.c)} rg ${pdfN(X(f.x))} ${pdfN(Y(b, p))} ${pdfN(f.w * PDF_K)} ${pdfN((b - t) * PDF_K)} re f`);
+    }
+    for (const l of L.lines) {
+      let y1 = l.y1, y2 = l.y2;
+      if (y1 === y2) { if (!(y1 >= ps - 0.01 && (y1 < pe || (p === L.pages.length - 1 && y1 <= pe + 1)))) continue; }
+      else { y1 = Math.max(y1, ps); y2 = Math.min(y2, pe); if (y2 <= y1) continue; }
+      out.push(`${pdfCol(l.c)} RG ${pdfN(l.w * PDF_K)} w ${pdfN(X(l.x1))} ${pdfN(Y(y1, p))} m ${pdfN(X(l.x2))} ${pdfN(Y(y2, p))} l S`);
+    }
+    out.push('BT'); let f0 = '', c0 = '';
+    for (const w of L.words) {
+      if (w.y < ps - 0.01 || (w.y >= pe && p < L.pages.length - 1)) continue;
+      const f = `/F${w.f} ${pdfN(w.fs * PDF_K)} Tf`, c = `${pdfCol(w.c)} rg`;
+      if (f !== f0) { out.push(f); f0 = f; } if (c !== c0) { out.push(c); c0 = c; }
+      out.push(`1 0 0 1 ${pdfN(X(w.x))} ${pdfN(Y(w.base, p))} Tm (${pdfTxt(w.t)}) Tj`);
+    }
+    out.push('ET');
+    return out.join('\n');
+  });
+}
+
+async function pdfDeflate(str) {
+  const bytes = Uint8Array.from(str, (ch) => ch.charCodeAt(0) & 255);
+  if (typeof CompressionStream === 'undefined') return { bytes, flate: false };
+  try { return { bytes: new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer()), flate: true }; }
+  catch { return { bytes, flate: false }; }
+}
+
+async function pdfBuild(streams, title) {
+  const parts = [], offs = []; let len = 0;
+  const put = (x) => { const b = typeof x === 'string' ? Uint8Array.from(x, (ch) => ch.charCodeAt(0) & 255) : x; parts.push(b); len += b.length; };
+  const obj = (n, body) => { offs[n] = len; put(`${n} 0 obj\n`); for (const b of [].concat(body)) put(b); put('\nendobj\n'); };
+  put('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n');
+  const fonts = ['Helvetica', 'Helvetica-Bold', 'Helvetica-Oblique', 'Helvetica-BoldOblique'];
+  const n0 = 3 + fonts.length, kids = streams.map((_, i) => `${n0 + 2 * i} 0 R`).join(' ');
+  obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+  obj(2, `<< /Type /Pages /Kids [${kids}] /Count ${streams.length} >>`);
+  fonts.forEach((f, i) => obj(3 + i, `<< /Type /Font /Subtype /Type1 /BaseFont /${f} /Encoding /WinAnsiEncoding >>`));
+  const res = `<< /Font << ${fonts.map((_, i) => `/F${i + 1} ${3 + i} 0 R`).join(' ')} >> >>`;
+  for (let i = 0; i < streams.length; i++) {
+    const { bytes, flate } = await pdfDeflate(streams[i]);
+    obj(n0 + 2 * i, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PDF_W} ${PDF_H}] /Resources ${res} /Contents ${n0 + 2 * i + 1} 0 R >>`);
+    obj(n0 + 2 * i + 1, [`<< /Length ${bytes.length}${flate ? ' /Filter /FlateDecode' : ''} >>\nstream\n`, bytes, '\nendstream']);
+  }
+  const nInfo = n0 + 2 * streams.length;
+  obj(nInfo, `<< /Title (${pdfTxt(title)}) /Producer (Enterprise HR) >>`);
+  const xref = len;
+  put(`xref\n0 ${nInfo + 1}\n0000000000 65535 f \n${offs.slice(1).map((o) => String(o).padStart(10, '0') + ' 00000 n \n').join('')}`);
+  put(`trailer\n<< /Size ${nInfo + 1} /Root 1 0 R /Info ${nInfo} 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  return new Blob(parts, { type: 'application/pdf' });
+}
+
+const docPdfName = (d) => `${docFolio(d)} ${DOC_TIPOS[d.tipo].label} ${(d.snapshot || {}).nombre || ''}`.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w.-]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 90) + '.pdf';
+async function docPdfFile(d, extra) {
+  const title = `${docFolio(d)} · ${DOC_TIPOS[d.tipo].label} · ${(d.snapshot || {}).nombre || ''}`;
+  const blob = await pdfBuild(docPdfStreams(docLayout(d, extra)), title);
+  return new File([blob], docPdfName(d), { type: 'application/pdf' });
+}
+function bajarArchivo(file) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+}
+// Compartir (WhatsApp, impresora, Drive, correo…) con el menú del teléfono; si no hay, se descarga
+async function compartirArchivo(file, title) {
+  if (navigator.canShare && navigator.share) {
+    let ok = false; try { ok = navigator.canShare({ files: [file] }); } catch { ok = false; }
+    if (ok) {
+      try { await navigator.share({ files: [file], title }); return 'compartido'; }
+      catch (e) { if (e && e.name === 'AbortError') return 'cancelado'; if (!e || e.name !== 'NotAllowedError') { bajarArchivo(file); return 'descargado'; } return 'otro_toque'; }
+    }
+  }
+  bajarArchivo(file); return 'descargado';
+}
+async function shareDoc(d, extra, getFile) {
+  const file = await getFile();
+  const r = await compartirArchivo(file, file.name);
+  if (r === 'descargado') toast('PDF descargado: ábrelo para compartirlo o imprimirlo');
+  if (r === 'otro_toque') {
+    // El navegador pide un toque directo para abrir el menú de compartir
+    modal({ title: 'PDF listo', body: `<p>${esc(file.name)}</p><p class="small muted">Toca <b>Compartir</b> para enviarlo por WhatsApp, mandarlo a la impresora o guardarlo.</p>`,
+      actions: [{ label: 'Descargar', run: () => { bajarArchivo(file); } }, { label: 'Compartir', cls: 'primary', run: async () => { const x = await compartirArchivo(file, file.name); if (x === 'descargado') toast('PDF descargado'); } }] });
+  }
+}
+
 // ── Vista ──
 const DS = { tab: null, q: '', tipo: '' };
 const docPending = (d) => is('developer') ? d.estado === 'emitido' : is('tl', 'supervisor') ? d.estado === 'con_lider' : false;
@@ -3248,9 +3434,13 @@ async function openDocument(id) {
     <div class="kv">${kv.map(([k, v]) => `<span>${esc(k)}</span><span>${esc(v)}</span>`).join('')}</div>
     ${d.firmado_path ? `<a class="evid-item" id="docfile" target="_blank" rel="noopener" aria-disabled="true"><span class="fic">${fileIcon(d.firmado_tipo)}</span><span class="grow"><b>Copia firmada</b><span class="small muted">${esc(d.firmado_nombre || '')}</span></span><span class="go" aria-hidden="true">↗</span></a>` : ''}
     ${d.estado === 'emitido' && DOC_BAJA.includes(d.tipo) && is('developer') ? `<div class="notice n-warn">Al registrar ${d.tipo === 'rescision' ? 'la firma o la negativa de firma' : 'la firma'}, la persona pasa a <b>Baja</b> en Personal con fecha ${fmtDate(d.datos.fecha_efectiva)} y sale del pase de lista.</div>` : ''}
+    ${canDeliver && d.estado === 'con_lider' ? '<div class="notice n-info">Toca <b>Compartir PDF</b> para mandarlo por WhatsApp, a la impresora o guardarlo en el teléfono. Cuando esté firmado, toca <b>Registrar entrega</b> y sube la foto.</div>' : ''}
     <div class="docframe">${docHtml(d, extra)}</div>`;
   const reload = () => { if (S.view === 'documentos') viewDocumentos().catch(() => {}); };
-  const actions = [{ label: 'Imprimir / PDF', run: () => { printDoc(d, extra); return false; } }];
+  let pdfP = null;
+  const getPdf = () => (pdfP = pdfP || docPdfFile(d, extra).catch((e) => { pdfP = null; throw e; }));
+  const actions = [{ label: 'Compartir PDF', cls: canDeliver && d.estado === 'con_lider' ? 'primary' : '', run: async () => { await shareDoc(d, extra, getPdf); return false; } },
+    { label: 'Imprimir', run: () => { printDoc(d, extra); return false; } }];
   if ((is('developer') || fin) && d.estado === 'emitido') {
     actions.push({ label: 'Editar', run: async () => { if (DOC_FIN.includes(d.tipo)) { setTimeout(() => finDocForm({ tipo: d.tipo, employee: { id: d.employee_id }, existing: d }), 0); return; } const [e] = await db('employees').eq('id', d.employee_id).get(); setTimeout(() => docForm({ tipo: d.tipo, employee: e, existing: d }), 0); } });
     if (DOC_LIDER.includes(d.tipo)) actions.push({ label: 'Enviar al líder', cls: 'primary', run: async () => {
@@ -3267,6 +3457,7 @@ async function openDocument(id) {
   if (is('developer')) actions.push({ label: 'Ver ficha', run: () => { setTimeout(() => openEmployee(d.employee_id), 0); } });
   if (d.case_id && is('developer', 'director', 'rh_general', 'rh_area', 'supervisor')) actions.push({ label: 'Ver caso', run: () => { setTimeout(() => openCase(d.case_id), 0); } });
   const m = modal({ title: `${t.label} · ${s.nombre || ''}`, body, actions, wide: true });
+  setTimeout(() => { if (document.body.contains(m.el)) getPdf().catch(() => {}); }, 250); // el PDF queda listo para compartir al instante
   const a = $('#docfile', m.el);
   if (a) docFileUrl(d.firmado_path).then((u) => { a.href = u; a.removeAttribute('aria-disabled'); }).catch((e) => { a.classList.add('err'); a.title = e.message; });
 }
