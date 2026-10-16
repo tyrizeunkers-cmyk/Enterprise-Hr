@@ -197,6 +197,9 @@ details.card summary{cursor:pointer}
 .person .quick{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding:0 14px 12px}
 .person .quick button{min-height:42px;border-radius:8px;font-size:14px;font-weight:600;border:1px solid var(--line2);background:#fff}
 .person .quick .asistio{color:var(--ok)} .person .quick .falta{color:var(--bad)} .person .quick .retardo,.person .quick .salida{color:var(--warn)}
+.person .quick.q4,.att3.q4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.person .quick .descanso{color:#56616C} .person .quick .descanso.on{background:#56616C;border-color:#56616C;color:#fff}
+@media (max-width:420px){.person .quick.q4 button,.att3.q4 button{font-size:12.5px;padding:0 2px;letter-spacing:-.1px}}
 .person .quick .asistio.on{background:var(--ok);border-color:var(--ok);color:#fff}
 .person .quick .falta.on{background:var(--bad);border-color:var(--bad);color:#fff}
 .person .quick .retardo.on,.person .quick .salida.on{background:var(--warn);border-color:var(--warn);color:#fff}
@@ -357,7 +360,7 @@ details.card summary{cursor:pointer}
 </head>
 <body>
 <div id="app"><div class="login"><div class="muted">Cargando…</div></div></div>
-<script src="config.js?v=0.26.0"></script>
-<script src="app.js?v=0.26.0"></script>
+<script src="config.js?v=0.27.0"></script>
+<script src="app.js?v=0.27.0"></script>
 </body>
 </html>

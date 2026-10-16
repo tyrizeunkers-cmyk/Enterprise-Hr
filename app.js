@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.26.0';
+const APP_VERSION = '0.27.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -37,7 +37,7 @@ const TURNO = { manana: 'Mañana · Entrada', tarde: 'Tarde · Cierre' };
 const stLabel = (a) => a && a.status ? (a.turno === 'tarde' ? ATT_PM : ATT)[a.status] : null;
 const AVISO = { nuevo_ingreso: 'Nuevo ingreso', baja: 'Baja' };
 const INC = { permiso: 'Permiso', descanso: 'Descanso', inactividad: 'Inactividad', vacaciones: 'Vacaciones' };
-const INC_TL = ['permiso', 'descanso', 'inactividad'];   // las vacaciones las registra RH
+const INC_TL = ['permiso', 'inactividad'];   // las vacaciones las registra RH; el Descanso va junto a la asistencia
 const ATT_SHORT = { asistio: 'A', falta: 'F', retardo: 'R', salida: 'S', permiso: 'P', descanso: 'D', inactividad: 'I', vacaciones: 'V' };
 const ATT_COLOR = { asistio: 'var(--ok)', falta: 'var(--bad)', retardo: 'var(--warn)', salida: 'var(--warn)', permiso: '#4453A8', descanso: '#6B7785', inactividad: '#B23A0A', vacaciones: '#0E7C86' };
 const ATT_BADGE = { asistio: 'b-ok', falta: 'b-bad', retardo: 'b-warn', salida: 'b-warn', permiso: 'b-acc', descanso: 'b-mut', inactividad: 'b-warn', vacaciones: 'b-ok', nuevo_ingreso: 'b-acc', baja: 'b-mut' };
@@ -740,6 +740,8 @@ function personCard(e, r, faltas, locked, morning, vac, retiro) {
   const diff = tarde ? attMismatch(morning, r) : null;
   const stBtn = (k) => `<button type="button" class="${k}${r && r.status === k ? ' on' : ''}" data-att="${k}" aria-pressed="${!!(r && r.status === k)}"${dis}>${ST[k]}</button>`;
   const avBtn = (k) => `<button type="button" class="aviso${r && r.aviso === k ? ' on' : ''}" data-aviso="${k}" aria-pressed="${!!(r && r.aviso === k)}"${dis}>${AVISO[k]}</button>`;
+  const esDesc = !!(r && !r.status && r.incidencia === 'descanso');
+  const descBtn = () => tarde ? '' : `<button type="button" class="descanso${esDesc ? ' on' : ''}" data-desc aria-pressed="${esDesc}"${dis}>Descanso</button>`;
   const incBtn = (k) => `<button type="button" class="${k}${r && r.incidencia === k ? ' on' : ''}" data-inc="${k}" aria-pressed="${!!(r && r.incidencia === k)}"${dis}>${INC[k]}</button>`;
   const reqRow = (k, l, risk) => `<button type="button" class="req-row${risk ? ' risk' : ''}" data-req="${k}"><b class="grow">${esc(l)}</b><span class="go" aria-hidden="true">›</span></button>`;
   return `<div class="person${open ? ' open' : ''}" data-id="${e.id}">
@@ -748,14 +750,14 @@ function personCard(e, r, faltas, locked, morning, vac, retiro) {
       <span class="grow"><span style="display:block;font-weight:600">${esc(fullName(e))}</span><span class="small muted">${esc(summary.length > 90 ? summary.slice(0, 90) + '…' : summary)}</span></span>
       ${vac ? '<span class="badge b-ok">Vacaciones</span>' : ''}${pendBadge(e)}${diff ? '<span class="badge b-warn">No coincide</span>' : ''}${faltasBadge(faltas)}<span class="more" aria-hidden="true">${open ? 'Cerrar ▴' : 'Detalle ▾'}</span>
     </button>
-    ${open ? '' : `<div class="quick" role="group" aria-label="Asistencia rápida de ${esc(fullName(e))}">${Object.keys(ST).map((k) => `<button type="button" class="${k}${r && r.status === k ? ' on' : ''}" data-att="${k}" aria-pressed="${!!(r && r.status === k)}"${dis}>${k === 'salida' ? 'Salida' : ST[k]}</button>`).join('')}</div>`}
+    ${open ? '' : `<div class="quick${tarde ? '' : ' q4'}" role="group" aria-label="Asistencia rápida de ${esc(fullName(e))}">${Object.keys(ST).map((k) => `<button type="button" class="${k}${r && r.status === k ? ' on' : ''}" data-att="${k}" aria-pressed="${!!(r && r.status === k)}"${dis}>${k === 'salida' ? 'Salida' : ST[k]}</button>`).join('')}${descBtn()}</div>`}
     ${open ? `<div class="body">
       ${vac ? '<div class="notice n-info">De vacaciones autorizadas por RH. El día queda registrado como Vacaciones y no cuenta como falta.</div>' : ''}
       ${tarde ? `<div class="morning-ref${diff ? ' diff' : ''}"><span class="small muted">En la mañana</span><span>${morning ? attBadges(morning) : '<span class="badge b-mut">Sin registro</span>'}</span>${diff ? `<span class="small" style="color:var(--warn);font-weight:600">${esc(diff)}</span>` : ''}</div>` : ''}
       <section class="fbox">
         <header>${tarde ? 'Asistencia al cierre' : 'Asistencia'}</header>
         <div class="fbody">
-          <div class="att3">${Object.keys(ST).map(stBtn).join('')}</div>
+          <div class="att3${tarde ? '' : ' q4'}">${Object.keys(ST).map(stBtn).join('')}${descBtn()}</div>
           ${tarde ? '' : `<div class="aviso-row"><span class="small muted">Aviso a RH <span class="hint">(opcional, si sigue en lista)</span></span><div class="att2">${Object.keys(AVISO).map(avBtn).join('')}</div></div>`}
         </div>
       </section>
@@ -764,7 +766,7 @@ function personCard(e, r, faltas, locked, morning, vac, retiro) {
         <div class="fbody">
           <div class="att3">${INC_TL.map(incBtn).join('')}</div>
           ${!vac && !tarde && e.status === 'activo' && canEditVac(e) && !lockedOrig ? '<button type="button" class="btn sm" data-vacbtn style="margin-top:8px">🌴 Registrar vacaciones…</button>' : ''}
-          ${r && r.incidencia ? `<div class="inc-note"><div class="small muted">Comentarios</div><div>${esc(r.comentario || '')}</div>${locked ? '' : '<button type="button" class="btn sm ghost" data-inc-edit>Editar comentario</button>'}</div>` : '<div class="small muted">Si eliges una incidencia se pide un comentario obligatorio.</div>'}
+          ${r && r.incidencia && (r.incidencia !== 'descanso' || r.comentario) ? `<div class="inc-note"><div class="small muted">Comentarios</div><div>${esc(r.comentario || '')}</div>${locked ? '' : '<button type="button" class="btn sm ghost" data-inc-edit>Editar comentario</button>'}</div>` : '<div class="small muted">Si eliges una incidencia se pide un comentario obligatorio.</div>'}
         </div>
       </section>
       ${r ? `<div class="small muted">Último cambio: ${esc(profName(r.updated_by))} · ${fmtDateTime(r.updated_at)}</div>` : ''}
@@ -797,21 +799,27 @@ function wirePerson(card, st, groups) {
     rec[id] = saved;
   };
   const run = async (patch, msg) => {
-    $$('[data-att],[data-aviso],[data-inc]', card).forEach((x) => { x.disabled = true; });
+    $$('[data-att],[data-aviso],[data-inc],[data-desc]', card).forEach((x) => { x.disabled = true; });
     try { await save(patch); if (msg) toast(msg); } catch (e) { toast(e.message, true); }
     redraw();
   };
   $$('[data-att]', card).forEach((b) => b.onclick = () => {
     const k = b.dataset.att; const cur = rec[id];
     if (cur && cur.status === k) {   // tocar de nuevo: solo se quita si queda una incidencia registrada
-      if (!cur.incidencia) return;
+      if (!cur.incidencia || cur.incidencia === 'descanso') return;
       return run({ status: null, aviso: null });
     }
-    run({ status: k });
+    run(cur && cur.incidencia === 'descanso' ? { status: k, incidencia: null, comentario: null } : { status: k });
+  });
+  // Descanso: es parte de la asistencia del día (no pide comentario); reemplaza Asistencia/Retardo/Falta e incidencias
+  $$('[data-desc]', card).forEach((b) => b.onclick = () => {
+    const cur = rec[id];
+    if (cur && !cur.status && cur.incidencia === 'descanso') return;
+    run({ status: null, aviso: null, incidencia: 'descanso', comentario: null });
   });
   $$('[data-aviso]', card).forEach((b) => b.onclick = () => {
     const k = b.dataset.aviso; const cur = rec[id];
-    if (!cur || !cur.status) return toast('Primero marca Asistencia, Falta o Retardo', true);
+    if (!cur || !cur.status) return toast(cur && cur.incidencia === 'descanso' ? 'Está en Descanso: el aviso va con Asistencia, Falta o Retardo' : 'Primero marca Asistencia, Falta o Retardo', true);
     if (cur.aviso === k) return run({ aviso: null }, 'Aviso quitado');
     run({ aviso: k }, k === 'baja' ? 'Aviso de baja registrado (no da de baja: RH lo revisa)' : 'Aviso de nuevo ingreso registrado');
   });
