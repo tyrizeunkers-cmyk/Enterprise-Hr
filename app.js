@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.25.0';
+const APP_VERSION = '0.26.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -350,7 +350,8 @@ const PERM_ACC = {
   'doc.finiquito': { label: 'Generar finiquitos y liquidaciones', roles: ['developer', 'nomina', 'rh_general', 'rh_area'], dar: ['director', 'supervisor'], db: true },
   'grupos.editar': { label: 'Editar grupos y mover personal (Áreas y grupos)', roles: ['developer', 'rh_general', 'rh_area'], dar: ['supervisor'], db: true },
   'prenomina.excel': { label: 'Descargar Excel de pre-nómina', roles: ['developer', 'director', 'nomina'], dar: [], db: false },
-  'nomina.opera': { label: 'Operar la pre-nómina (crear, capturar bonos, autorizar)', roles: ['developer', 'nomina'], dar: ['director'], db: true }
+  'nomina.opera': { label: 'Operar la pre-nómina (crear, capturar bonos, autorizar)', roles: ['developer', 'nomina'], dar: ['director'], db: true },
+  'altas.aprobar': { label: 'Aprobar altas de personal (aceptar o rechazar)', roles: ['developer'], dar: ['rh_general', 'rh_area'], db: true }
 };
 const MOD_DB = ['prenomina', 'documentos', 'reclutamiento', 'bitacora', 'informes'];   // al quitarlos también se bloquean en la base de datos
 const myPerm = () => (S.me && S.me.permisos) || {};
@@ -1018,7 +1019,7 @@ async function viewExpediente(id) {
   // Acciones (las mismas reglas que antes)
   const inMyArea = seesAllAreas() || S.myAreas.includes(e.area_id);
   const acts = [];
-  if (is('developer') && e.status === 'alta_pendiente') { acts.push(['rechazar', 'Rechazar alta', 'danger']); acts.push(['aceptar', 'Aceptar alta', 'primary']); }
+  if ((is('developer') || (is('rh_general', 'rh_area') && inMyArea && can('altas.aprobar'))) && e.status === 'alta_pendiente') { acts.push(['rechazar', 'Rechazar alta', 'danger']); acts.push(['aceptar', 'Aceptar alta', 'primary']); }
   if (is('developer') || (is('rh_general', 'rh_area') && inMyArea)) acts.push(['editar', 'Editar datos', '']);
   if ((is('developer') || (is('rh_general', 'rh_area') && inMyArea)) && ['activo', 'alta_pendiente'].includes(e.status)) acts.push(['grupo', 'Cambiar grupo', '']);
   if (is('supervisor') && inMyArea && ['activo', 'alta_pendiente'].includes(e.status)) acts.push(['cambio_sol', 'Solicitar cambio de equipo', '']);
@@ -1271,6 +1272,11 @@ const EXP_TABS = {
 
 async function aceptarAlta(e) {
   let avisoDatos = '';
+  const dev = is('developer');
+  if (e.datos_pendientes && !dev) {
+    const [pv] = await db('employee_private').eq('employee_id', e.id).get().catch(() => []);
+    return toast(`Antes de aceptar completa su hoja de datos en "Editar datos". Falta: ${faltaHoja(pv) || 'completar su hoja'}.`, true);
+  }
   if (e.datos_pendientes) {
     const [pv] = await db('employee_private').eq('employee_id', e.id).get().catch(() => []);
     avisoDatos = `<div class="notice n-warn"><b>Datos pendientes:</b> le falta ${esc(faltaHoja(pv) || 'completar su hoja')}. Puedes aceptar el alta; quedará activo con "Datos pendientes" hasta que RH complete la hoja. Sin CURP y NSS no se puede dar de alta en el IMSS.</div>`;
@@ -1283,12 +1289,13 @@ async function aceptarAlta(e) {
   const DOCL = { contrato: 'contrato', reglamento: 'reglamento', confidencialidad: 'acuerdo de confidencialidad' };
   const sinFirma = (await db('documents').select('tipo,estado').eq('employee_id', e.id).in('tipo', Object.keys(DOCL)).get().catch(() => []))
     .filter((d) => !['firmado', 'anulado'].includes(d.estado)).map((d) => DOCL[d.tipo]);
-  const avisoDocs = sinFirma.length ? `<div class="notice n-warn"><b>Documentos sin firmar:</b> ${esc(sinFirma.join(', '))}. Puedes usar <b>"Aceptar sin documentos"</b>; quedan pendientes y se suben firmados después desde su expediente.</div>` : '';
+  const avisoDocs = !sinFirma.length ? '' : dev ? `<div class="notice n-warn"><b>Documentos sin firmar:</b> ${esc(sinFirma.join(', '))}. Puedes usar <b>"Aceptar sin documentos"</b>; quedan pendientes y se suben firmados después desde su expediente.</div>`
+    : `<div class="notice n-warn"><b>Documentos sin firmar:</b> ${esc(sinFirma.join(', '))}. Súbelos firmados desde su expediente (pestaña Documentos) para poder aceptar el alta. Si es urgente, Daniel puede aceptarla sin documentos.</div>`;
   return new Promise((resolve) => modal({
     title: 'Aceptar alta · ' + fullName(e), onClose: () => resolve(),
     body: avisoDatos + avisoDocs + `<div class="notice n-info">Al aceptar, ${esc(fullName(e))} queda activo y aparece en el pase de lista de su grupo.</div>` + fieldsHtml(fields),
     actions: [{ label: 'Cancelar' },
-      ...(sinFirma.length ? [{ label: 'Aceptar sin documentos', run: async ({ el }) => {
+      ...(sinFirma.length && dev ? [{ label: 'Aceptar sin documentos', run: async ({ el }) => {
         const v = readFields(el, fields);
         await rpc('alta_sin_documentos', { p_emp: e.id, p_num: v.num_empleado, p_fecha: v.fecha_ingreso, p_grupo: v.group_id || null });
         toast('Alta aceptada · documentos pendientes de firma'); viewPersonal();
@@ -1315,7 +1322,7 @@ async function altaForm() {
   const priv = PRIV_FIELDS;
   const m = modal({
     title: is('developer') ? 'Nuevo ingreso' : 'Solicitar alta', wide: true,
-    body: `<div class="notice n-info">${is('developer') ? 'Puedes registrar la solicitud o darla de alta directo.' : 'La solicitud llega a Daniel para aceptar el alta y generar la documentación.'} Se revisa si la persona ya trabajó aquí.</div>
+    body: `<div class="notice n-info">${is('developer') ? 'Puedes registrar la solicitud o darla de alta directo.' : (can('altas.aprobar') ? 'La solicitud queda en Altas pendientes; ahí la aceptas cuando tenga sus datos y documentos firmados.' : 'La solicitud llega a Daniel para aceptar el alta y generar la documentación.')} Se revisa si la persona ya trabajó aquí.</div>
       ${fieldsHtml(base)}<div class="eyebrow">Datos sensibles</div>${fieldsHtml(priv)}<div id="rehire"></div>`,
     actions: [{ label: 'Cancelar' },
       ...(is('developer') ? [{ label: 'Dar de alta directo', run: (ctx) => submit(ctx, true) }] : []),
@@ -1401,12 +1408,23 @@ function bancoForm(e, p) {
 }
 
 function moveGroup(e, done) {
-  const opts = [['', 'Sin grupo'], ...S.groups.filter((g) => g.area_id === e.area_id && g.active).map((g) => [g.id, g.name + (g.tl_id ? ' — ' + profName(g.tl_id) : '')])];
+  // Daniel también puede pasar a la persona a un grupo de otra área (Cobranza ↔ Marketing): cambia su área y su grupo juntos
+  const otras = is('developer');
+  const lbl = (g) => g.name + (g.tl_id ? ' — ' + profName(g.tl_id) : '');
+  const blocked = new Set(S.blocks.filter((b) => b.from_area === e.area_id).map((b) => b.to_area));
+  const gs = S.groups.filter((g) => g.active && (g.area_id === e.area_id || (otras && !blocked.has(g.area_id) && (S.areas.find((a) => a.id === g.area_id) || {}).active)));
+  const opts = [['', 'Sin grupo'], ...gs.filter((g) => g.area_id === e.area_id).map((g) => [g.id, (otras ? areaName(g.area_id) + ' · ' : '') + lbl(g)]),
+    ...gs.filter((g) => g.area_id !== e.area_id).sort((a, b) => areaName(a.area_id).localeCompare(areaName(b.area_id)) || a.name.localeCompare(b.name)).map((g) => [g.id, areaName(g.area_id) + ' · ' + lbl(g)])];
   const f = [{ k: 'group_id', label: 'Grupo / líder', type: 'select', options: opts, val: e.group_id || '', full: true }];
   modal({
-    title: 'Cambiar grupo · ' + fullName(e), body: fieldsHtml(f) + '<div class="small muted">Solo grupos de la misma área.</div>',
+    title: 'Cambiar grupo · ' + fullName(e), body: fieldsHtml(f) + `<div class="small muted">${otras ? `Está en <b>${esc(areaName(e.area_id))}</b>. Si eliges un grupo de otra área, también se cambia su área.` : 'Solo grupos de la misma área.'}</div>`,
     actions: [{ label: 'Cancelar' }, { label: 'Guardar', cls: 'primary', run: async ({ el }) => {
-      const v = readFields(el, f); await mustUpdate(db('employees').eq('id', e.id).update({ group_id: v.group_id || null })); toast('Grupo actualizado'); (done || viewPersonal)();
+      const v = readFields(el, f); const g = S.groups.find((x) => x.id === v.group_id);
+      if (g && g.area_id !== e.area_id) {
+        if (!(await confirmBox('Cambiar de área', `<b>${esc(fullName(e))}</b> pasa de <b>${esc(areaName(e.area_id))}</b> a <b>${esc(areaName(g.area_id))}</b>, en el grupo <b>${esc(lbl(g))}</b>. Su historial se conserva; desde hoy aparece en el pase de lista de ese grupo.`, { okLabel: 'Cambiar' }))) return false;
+        await mustUpdate(db('employees').eq('id', e.id).update({ area_id: g.area_id, group_id: g.id })); toast('Cambió a ' + areaName(g.area_id)); (done || viewPersonal)(); return;
+      }
+      await mustUpdate(db('employees').eq('id', e.id).update({ group_id: v.group_id || null })); toast('Grupo actualizado'); (done || viewPersonal)();
     } }]
   });
 }
@@ -3820,7 +3838,14 @@ async function candidatoForm({ vacs, existing }) {
       const v = readFields(el, f); v.area_id = resolveArea(v, vacs);
       if (v.curp && !/^[A-Z]{4}\d{6}[HM][A-Z]{5}[0-9A-Z]\d$/.test(v.curp)) throw new Error('CURP inválida.');
       let row;
-      if (existing) { delete v.area_id; if (v.vacante_id === existing.vacante_id) delete v.vacante_id; [row] = await mustUpdate(db('candidatos').eq('id', existing.id).update(v), 'el candidato'); }
+      if (existing) {
+        delete v.area_id;
+        const nv = vacs.find((x) => x.id === v.vacante_id);
+        if (nv && nv.id !== existing.vacante_id && nv.area_id !== existing.area_id) { await rpc('cand_cambiar_vacante', { p_ids: [existing.id], p_vac: nv.id }); delete v.vacante_id; }
+        else if (!v.vacante_id && existing.vacante_id) v.vacante_id = null;
+        if (v.vacante_id === existing.vacante_id) delete v.vacante_id;
+        [row] = await mustUpdate(db('candidatos').eq('id', existing.id).update(v), 'el candidato');
+      }
       else [row] = await db('candidatos').insert([v]);
       if (fb.files.length) { btn.textContent = 'Subiendo CV…'; await uploadCv(row, fb.files[0]).catch((e) => toast('Se registró, pero el CV no se subió: ' + e.message, true)); }
       toast(existing ? 'Candidato actualizado' : row.alerta ? 'Registrado · ATENCIÓN: coincide con una baja no recontratable' : 'Candidato registrado', !!row.alerta);
@@ -3987,31 +4012,52 @@ async function asignarForm(cs, done, { minimos = false } = {}) {
   if (sin.length && !minimos) return toast('Falta la hoja de datos de: ' + sin.map(candName).join(', ') + '. Puedes usar "Contratar con datos mínimos".', true);
   const sinTel = sin.filter((c) => !String(c.telefono || '').trim() || !String(c.apellido_paterno || '').trim());
   if (sinTel.length) return toast('Para contratar con datos mínimos se necesita nombre, apellido paterno y teléfono: ' + sinTel.map(candName).join(', '), true);
-  const areas = [...new Set(cs.map((c) => c.area_id))];
-  if (areas.length > 1) return toast('Asigna por separado a candidatos de áreas distintas', true);
-  const sups = await rpc('supervisores_de', { p_area: areas[0] }).catch(() => []);
-  const sinVac = cs.filter((c) => !c.vacante_id);
-  const vacs = sinVac.length ? await db('vacantes').eq('area_id', areas[0]).eq('estado', 'abierta').get().catch(() => []) : [];
-  if (sinVac.length && !vacs.length) return toast(`${sinVac.map(candName).join(', ')} no ${sinVac.length === 1 ? 'tiene' : 'tienen'} vacante y no hay vacantes abiertas en ${areaName(areas[0])}. Solicita o abre una vacante (puesto y sueldo) para poder contratar.`, true);
+  // La vacante se elige aquí: puede ser de Cobranza o de Marketing (de las áreas de quien contrata), aunque se haya registrado para otra
+  const vacs = (await db('vacantes').eq('estado', 'abierta').get().catch(() => [])).filter((v) => seesAllAreas() || S.myAreas.includes(v.area_id))
+    .sort((a, b) => areaName(a.area_id).localeCompare(areaName(b.area_id)) || a.folio - b.folio);
+  if (!vacs.length) return toast('No hay vacantes abiertas. Solicita o abre una vacante (puesto y sueldo) para poder contratar.', true);
+  const actual = [...new Set(cs.map((c) => c.vacante_id || ''))];
+  const vac0 = actual.length === 1 && vacs.some((v) => v.id === actual[0]) ? actual[0] : vacs.length === 1 ? vacs[0].id : '';
+  const supsDe = {};
+  await Promise.all([...new Set(vacs.map((v) => v.area_id))].map(async (a) => { supsDe[a] = await rpc('supervisores_de', { p_area: a }).catch(() => []); }));
   const alert = cs.filter((c) => c.alerta);
   const f = [
-    ...(sinVac.length ? [{ k: 'vac', label: `Vacante (puesto y sueldo) para ${sinVac.length === 1 ? esc(candName(sinVac[0])) : sinVac.length + ' sin vacante'}`, type: 'select', req: true, val: vacs.length === 1 ? vacs[0].id : '', options: [['', 'Elegir…'], ...vacs.map((x) => [x.id, `${vacLabel(x)}${x.sueldo != null ? ' · ' + money(x.sueldo) : ''}`])], full: true }] : []),
-    ...(sups.length ? [{ k: 'sup', label: 'Supervisor que lo recibe', type: 'select', req: true, val: sups.length === 1 ? sups[0].id : '', options: [['', 'Elegir…'], ...sups.map((s) => [s.id, s.full_name])] }] : []),
+    { k: 'vac', label: `Vacante (área, puesto y sueldo)`, type: 'select', req: true, val: vac0, options: [['', 'Elegir…'], ...vacs.map((x) => [x.id, `${vacLabel(x)}${x.sueldo != null ? ' · ' + money(x.sueldo) : ''}`])], full: true },
+    { k: 'sup', label: 'Supervisor que lo recibe', type: 'select', options: [['', 'Elegir…']] },
     { k: 'ing', label: 'Fecha de ingreso', type: 'date', req: true, val: todayMX() },
     { k: 'ct', label: 'Tipo de contrato', type: 'select', req: true, options: [['', 'Elegir…'], ...Object.entries(CONTRATOS)], full: true }];
-  modal({ title: `Contratar · ${cs.length === 1 ? candName(cs[0]) : cs.length + ' candidatos'}`, wide: true,
+  const m = modal({ title: `Contratar · ${cs.length === 1 ? candName(cs[0]) : cs.length + ' candidatos'}`, wide: true,
     body: `${alert.length ? `<div class="notice n-bad">${alert.map((c) => `<b>${esc(candName(c))}</b>: ${esc(c.alerta)}`).join('<br>')}${is('developer') ? '<br>Puedes continuar bajo tu responsabilidad.' : '<br>Solo Daniel puede contratarlo.'}</div>` : ''}
-      ${sups.length ? '' : `<div class="notice n-info">${esc(areaName(areas[0]))} no tiene supervisor activo: ${cs.length === 1 ? 'entra' : 'entran'} como alta pendiente sin grupo y RH ${cs.length === 1 ? 'lo asigna' : 'los asigna'} después a un grupo (Áreas y grupos o su expediente).</div>`}
-      ${sin.length ? `<div class="notice n-warn"><b>Datos mínimos:</b> ${sin.map((c) => esc(candName(c))).join(', ')} ${sin.length === 1 ? 'entra' : 'entran'} con nombre y teléfono y ${sin.length === 1 ? 'queda' : 'quedan'} con "Datos pendientes". RH completa la hoja en Personal → Editar datos (CURP, RFC, NSS, nacimiento y domicilio son necesarios para el IMSS).</div>` : ''}
-      <div class="notice n-info">Se hará el alta pendiente en Personal con la hoja de datos y se generarán <b>contrato, reglamento interior y acuerdo de confidencialidad</b> para imprimir y firmar. Daniel acepta el alta cuando los 3 estén firmados y subidos.</div>${fieldsHtml(f)}`,
+      <div id="as_area"></div>
+      ${sin.length ? `<div class="notice n-warn"><b>Datos mínimos:</b> ${sin.map((c) => esc(candName(c))).join(', ')} ${sin.length === 1 ? 'entra' : 'entran'} con nombre y teléfono y ${sin.length === 1 ? 'queda' : 'quedan'} con "Datos pendientes". RH completa la hoja en Personal (o con el link de registro).</div>` : ''}
+      <div class="notice n-info">Se hará el alta pendiente en Personal con la hoja de datos y se generarán <b>contrato, reglamento interior y acuerdo de confidencialidad</b> para imprimir y firmar. El alta se acepta cuando los 3 estén firmados y subidos.</div>${fieldsHtml(f)}`,
     actions: [{ label: 'Cancelar' }, { label: 'Contratar', cls: 'primary', run: async ({ el }) => {
-      const v = readFields(el, f);
-      if (sinVac.length) await mustUpdate(db('candidatos').in('id', sinVac.map((c) => c.id)).update({ vacante_id: v.vac }), 'el candidato');
-      const n = await rpc(sin.length ? 'cand_asignar_minimos' : 'cand_asignar', { p_ids: cs.map((c) => c.id), p_supervisor: v.sup || null, p_fecha_ingreso: v.ing, p_contrato: v.ct });
+      const v = readFields(el, f); const vac = vacs.find((x) => x.id === v.vac);
+      if (!vac) throw new Error('Elige la vacante.');
+      const sups = supsDe[vac.area_id] || [];
+      if (sups.length && !v.sup) throw new Error('Elige el supervisor que lo recibe.');
+      const mover = cs.filter((c) => c.vacante_id !== vac.id);
+      const otraArea = mover.filter((c) => c.area_id !== vac.area_id);
+      if (otraArea.length) await rpc('cand_cambiar_vacante', { p_ids: otraArea.map((c) => c.id), p_vac: vac.id });
+      const misma = mover.filter((c) => c.area_id === vac.area_id);
+      if (misma.length) await mustUpdate(db('candidatos').in('id', misma.map((c) => c.id)).update({ vacante_id: vac.id }), 'el candidato');
+      const n = await rpc(sin.length ? 'cand_asignar_minimos' : 'cand_asignar', { p_ids: cs.map((c) => c.id), p_supervisor: sups.length ? v.sup : null, p_fecha_ingreso: v.ing, p_contrato: v.ct });
       RS.sel.clear(); RS.etapa = 'asignado';
-      toast(`${Array.isArray(n) ? n[0] : n} contratado(s) · imprime y sube los documentos firmados`);
+      toast(`${Array.isArray(n) ? n[0] : n} contratado(s) en ${areaName(vac.area_id)} · imprime y sube los documentos firmados`);
       (done || (() => viewReclutamiento()))();
     } }] });
+  const selV = $('#f_vac', m.el), selS = $('#f_sup', m.el), info = $('#as_area', m.el);
+  const pintar = () => {
+    const vac = vacs.find((x) => x.id === selV.value); const sups = vac ? supsDe[vac.area_id] || [] : [];
+    const prev = selS.value;
+    selS.innerHTML = '<option value="">Elegir…</option>' + sups.map((x) => `<option value="${x.id}">${esc(x.full_name)}</option>`).join('');
+    selS.value = sups.some((x) => x.id === prev) ? prev : sups.length === 1 ? sups[0].id : '';
+    selS.closest('.field').style.display = sups.length ? '' : 'none';
+    const cambia = vac ? cs.filter((c) => c.area_id !== vac.area_id) : [];
+    info.innerHTML = !vac ? '' : (cambia.length ? `<div class="notice n-warn">${cambia.length === 1 ? esc(candName(cambia[0])) + ' se registró' : cambia.length + ' se registraron'} para ${esc(areaName(cambia[0].area_id))}; ${cambia.length === 1 ? 'entra' : 'entran'} a <b>${esc(areaName(vac.area_id))}</b>.</div>` : '')
+      + (sups.length ? '' : `<div class="notice n-info">${esc(areaName(vac.area_id))} no tiene supervisor activo: ${cs.length === 1 ? 'entra' : 'entran'} como alta pendiente sin grupo y RH ${cs.length === 1 ? 'lo asigna' : 'los asigna'} después a un grupo.</div>`);
+  };
+  selV.onchange = pintar; pintar();
 }
 async function purgeCandidatos(cands) {
   const lim = addDays(todayMX(), -183);
