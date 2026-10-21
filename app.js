@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.27.0';
+const APP_VERSION = '0.27.1';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -889,10 +889,11 @@ async function viewPersonal() {
       && (!q || norm(fullName(e) + ' ' + (e.num_empleado || '') + ' ' + (e.puesto || '')).includes(q)));
     $('#plist').innerHTML = rows.length ? rows.slice(0, 400).map((e) => `<button type="button" class="item" data-id="${e.id}">
         <span class="grow"><span class="nm">${esc(fullName(e))}</span><br><span class="small muted">${e.num_empleado ? esc(e.num_empleado) + ' · ' : ''}${esc(e.puesto || 'Sin puesto')} · ${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))}</span></span>
-        ${e.origen === 'lider' && e.status === 'alta_pendiente' ? '<span class="badge b-acc">Agregado por líder</span>' : ''}${e.datos_pendientes && ['activo', 'alta_pendiente'].includes(e.status) ? '<span class="badge b-bad">Datos pendientes</span>' : ''}${faltasBadge(fx[e.id])} ${PS.status !== e.status || !PS.status ? statusBadge(e.status) : (e.status === 'alta_pendiente' ? statusBadge(e.status) : '')}</button>`).join('')
+        ${e.origen === 'lider' && e.status === 'alta_pendiente' ? '<span class="badge b-acc">Agregado por líder</span>' : ''}${e.datos_pendientes && ['activo', 'alta_pendiente'].includes(e.status) ? '<span class="badge b-bad">Datos pendientes</span>' : ''}${faltasBadge(fx[e.id])} ${PS.status !== e.status || !PS.status ? statusBadge(e.status) : (e.status === 'alta_pendiente' ? statusBadge(e.status) : '')}${e.status === 'baja' && is('developer') ? `<span role="button" tabindex="0" class="btn sm" data-react="${e.id}">Reactivar</span>` : ''}</button>`).join('')
       + (rows.length > 400 ? `<div class="muted small">Mostrando 400 de ${rows.length}. Usa el buscador.</div>` : '')
       : '<div class="card empty">Sin resultados</div>';
     $$('#plist .item').forEach((b) => b.onclick = () => openEmployee(b.dataset.id, fx));
+    $$('#plist [data-react]').forEach((b) => b.onclick = (ev) => { ev.stopPropagation(); reactivarForm(emps.find((x) => x.id === b.dataset.react), () => viewPersonal()); });
   };
   draw();
   $('#pq').oninput = (e) => { PS.q = e.target.value; draw(); };
@@ -1038,6 +1039,7 @@ async function viewExpediente(id) {
     if (e.status === 'activo') acts.push(['area', 'Cambiar área', '']);
     if (['activo', 'baja', 'alta_pendiente'].includes(e.status)) acts.push(['doc', 'Generar documento', '']);
     if (e.status === 'activo') acts.push(['baja', 'Dar de baja', 'danger']);
+    if (e.status === 'baja') acts.push(['reactivar', 'Reactivar (baja por error)', 'primary']);
     acts.push(['eliminar', 'Eliminar', 'danger']);
   }
 
@@ -1073,6 +1075,7 @@ async function viewExpediente(id) {
 async function expAction(k, { e, p }) {
   const done = () => viewExpediente(e.id);
   if (k === 'aceptar') return aceptarAlta(e);
+  if (k === 'reactivar') return reactivarForm(e, done);
   if (k === 'rechazar') { if (!(await confirmBox('Rechazar alta', `¿Rechazar la solicitud de <b>${esc(fullName(e))}</b>?`, { danger: true, okLabel: 'Rechazar' }))) return; await mustUpdate(db('employees').eq('id', e.id).update({ status: 'rechazado' })); toast('Alta rechazada'); return done(); }
   if (k === 'editar') return editEmployee(e, priv0(p), { basic: is('developer') || (is('rh_general', 'rh_area') && e.status === 'alta_pendiente'), priv: true });
   if (k === 'grupo') return moveGroup(e);
@@ -1447,6 +1450,23 @@ function moveArea(e) {
       const v = readFields(el, f); await mustUpdate(db('employees').eq('id', e.id).update({ area_id: v.area_id, group_id: null })); toast('Área actualizada'); viewPersonal();
     } }]
   });
+}
+// Revertir una baja hecha por error (solo Daniel): vuelve a Activo con su mismo historial y número
+async function reactivarForm(e, done) {
+  const docs = await db('documents').select('id,tipo,folio,estado,baja_aplicada').eq('employee_id', e.id).eq('baja_aplicada', true).neq('estado', 'anulado').get().catch(() => []);
+  const gs = S.groups.filter((g) => g.area_id === e.area_id && g.active);
+  const f = [{ k: 'group_id', label: 'Grupo / líder', type: 'select', val: gs.some((g) => g.id === e.group_id) ? e.group_id : '', options: [['', 'Sin grupo'], ...gs.map((g) => [g.id, g.name + (g.tl_id ? ' — ' + profName(g.tl_id) : '')])], full: true }];
+  modal({ title: 'Reactivar · ' + fullName(e), body: `
+    <div class="notice n-info"><b>${esc(fullName(e))}</b> vuelve a <b>Activo</b> en ${esc(areaName(e.area_id))} con su mismo número, fecha de ingreso (${fmtDate(e.fecha_ingreso)}) e historial. Se quita la fecha de baja (${fmtDate(e.fecha_baja)}) y el motivo de baja; aparece desde hoy en el pase de lista de su grupo.</div>
+    ${docs.length ? `<div class="notice n-warn">La baja se aplicó con ${docs.map((d) => `<b>${esc(DOC_TIPOS[d.tipo] ? DOC_TIPOS[d.tipo].label : d.tipo)} ${esc(docFolio(d))}</b>`).join(', ')}. Si fue un error, anúlalo en Documentos para que no quede como vigente.</div>` : ''}
+    <div class="small muted">Si la persona sí dejó de trabajar y regresa después, es un reingreso: dala de alta como nuevo ingreso.</div>
+    ${fieldsHtml(f)}`,
+    actions: [{ label: 'Cancelar' }, { label: 'Reactivar', cls: 'primary', run: async ({ el }) => {
+      const v = readFields(el, f);
+      await mustUpdate(db('employees').eq('id', e.id).update({ status: 'activo', fecha_baja: null, group_id: v.group_id || null }));
+      await db('employee_private').eq('employee_id', e.id).update({ motivo_baja: null, recontratable: null }).catch(() => {});
+      toast(fullName(e) + ' reactivado'); (done || viewPersonal)();
+    } }] });
 }
 function bajaForm(e, p) {
   const f = [
