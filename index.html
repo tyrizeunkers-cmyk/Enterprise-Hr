@@ -139,6 +139,28 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .att2 .aviso.on{border-style:solid;background:var(--ink);border-color:var(--ink);color:#fff}
 .inc-note{border-left:3px solid var(--accent);background:var(--soft);padding:8px 10px;display:flex;flex-direction:column;gap:6px;border-radius:0 6px 6px 0}
 .inc-note .btn{align-self:flex-start}
+/* Cobranza: asistencia con códigos y registros de jornada */
+.person .quick-cob{padding:0 14px 12px;display:flex;flex-direction:column;gap:6px}
+.quick-cob .att-row,.cob-att .att-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.cob-att{display:flex;flex-direction:column;gap:6px}
+.quick-cob .att-row button,.cob-att .att-row button{min-height:42px;border-radius:8px;font-size:14px;font-weight:600;border:1px solid var(--line2);background:#fff}
+.quick-cob .asistio,.cob-att .asistio{color:var(--ok)} .quick-cob .falta,.cob-att .falta{color:var(--bad)} .quick-cob .salida,.cob-att .salida{color:var(--warn)} .quick-cob .descanso,.cob-att .descanso{color:#56616C}
+.quick-cob .asistio.on,.cob-att .asistio.on{background:var(--ok);border-color:var(--ok);color:#fff}
+.quick-cob .falta.on,.cob-att .falta.on{background:var(--bad);border-color:var(--bad);color:#fff}
+.quick-cob .salida.on,.cob-att .salida.on{background:var(--warn);border-color:var(--warn);color:#fff}
+.quick-cob .descanso.on,.cob-att .descanso.on{background:#56616C;border-color:#56616C;color:#fff}
+.codes{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.codes button{min-height:40px;border-radius:8px;font-size:14px;font-weight:700;border:1px solid var(--line2);background:#fff;color:#4453A8}
+.codes button.ab{color:#B23A0A}
+.codes button.on{background:#4453A8;border-color:#4453A8;color:#fff} .codes button.ab.on{background:#B23A0A;border-color:#B23A0A;color:#fff}
+.quick-cob button:disabled,.cob-att button:disabled{opacity:.55}
+.jr-btns{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.jr-btns .btn{min-height:44px;font-weight:600;padding:0 6px}
+@media (max-width:520px){.jr-btns{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.jr-list{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.jr-item b{font-weight:600;font-size:14px}
+.jr-item{border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:8px;padding:8px 10px;background:#fff;display:flex;flex-direction:column;gap:3px}
+.jr-calc{margin-top:8px;font-size:14px}.jr-calc .bad{color:var(--bad);font-weight:600}
 .req-list{display:flex;flex-direction:column}
 .req-row{display:flex;align-items:center;gap:10px;width:100%;min-height:46px;padding:8px 12px;background:#fff;border:0;border-top:1px solid var(--line);text-align:left;color:var(--ink)}
 .req-row:first-child{border-top:0}
@@ -360,7 +382,7 @@ details.card summary{cursor:pointer}
 </head>
 <body>
 <div id="app"><div class="login"><div class="muted">Cargando…</div></div></div>
-<script src="config.js?v=0.27.1"></script>
-<script src="app.js?v=0.27.1"></script>
+<script src="config.js?v=0.28.0"></script>
+<script src="app.js?v=0.28.0"></script>
 </body>
 </html>

@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.27.1';
+const APP_VERSION = '0.28.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -38,13 +38,14 @@ const stLabel = (a) => a && a.status ? (a.turno === 'tarde' ? ATT_PM : ATT)[a.st
 const AVISO = { nuevo_ingreso: 'Nuevo ingreso', baja: 'Baja' };
 const INC = { permiso: 'Permiso', descanso: 'Descanso', inactividad: 'Inactividad', vacaciones: 'Vacaciones' };
 const INC_TL = ['permiso', 'inactividad'];   // las vacaciones las registra RH; el Descanso va junto a la asistencia
-const ATT_SHORT = { asistio: 'A', falta: 'F', retardo: 'R', salida: 'S', permiso: 'P', descanso: 'D', inactividad: 'I', vacaciones: 'V' };
-const ATT_COLOR = { asistio: 'var(--ok)', falta: 'var(--bad)', retardo: 'var(--warn)', salida: 'var(--warn)', permiso: '#4453A8', descanso: '#6B7785', inactividad: '#B23A0A', vacaciones: '#0E7C86' };
-const ATT_BADGE = { asistio: 'b-ok', falta: 'b-bad', retardo: 'b-warn', salida: 'b-warn', permiso: 'b-acc', descanso: 'b-mut', inactividad: 'b-warn', vacaciones: 'b-ok', nuevo_ingreso: 'b-acc', baja: 'b-mut' };
+const COD = { C4: 'Medio día con justificante', Ab4: 'Medio día sin justificante', C8: 'Día completo con justificante', Ab8: 'Día completo sin justificante' };
+const ATT_SHORT = { asistio: 'A', falta: 'F', retardo: 'R', salida: 'S', permiso: 'P', descanso: 'D', inactividad: 'I', vacaciones: 'V', C4: 'C4', Ab4: 'Ab4', C8: 'C8', Ab8: 'Ab8' };
+const ATT_COLOR = { asistio: 'var(--ok)', falta: 'var(--bad)', retardo: 'var(--warn)', salida: 'var(--warn)', permiso: '#4453A8', descanso: '#6B7785', inactividad: '#B23A0A', vacaciones: '#0E7C86', C4: '#4453A8', Ab4: '#B23A0A', C8: '#4453A8', Ab8: 'var(--bad)' };
+const ATT_BADGE = { asistio: 'b-ok', falta: 'b-bad', retardo: 'b-warn', salida: 'b-warn', permiso: 'b-acc', descanso: 'b-mut', inactividad: 'b-warn', vacaciones: 'b-ok', nuevo_ingreso: 'b-acc', baja: 'b-mut', C4: 'b-acc', Ab4: 'b-warn', C8: 'b-acc', Ab8: 'b-bad' };
 const attCounts = () => Object.fromEntries([...Object.keys(ATT), 'salida', ...Object.keys(INC), ...Object.keys(AVISO)].map((k) => [k, 0]));
 // Asistencia/Falta/Retardo cuentan solo en la mañana; en la tarde solo cuenta la salida anticipada
 const countAtt = (c, a) => { if (!a) return; if (a.status && (a.turno !== 'tarde' || a.status === 'salida')) c[a.status]++; if (a.incidencia) c[a.incidencia]++; if (a.aviso) c[a.aviso]++; };
-const attParts = (a) => a ? [stLabel(a), a.aviso && 'Aviso: ' + AVISO[a.aviso], INC[a.incidencia]].filter(Boolean) : [];
+const attParts = (a) => a ? [stLabel(a), a.codigo && `${a.codigo} (${COD[a.codigo].toLowerCase()})`, a.aviso && 'Aviso: ' + AVISO[a.aviso], INC[a.incidencia]].filter(Boolean) : [];
 // Diferencia entre la entrada y el cierre del mismo día
 function attMismatch(m, t) {
   if (!t) return null;
@@ -59,10 +60,10 @@ const nowHM = () => new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-di
 const areaCierre = (areaId) => String(((S.areas || []).find((a) => a.id === areaId) || {}).hora_cierre || '16:00').slice(0, 5);
 const pmOpen = (areaId, fecha) => fecha < todayMX() || is('developer') || nowHM() >= areaCierre(areaId);
 const attLabel = (a) => attParts(a).join(' · ');
-const attShort = (a) => a ? (ATT_SHORT[a.status] || '') + (a.incidencia ? (a.status ? '+' : '') + ATT_SHORT[a.incidencia] : '') : '';
+const attShort = (a) => a ? a.codigo ? a.codigo : (ATT_SHORT[a.status] || '') + (a.incidencia ? (a.status ? '+' : '') + ATT_SHORT[a.incidencia] : '') : '';
 const groupLabel = (g) => (g.tipo === 'lideres' ? 'Líderes' : g.name);
-const attKey = (a) => a ? (a.status || a.incidencia) : null;
-const attBadges = (a) => [a.status && `<span class="badge ${ATT_BADGE[a.status]}">${stLabel(a)}</span>`, a.incidencia && `<span class="badge ${ATT_BADGE[a.incidencia]}">${INC[a.incidencia]}</span>`, a.aviso && `<span class="badge ${ATT_BADGE[a.aviso]}">Aviso: ${AVISO[a.aviso]}</span>`].filter(Boolean).join(' ');
+const attKey = (a) => a ? (a.codigo || a.status || a.incidencia) : null;
+const attBadges = (a) => [a.status && `<span class="badge ${ATT_BADGE[a.status]}">${stLabel(a)}</span>`, a.codigo && `<span class="badge ${ATT_BADGE[a.codigo]}">${a.codigo}</span>`, a.incidencia && `<span class="badge ${ATT_BADGE[a.incidencia]}">${INC[a.incidencia]}</span>`, a.aviso && `<span class="badge ${ATT_BADGE[a.aviso]}">Aviso: ${AVISO[a.aviso]}</span>`].filter(Boolean).join(' ');
 const SOLICITUD_LIDER = { acta: 'Acta administrativa', carta: 'Carta de advertencia', cambio_equipo: 'Cambio de equipo', baja: 'Baja' };
 const RIESGO = { fraude: 'Fraude', intento_fraude: 'Intento de fraude', faltas_injustificadas: 'Faltas injustificadas', abandono: 'Baja (abandono de trabajo)' };
 
@@ -543,7 +544,18 @@ async function viewLista() {
     const dy = await db('attendance_days').eq('group_id', g.id).eq('fecha', ayer).get().catch(() => []);
     pendAyer = !(dy[0] && dy[0].sent_at);
   }
-  renderLista({ emps, recM, recT, fx, d, lockedDay, g, vac, retirados, rets, desc, pendAyer, sinEq: (sinEq || []).filter((x) => x.area_id === g.area_id) }, groups);
+  // Cobranza: permisos, retardos, desconexiones y otras incidencias del día, con sus evidencias
+  const cob = esCobranza(g.area_id); let jor = {}, arch = {};
+  if (cob && ids.length) {
+    const [regs] = await Promise.all([db('jornada_registros').in('employee_id', ids).eq('fecha', LS.fecha).neq('estado', 'anulada').order('created_at').get().catch(() => []), cargarCategorias()]);
+    regs.forEach((x) => (jor[x.employee_id] = jor[x.employee_id] || []).push(x));
+    const attIds = att.filter((a) => a.codigo).map((a) => a.id), regIds = regs.map((x) => x.id);
+    const [f1, f2] = await Promise.all([regIds.length ? db('jornada_archivos').select('id,registro_id').in('registro_id', regIds).get().catch(() => []) : [],
+      attIds.length ? db('jornada_archivos').select('id,attendance_id').in('attendance_id', attIds).get().catch(() => []) : []]);
+    const fs = [...f1, ...f2];
+    fs.forEach((f) => { const k = f.registro_id || f.attendance_id; arch[k] = (arch[k] || 0) + 1; });
+  }
+  renderLista({ emps, recM, recT, fx, d, lockedDay, g, vac, retirados, rets, desc, pendAyer, cob, jor, arch, sinEq: (sinEq || []).filter((x) => x.area_id === g.area_id) }, groups);
 }
 const canDescanso = (g) => is('developer') || (is('tl') && g.tl_id === S.me.id) || (is('rh_general', 'rh_area', 'supervisor') && S.myAreas.includes(g.area_id));
 async function descansoForm(g, desc, done) {
@@ -603,8 +615,9 @@ function renderLista(st, groups) {
   ${d.reviewed_at && !lockedDay ? `<div class="notice n-info" style="margin-bottom:10px">Día revisado por ${esc(profName(d.reviewed_by))} · ${fmtDateTime(d.reviewed_at)}. Puedes corregir porque tienes rol de ${esc(ROLES[role()])}.</div>` : ''}
   ${tarde && !open ? `<div class="notice n-info" style="margin-bottom:10px">El pase de la tarde (cierre) se habilita a partir de las <b>${areaCierre(g.area_id)}</b>.</div>` : ''}
   ${tarde && open && diffs ? `<div class="notice n-warn" style="margin-bottom:10px"><b>${diffs}</b> ${diffs === 1 ? 'persona no coincide' : 'personas no coinciden'} con el pase de la mañana. Revísalas antes de enviar el cierre.</div>` : ''}
-  ${total && !locked ? `<div class="row" style="margin-bottom:10px"><button class="btn ghost grow" id="allok"${done === total ? ' disabled' : ''}>${tarde ? 'Marcar pendientes igual que en la mañana' : 'Marcar pendientes como “Asistencia”'}</button></div>` : ''}
-  <div class="list" id="people">${total ? emps.map((e) => personCard(e, rec[e.id], fx[e.id], locked, tarde ? recM[e.id] : null, st.vac && st.vac.has(e.id), (st.rets || []).find((x) => x.employee_id === e.id))).join('') : `<div class="card empty">${lider ? 'Aún no hay líderes en este grupo. Asígnalos desde Personal (grupo “Líderes”).' : 'No hay personal activo en este grupo.'}</div>`}</div>
+  ${total && !locked && !(st.cob && tarde) ? `<div class="row" style="margin-bottom:10px"><button class="btn ghost grow" id="allok"${done === total ? ' disabled' : ''}>${tarde ? 'Marcar pendientes igual que en la mañana' : st.cob ? 'Marcar pendientes como “Presente”' : 'Marcar pendientes como “Asistencia”'}</button></div>` : ''}
+  ${st.cob && tarde && open && !locked ? '<div class="notice n-info" style="margin-bottom:10px">Cierre de la jornada: registra a cada persona según cómo terminó el día. No se copia el pase de la mañana.</div>' : ''}
+  <div class="list" id="people">${total ? emps.map((e) => st.cob ? personCardCob(e, st) : personCard(e, rec[e.id], fx[e.id], locked, tarde ? recM[e.id] : null, st.vac && st.vac.has(e.id), (st.rets || []).find((x) => x.employee_id === e.id))).join('') : `<div class="card empty">${lider ? 'Aún no hay líderes en este grupo. Asígnalos desde Personal (grupo “Líderes”).' : 'No hay personal activo en este grupo.'}</div>`}</div>
   ${(st.retirados || []).length ? `<div class="card pad small" style="margin-top:10px"><b>Retiro solicitado (${st.retirados.length})</b> · ya no aparecen en la lista:<br>${st.retirados.map((x) => `${esc(fullName(x.e))} · último día ${fmtDate(x.ultimo_dia)} (${esc(x.motivo)})`).join('<br>')}<div class="muted" style="margin-top:4px">Nómina les paga hasta su último día. Daniel aplica la baja o RH la rechaza.</div></div>` : ''}
   ${canAddToList(g) && !lockedDay ? '<button type="button" class="btn ghost add-person" id="addPerson">+ Agregar persona que no aparece en la lista</button>' : ''}
   ${total ? `<div class="stickybar">
@@ -638,7 +651,7 @@ function renderLista(st, groups) {
     try { await rpc('send_turno', { p_group: g.id, p_fecha: LS.fecha, p_turno: LS.turno }); toast(tarde ? 'Cierre enviado' : 'Entrada enviada'); reload(); }
     catch (e) { toast(e.message, true); ev.target.disabled = false; }
   };
-  $$('#people .person').forEach((card) => wirePerson(card, st, groups));
+  $$('#people .person').forEach((card) => (st.cob ? wirePersonCob : wirePerson)(card, st, groups));
 }
 // El líder (o Supervisión/RH) avisa que alguien dejó de venir: sale de su lista desde el día siguiente a su último día
 function retiroForm(e, done) {
@@ -843,6 +856,344 @@ function wirePerson(card, st, groups) {
   const rb = $('[data-retiro]', card); if (rb) rb.onclick = () => retiroForm(emp, () => viewLista());
   const sb = $('[data-soltar]', card); if (sb) sb.onclick = () => soltarForm(emp, () => viewLista());
   $$('[data-req]', card).forEach((b) => b.onclick = () => requestForm({ employee: emp, tipo: b.dataset.req, fecha: LS.fecha, onDone: () => toast(RIESGO[b.dataset.req] ? 'Incidencia de riesgo enviada a Daniel' : 'Solicitud enviada a Daniel') }));
+}
+
+// ───────────────────────── Pase de lista de COBRANZA ─────────────────────────
+// Misma lista y tarjetas; cambian los botones de asistencia (Presente/Ausente/Salida + C4/Ab4/C8/Ab8) y la sección
+// "Permisos e incidencias" (permiso con autorización inmediata, retardo, desconexión, otra incidencia).
+// Las reglas (duraciones, cruces, un retardo por día, C8/Ab8 una sola vez) se validan en la base de datos.
+const esCobranza = (areaId) => (((S.areas || []).find((a) => a.id === areaId) || {}).modo_asistencia === 'cobranza');
+const JR_TIPO = { permiso: 'Permiso', retardo: 'Retardo', desconexion: 'Desconexión', otra: 'Otra incidencia' };
+const JR_CLAS = { justificada: 'Justificada', sin_justificar: 'Sin justificar' };
+const JR_PAGO = { pagado: 'Pagado', no_pagado: 'No pagado' };
+const JR_ESTADO = { registrada: ['Registrada', 'b-ok'], pendiente_regreso: ['Pendiente de regreso', 'b-warn'], abierta: ['Abierta · sin regreso', 'b-warn'], anulada: ['Anulada', 'b-mut'] };
+const JR_BUCKET = 'jornada';
+async function cargarCategorias() {
+  if (S.incCats && Date.now() - S.incCatsAt < 600000) return S.incCats;
+  S.incCats = await db('incidencia_categorias').order('orden').get().catch(() => S.incCats || []); S.incCatsAt = Date.now();
+  return S.incCats;
+}
+const mxIso = (fecha, hm) => `${fecha}T${hm}:00-06:00`;   // Ciudad de México: UTC−6 todo el año
+const durTxt = (min) => min == null ? '—' : min < 60 ? `${min} min` : `${Math.floor(min / 60)} h${min % 60 ? ' ' + (min % 60) + ' min' : ''}`;
+const hmOf = (ts) => ts ? fmtTime(ts) : '';
+const fechaMx = (ts) => ts ? new Intl.DateTimeFormat('en-CA', { timeZone: TZ }).format(new Date(ts)) : '';
+// Calcula inicio/fin con fecha completa: si la hora final es menor que la inicial, es del día siguiente
+function rangoMx(fecha, hIni, hFin) {
+  if (!fecha || !hIni) return null;
+  const ini = mxIso(fecha, hIni);
+  if (!hFin) return { ini, fin: null, min: null, sigDia: false };
+  const sigDia = hFin <= hIni;
+  const fin = mxIso(sigDia ? addDays(fecha, 1) : fecha, hFin);
+  return { ini, fin, min: Math.round((new Date(fin) - new Date(ini)) / 60000), sigDia };
+}
+const minEntre = (a, b) => Math.round((new Date(b) - new Date(a)) / 60000);
+const hmMin = (hm) => { const [h, m] = String(hm || '').split(':').map(Number); return h * 60 + m; };
+async function subirJornada(padre, files, onProgress) {
+  const failed = [];
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i]; onProgress && onProgress(i + 1, files.length);
+    const ext = (f.name.match(/\.([a-z0-9]{1,6})$/i) || [])[1];
+    const pid = padre.registro_id || padre.attendance_id;
+    const key = `${pid}/${newId()}${ext ? '.' + ext.toLowerCase() : ''}`;
+    try {
+      await storageUpload(JR_BUCKET, key, f);
+      await db('jornada_archivos').insert([{ ...padre, path: key, nombre: f.name.slice(0, 200), tipo: mimeOf(f), tamano: f.size, uploaded_by: S.me.id }]);
+    } catch (e) { failed.push(`${f.name} (${e.message})`); }
+  }
+  return failed;
+}
+function cobLabel(r, tarde) {
+  if (!r) return 'sin registrar';
+  if (r.codigo) return `${r.codigo} · ${COD[r.codigo].toLowerCase()}`;
+  if (r.incidencia === 'descanso' && !r.status) return 'Descanso';
+  if (r.incidencia === 'vacaciones') return 'Vacaciones';
+  const L = tarde ? { asistio: 'Presente', falta: 'Ausente', salida: 'Salida anticipada' } : { asistio: 'Presente', falta: 'Ausente', retardo: 'Retardo' };
+  return [L[r.status], r.incidencia && INC[r.incidencia]].filter(Boolean).join(' · ') || 'registrado';
+}
+function jrResumen(x) {
+  const t = JR_TIPO[x.tipo];
+  if (x.tipo === 'permiso') return `${t} ${hmOf(x.inicio)}–${hmOf(x.fin_prevista)} (${durTxt(x.minutos)}) · ${JR_PAGO[x.pago]}${x.fin_real ? ` · regresó ${hmOf(x.fin_real)}${x.minutos_reales > x.minutos ? ` (+${durTxt(x.minutos_reales - x.minutos)})` : ''}` : ''}`;
+  if (x.tipo === 'retardo') return `${t} de ${durTxt(x.minutos)} (entrada ${String(x.hora_programada).slice(0, 5)}, llegó ${String(x.hora_real).slice(0, 5)}) · ${JR_CLAS[x.clasificacion]}`;
+  if (x.tipo === 'desconexion') return `${t} desde ${hmOf(x.inicio)}${x.fin_real ? ` hasta ${hmOf(x.fin_real)} (${durTxt(x.minutos)})` : ''} · ${JR_CLAS[x.clasificacion]}${x.permiso_id ? ` · dentro de permiso: cuentan ${durTxt(x.minutos_fuera_permiso)}` : ''}`;
+  const c = (S.incCats || []).find((k) => k.clave === x.categoria);
+  return `${c ? c.nombre : t}${x.minutos ? ` · ${hmOf(x.inicio)}–${hmOf(x.fin_real)}` : ''}`;
+}
+function personCardCob(e, st) {
+  const tarde = LS.turno === 'tarde';
+  const rM = st.recM[e.id], rT = st.recT[e.id], r = tarde ? rT : rM;
+  const vac = st.vac && st.vac.has(e.id), retiro = (st.rets || []).find((x) => x.employee_id === e.id);
+  const locked = st.locked || vac;
+  const open = LS.open === e.id;
+  const regs = (st.jor || {})[e.id] || [];
+  const pend = regs.filter((x) => ['pendiente_regreso', 'abierta'].includes(x.estado));
+  const col = r ? ATT_COLOR[attKey(r)] : null;
+  const dis = locked ? ' disabled' : '';
+  const fullDay = rM && ['C8', 'Ab8'].includes(rM.codigo);
+  const b1 = tarde ? [['asistio', 'Presente'], ['falta', 'Ausente'], ['salida', 'Salida']] : [['asistio', 'Presente'], ['falta', 'Ausente']];
+  const on = (k) => !!(r && r.status === k && !r.codigo);
+  const stBtns = b1.map(([k, l]) => `<button type="button" class="${k}${on(k) ? ' on' : ''}" data-att="${k}" aria-pressed="${on(k)}"${dis}>${l}</button>`).join('')
+    + (tarde ? '' : `<button type="button" class="descanso${r && !r.status && r.incidencia === 'descanso' ? ' on' : ''}" data-desc aria-pressed="${!!(r && !r.status && r.incidencia === 'descanso')}"${dis}>Descanso</button>`);
+  const codOn = (k) => (r && r.codigo === k) || (tarde && ['C8', 'Ab8'].includes(k) && rM && rM.codigo === k);
+  const codBtns = Object.keys(COD).map((k) => `<button type="button" class="${k.startsWith('Ab') ? 'ab' : 'c'}${codOn(k) ? ' on' : ''}" data-cod="${k}" title="${esc(COD[k])}" aria-pressed="${codOn(k)}"${dis}>${k}</button>`).join('');
+  const attGrid = (cls) => `<div class="${cls}"><div class="att-row r${tarde ? 3 : 3}">${stBtns}</div><div class="codes">${codBtns}</div></div>`;
+  const resumen = `Mañana: ${cobLabel(rM, false)} · Tarde: ${cobLabel(rT, true)}`;
+  const archN = (id) => (st.arch || {})[id] || 0;
+  const jrItem = (x) => {
+    const [el, bc] = JR_ESTADO[x.estado] || ['', ''];
+    const acc = [];
+    if (!locked && !x.nomina_revisado_at && x.estado === 'pendiente_regreso') acc.push(`<button type="button" class="btn sm primary" data-jr-reg="${x.id}">Registrar regreso</button>`);
+    if (!locked && !x.nomina_revisado_at && x.estado === 'abierta') acc.push(`<button type="button" class="btn sm primary" data-jr-reg="${x.id}">Registrar reincorporación</button>`);
+    if (!locked && !x.nomina_revisado_at) acc.push(`<button type="button" class="btn sm" data-jr-edit="${x.id}">Corregir</button>`);
+    acc.push(`<button type="button" class="btn sm ghost" data-jr-arch="${x.id}">Evidencias (${archN(x.id)})</button>`);
+    if (!locked && !x.nomina_revisado_at) acc.push(`<button type="button" class="btn sm ghost danger" data-jr-anular="${x.id}">Anular</button>`);
+    return `<div class="jr-item"><div class="row" style="gap:6px;flex-wrap:wrap"><b class="grow" style="min-width:0">${esc(jrResumen(x))}</b><span class="badge ${bc}">${el}</span>${x.nomina_revisado_at ? '<span class="badge b-ok">Revisado por Nómina</span>' : ''}</div>
+      ${x.motivo || x.descripcion ? `<div class="small">${esc(x.motivo || x.descripcion)}</div>` : ''}
+      <div class="small muted">${x.tipo === 'permiso' ? `Autorizó ${esc(profName(x.autorizado_by))} · ${fmtDateTime(x.autorizado_at)}` : `Registró ${esc(profName(x.created_by))} · ${fmtDateTime(x.created_at)}`}${x.updated_at && x.created_at && new Date(x.updated_at) - new Date(x.created_at) > 60000 ? ` · última corrección ${esc(profName(x.updated_by))} ${fmtDateTime(x.updated_at)}` : ''}${x.evidencia_ref ? ` · Evidencia: ${esc(x.evidencia_ref)}` : ''}</div>
+      <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px">${acc.join('')}</div></div>`;
+  };
+  const reqRow = (k, l, risk) => `<button type="button" class="req-row${risk ? ' risk' : ''}" data-req="${k}"><b class="grow">${esc(l)}</b><span class="go" aria-hidden="true">›</span></button>`;
+  return `<div class="person cob${open ? ' open' : ''}" data-id="${e.id}">
+    <button type="button" class="ph" aria-expanded="${open}">
+      <span class="dot" style="${col ? `background:${col};border-color:${col}` : ''}"></span>
+      <span class="grow"><span style="display:block;font-weight:600">${esc(fullName(e))}</span><span class="small muted">${esc(resumen)}</span></span>
+      ${vac ? '<span class="badge b-ok">Vacaciones</span>' : ''}${pendBadge(e)}${pend.length ? `<span class="badge b-warn">${pend.length} sin regreso</span>` : ''}${regs.length && !pend.length ? `<span class="badge b-acc">${regs.length} registro${regs.length === 1 ? '' : 's'}</span>` : ''}${faltasBadge((st.fx || {})[e.id])}<span class="more" aria-hidden="true">${open ? 'Cerrar ▴' : 'Detalle ▾'}</span>
+    </button>
+    ${open ? '' : attGrid('quick-cob')}
+    ${open ? `<div class="body">
+      ${vac ? '<div class="notice n-info">De vacaciones autorizadas por RH. El día queda registrado como Vacaciones y no cuenta como falta.</div>' : ''}
+      <section class="fbox">
+        <header>Asistencia · ${tarde ? 'pase de la tarde (cierre)' : 'pase de la mañana (entrada)'}<span>${r ? 'Registrado' : 'Sin registrar'}</span></header>
+        <div class="fbody">
+          ${attGrid('cob-att')}
+          <div class="small muted">C = con justificante · Ab = sin justificante · 4 = medio día · 8 = día completo.${tarde ? ' C8/Ab8 se guardan en el pase de la mañana (el día completo cuenta una sola vez).' : ''}</div>
+          ${tarde && fullDay ? `<div class="notice n-info">En la mañana quedó como <b>${rM.codigo}</b> (día completo): el cierre se registra como Ausente.</div>` : ''}
+          ${r && r.codigo ? `<div class="inc-note"><div><b>${r.codigo}</b> · ${esc(COD[r.codigo])} · ${esc(r.codigo_periodo || '')}</div><div class="small">Motivo: ${esc(r.codigo_motivo || '')}${r.codigo_justificante ? ` · Justificante: ${esc(r.codigo_justificante)}` : ''}</div><div class="small muted">Registró ${esc(profName(r.codigo_by))} · ${fmtDateTime(r.codigo_at)}</div>
+            <div class="row" style="gap:6px;margin-top:6px">${locked ? '' : `<button type="button" class="btn sm" data-cod="${r.codigo}">Corregir</button>`}<button type="button" class="btn sm ghost" data-att-arch="${r.id}">Justificantes (${archN(r.id)})</button></div></div>` : ''}
+          ${tarde ? '' : `<div class="aviso-row"><span class="small muted">Aviso a RH <span class="hint">(opcional, si sigue en lista)</span></span><div class="att2">${Object.keys(AVISO).map((k) => `<button type="button" class="aviso${r && r.aviso === k ? ' on' : ''}" data-aviso="${k}" aria-pressed="${!!(r && r.aviso === k)}"${dis}>${AVISO[k]}</button>`).join('')}</div></div>`}
+          ${r ? `<div class="small muted">Último cambio: ${esc(profName(r.updated_by))} · ${fmtDateTime(r.updated_at)}</div>` : ''}
+        </div>
+      </section>
+      <section class="fbox">
+        <header>Permisos e incidencias<span>${LS.fecha === todayMX() ? 'Hoy' : fmtDate(LS.fecha)}</span></header>
+        <div class="fbody">
+          <div class="jr-btns">${['permiso', 'retardo', 'desconexion', 'otra'].map((k) => `<button type="button" class="btn" data-jr-new="${k}"${locked ? ' disabled' : ''}>${JR_TIPO[k]}</button>`).join('')}</div>
+          ${regs.length ? `<div class="jr-list">${regs.map(jrItem).join('')}</div>` : '<div class="small muted">Sin permisos ni incidencias en este día.</div>'}
+          ${!vac && !tarde && e.status === 'activo' && canEditVac(e) && !st.locked ? '<button type="button" class="btn sm" data-vacbtn style="margin-top:8px;align-self:flex-start">🌴 Registrar vacaciones…</button>' : ''}
+        </div>
+      </section>
+      ${!tarde && canSoltar() && ['activo', 'alta_pendiente'].includes(e.status) && !retiro ? '<button type="button" class="btn sm ghost" data-soltar style="align-self:flex-start">No es de mi equipo · pasar a Sin equipo</button>' : ''}
+      ${e.status === 'activo' && !tarde ? (retiro ? `<div class="notice n-warn">Retiro solicitado: último día ${fmtDate(retiro.ultimo_dia)} (${esc(retiro.motivo)}). Sale de la lista desde el día siguiente.</div>` : '<button type="button" class="btn sm ghost" data-retiro style="align-self:flex-start">Ya no trabaja aquí · solicitar retiro de la lista</button>') : ''}
+      ${e.status === 'alta_pendiente' ? '<div class="notice n-warn">Esta persona aún no tiene alta confirmada. Las solicitudes e incidencias de riesgo se habilitan cuando se acepte el alta.</div>' : ''}
+      ${canReportCase() && e.status === 'activo' ? `<section class="fbox">
+        <header>Solicitud de incidencias<span>Se envía directo a Daniel</span></header>
+        <div class="req-list">${Object.entries(SOLICITUD_LIDER).map(([k, l]) => reqRow(k, l)).join('')}</div>
+        <footer>Cada solicitud genera un folio y su seguimiento en Casos. No aplica la medida por sí sola.</footer>
+      </section>
+      <section class="fbox risk">
+        <header>Incidencias de riesgo<span>Directo a RH</span></header>
+        <div class="req-list">${Object.entries(RIESGO).map(([k, l]) => reqRow(k, l, true)).join('')}</div>
+        <footer>Razón, evidencias y fechas. No pasa por Supervisión.</footer>
+      </section>` : ''}
+    </div>` : ''}
+  </div>`;
+}
+function wirePersonCob(card, st, groups) {
+  const id = card.dataset.id; const { rec } = st;
+  const emp = st.emps.find((x) => x.id === id);
+  const redraw = () => renderLista(st, groups);
+  const reload = () => viewLista().catch((er) => toast(er.message, true));
+  $('.ph', card).onclick = () => { LS.open = LS.open === id ? null : id; redraw(); };
+  const save = async (patch) => {
+    const cur = rec[id] || {};
+    const row = { employee_id: id, fecha: LS.fecha, turno: LS.turno, status: cur.status || null, aviso: cur.aviso || null, incidencia: cur.incidencia || null, comentario: cur.comentario || null, incidencias: cur.incidencias || [], codigo: null, ...patch };
+    if (!row.incidencia) row.comentario = null;
+    const [saved] = await db('attendance').insert([row], { onConflict: 'employee_id,fecha,turno' });
+    rec[id] = saved;
+  };
+  const busy = () => $$('[data-att],[data-aviso],[data-desc],[data-cod]', card).forEach((x) => { x.disabled = true; });
+  const run = async (patch, msg) => { busy(); try { await save(patch); if (msg) toast(msg); } catch (er) { toast(er.message, true); } redraw(); };
+  $$('[data-att]', card).forEach((b) => b.onclick = () => {
+    const k = b.dataset.att, cur = rec[id];
+    if (cur && cur.status === k && !cur.codigo) return;
+    run({ status: k, codigo: null, incidencia: cur && cur.incidencia === 'descanso' ? null : (cur && cur.incidencia) || null });
+  });
+  $$('[data-desc]', card).forEach((b) => b.onclick = () => { const cur = rec[id]; if (cur && !cur.status && cur.incidencia === 'descanso') return; run({ status: null, aviso: null, incidencia: 'descanso', comentario: null, codigo: null }); });
+  $$('[data-aviso]', card).forEach((b) => b.onclick = () => {
+    const k = b.dataset.aviso, cur = rec[id];
+    if (!cur || !cur.status) return toast('El aviso va junto con Presente o Ausente', true);
+    if (cur.aviso === k) return run({ aviso: null }, 'Aviso quitado');
+    run({ aviso: k }, k === 'baja' ? 'Aviso de baja registrado (no da de baja: RH lo revisa)' : 'Aviso de nuevo ingreso registrado');
+  });
+  $$('[data-cod]', card).forEach((b) => b.onclick = () => codigoForm(emp, b.dataset.cod, st, reload));
+  $$('[data-jr-new]', card).forEach((b) => b.onclick = () => jornadaForm(emp, b.dataset.jrNew, null, st, reload));
+  const reg = (x) => ((st.jor || {})[id] || []).find((y) => y.id === x);
+  $$('[data-jr-edit]', card).forEach((b) => b.onclick = () => { const x = reg(b.dataset.jrEdit); jornadaForm(emp, x.tipo, x, st, reload); });
+  $$('[data-jr-reg]', card).forEach((b) => b.onclick = () => regresoForm(emp, reg(b.dataset.jrReg), st, reload));
+  $$('[data-jr-anular]', card).forEach((b) => b.onclick = () => anularJornada(emp, reg(b.dataset.jrAnular), reload));
+  $$('[data-jr-arch]', card).forEach((b) => b.onclick = () => evidenciasJornada({ registro_id: b.dataset.jrArch }, reg(b.dataset.jrArch).estado !== 'anulada' && !st.locked, reload));
+  $$('[data-att-arch]', card).forEach((b) => b.onclick = () => evidenciasJornada({ attendance_id: b.dataset.attArch }, !st.locked, reload));
+  const vb = $('[data-vacbtn]', card); if (vb) vb.onclick = () => vacForm({ emps: [emp], employee: emp, onDone: () => viewLista() });
+  const rb = $('[data-retiro]', card); if (rb) rb.onclick = () => retiroForm(emp, () => viewLista());
+  const sb = $('[data-soltar]', card); if (sb) sb.onclick = () => soltarForm(emp, () => viewLista());
+  $$('[data-req]', card).forEach((b) => b.onclick = () => requestForm({ employee: emp, tipo: b.dataset.req, fecha: LS.fecha, onDone: () => toast(RIESGO[b.dataset.req] ? 'Incidencia de riesgo enviada a Daniel' : 'Solicitud enviada a Daniel · síguela en Casos') }));
+}
+// Código C4/Ab4/C8/Ab8 con motivo y justificante
+function codigoForm(e, k, st, done) {
+  const tarde = LS.turno === 'tarde';
+  const cur = (tarde && ['C8', 'Ab8'].includes(k) ? st.recM : st.rec)[e.id] || {};
+  const prev = cur.codigo === k ? cur : {};
+  const medio = ['C4', 'Ab4'].includes(k), conJ = k.startsWith('C');
+  const f = [
+    ...(medio ? [{ k: 'periodo', label: 'Periodo afectado', type: 'select', req: true, val: prev.codigo_periodo || (tarde ? 'Segunda mitad de la jornada' : 'Primera mitad de la jornada'), options: opts(['Primera mitad de la jornada', 'Segunda mitad de la jornada']) }] : []),
+    { k: 'motivo', label: 'Motivo', type: 'textarea', req: true, full: true, val: prev.codigo_motivo || '' },
+    { k: 'justificante', label: conJ ? 'Justificante (cuál es o dónde está)' : 'Referencia (opcional)', req: conJ, full: true, val: prev.codigo_justificante || '', hint: conJ ? 'Ej. "Incapacidad IMSS folio 123" o "receta enviada por WhatsApp". Puedes adjuntar la foto abajo.' : 'Sin justificante. Si después lo entrega, corrígelo a ' + k.replace('Ab', 'C') + '.' }];
+  const fb = fileBox('cod_fb', { title: 'Justificante (foto o PDF)', label: 'Adjuntar justificante' });
+  const m = modal({ title: `${k} · ${fullName(e)}`, body: `<div class="notice n-info"><b>${k}</b>: ${esc(COD[k])} · ${fmtDate(LS.fecha)}.${!medio && tarde ? ' Se guarda en el pase de la mañana y el cierre queda como Ausente: el día completo cuenta una sola vez.' : ''}${medio ? ' No es falta del día completo: queda para revisión de Nómina, sin descuento automático.' : ''}</div>${fieldsHtml(f)}${fb.html}`,
+    actions: [{ label: 'Cancelar' }, { label: 'Guardar', cls: 'primary', run: async ({ el, btn }) => {
+      const v = readFields(el, f);
+      if (conJ && !v.justificante) throw new Error('Falta: Justificante');
+      const attId = await rpc('asistencia_codigo', { p_emp: e.id, p_fecha: LS.fecha, p_turno: LS.turno, p_codigo: k, p_periodo: v.periodo || null, p_motivo: v.motivo, p_justificante: v.justificante });
+      const failed = fb.files.length ? await subirJornada({ attendance_id: Array.isArray(attId) ? attId[0] : attId }, fb.files, (i, n) => { btn.textContent = `Subiendo ${i} de ${n}…`; }) : [];
+      toast(failed.length ? `Guardado, pero no se subió: ${failed.join('; ')}` : `${k} registrado`, !!failed.length); done && done();
+    } }] });
+  fb.wire(m.el);
+}
+// Formularios de Permiso, Retardo, Desconexión y Otra incidencia (alta y corrección)
+function jornadaForm(e, tipo, x, st, done, pre = {}) {
+  x = x || {}; const edit = !!x.id;
+  const fecha = x.fecha || LS.fecha;
+  const regsDia = ((st && st.jor) || {})[e.id] || [];
+  const permisos = regsDia.filter((p) => p.tipo === 'permiso' && p.id !== x.id);
+  let f = [], aviso = '', btnLabel = edit ? 'Guardar corrección' : 'Guardar';
+  if (tipo === 'permiso') {
+    f = [{ k: 'salida', label: 'Hora de salida', type: 'time', req: true, val: hmOf(x.inicio) || pre.salida || '' },
+      { k: 'regreso', label: 'Hora prevista de reincorporación', type: 'time', req: true, val: hmOf(x.fin_prevista) || '' },
+      { k: 'motivo', label: 'Motivo del permiso', type: 'textarea', req: true, full: true, val: x.motivo || '' },
+      { k: 'pago', label: 'Tratamiento de pago', type: 'select', req: true, val: x.pago || '', options: [['', 'Elegir…'], ['pagado', 'Pagado'], ['no_pagado', 'No pagado']], hint: 'Se usa en el reporte de nómina. No aplica descuentos por sí solo.' },
+      { k: 'observaciones', label: 'Observaciones (opcional)', full: true, val: x.observaciones || '' }];
+    aviso = `<div class="notice n-info">Al guardar, el permiso queda <b>autorizado por ti</b> (${esc(S.me.full_name || '')}) con fecha y hora; no necesita otra aprobación.${edit ? ' Si cambias horario, motivo o pago, se vuelve a registrar quién autoriza.' : ''}</div>`;
+    btnLabel = edit ? 'Autorizar y guardar corrección' : 'Autorizar y guardar';
+  } else if (tipo === 'retardo') {
+    let prog = ''; try { prog = localStorage.getItem('hr.cob.entrada') || ''; } catch { prog = ''; }
+    f = [{ k: 'programada', label: 'Hora de entrada programada', type: 'time', req: true, val: x.hora_programada ? String(x.hora_programada).slice(0, 5) : prog || '09:00' },
+      { k: 'real', label: 'Hora real de entrada', type: 'time', req: true, val: x.hora_real ? String(x.hora_real).slice(0, 5) : '' },
+      { k: 'clasificacion', label: 'Clasificación', type: 'select', req: true, val: x.clasificacion || '', options: [['', 'Elegir…'], ['justificada', 'Justificado'], ['sin_justificar', 'Sin justificar']] },
+      { k: 'motivo', label: 'Motivo u observaciones', full: true, val: x.motivo || '' },
+      { k: 'evidencia_ref', label: 'Justificante o evidencia (cuál es o dónde está)', full: true, val: x.evidencia_ref || '' }];
+    aviso = '<div class="notice n-info">Queda también como Retardo en el pase de la mañana. Si es sin justificar, el tiempo queda para revisión de Nómina: no es una multa automática.</div>';
+  } else if (tipo === 'desconexion') {
+    f = [{ k: 'desde', label: 'Hora de desconexión', type: 'time', req: true, val: hmOf(x.inicio) || pre.desde || '' },
+      { k: 'hasta', label: 'Hora de reincorporación', type: 'time', val: hmOf(x.fin_real) || pre.hasta || '', hint: 'Déjala vacía si todavía no regresa: queda abierta y la completas después.' },
+      { k: 'clasificacion', label: 'Clasificación', type: 'select', req: true, val: x.clasificacion || pre.clasificacion || '', options: [['', 'Elegir…'], ['justificada', 'Justificada'], ['sin_justificar', 'Sin justificar']] },
+      { k: 'motivo', label: 'Motivo', type: 'textarea', req: true, full: true, val: x.motivo || pre.motivo || '' },
+      { k: 'evidencia_ref', label: 'Evidencias o referencias (opcional)', full: true, val: x.evidencia_ref || '', hint: 'Ej. "Reporte de actividad del CRM 12:10–12:40".' }];
+    aviso = '<div class="notice n-info">Si la desconexión cae dentro de un permiso autorizado, se vincula a ese permiso y ese tiempo no se cuenta dos veces. Sin justificar: queda para revisión de Nómina, sin descuento automático.</div>';
+  } else {
+    const cats = (S.incCats || []).filter((c) => c.activo || c.clave === x.categoria);
+    f = [{ k: 'categoria', label: 'Tipo de incidencia', type: 'select', req: true, val: x.categoria || '', options: [['', 'Elegir…'], ...cats.map((c) => [c.clave, c.nombre])] },
+      { k: 'descripcion', label: 'Descripción objetiva de los hechos', type: 'textarea', req: true, full: true, val: x.descripcion || '', hint: 'Qué pasó, cuándo y cómo se supo. Mínimo 15 caracteres.' },
+      { k: 'desde', label: 'Periodo afectado · desde (opcional)', type: 'time', val: hmOf(x.inicio) },
+      { k: 'hasta', label: 'Hasta (opcional)', type: 'time', val: hmOf(x.fin_real) },
+      { k: 'evidencia_ref', label: 'Evidencia (cuál es o dónde está)', full: true, val: x.evidencia_ref || '', hint: 'Obligatoria en "Falta de evidencia de gestión" e "Incumplimiento de métricas". Puedes adjuntar archivos abajo.' },
+      { k: 'observaciones', label: 'Observaciones (opcional)', full: true, val: x.observaciones || '' }];
+    aviso = '<div class="notice n-info">Registrar una incidencia no genera una sanción ni una baja. Si se requiere una medida, usa "Solicitud de incidencias".</div>';
+  }
+  const fb = fileBox('jr_fb', { title: 'Evidencias', label: 'Adjuntar archivos' });
+  const m = modal({ title: `${edit ? 'Corregir · ' : ''}${JR_TIPO[tipo]} · ${fullName(e)}`, wide: true,
+    body: `${aviso}<div class="small muted" style="margin:6px 0">Fecha: <b>${fmtDate(fecha)}</b>${edit ? ` · registrado por ${esc(profName(x.created_by))} el ${fmtDateTime(x.created_at)}` : ''}</div>${fieldsHtml(f)}<div id="jr_calc" class="jr-calc"></div>${edit ? '' : fb.html}`,
+    actions: [{ label: 'Cancelar' }, { label: btnLabel, cls: 'primary', run: async ({ el, btn }) => {
+      const v = readFields(el, f); const row = {};
+      const c = calc();
+      if (c.err) throw new Error(c.err);
+      if (tipo === 'permiso') Object.assign(row, { inicio: c.r.ini, fin_prevista: c.r.fin, motivo: v.motivo, pago: v.pago, observaciones: v.observaciones });
+      else if (tipo === 'retardo') { Object.assign(row, { hora_programada: v.programada, hora_real: v.real, clasificacion: v.clasificacion, motivo: v.motivo, evidencia_ref: v.evidencia_ref }); try { localStorage.setItem('hr.cob.entrada', v.programada); } catch { /* sin almacenamiento */ } }
+      else if (tipo === 'desconexion') Object.assign(row, { inicio: c.r.ini, fin_real: c.r.fin, clasificacion: v.clasificacion, motivo: v.motivo, evidencia_ref: v.evidencia_ref, permiso_id: c.perm ? c.perm.id : null });
+      else {
+        const cat = (S.incCats || []).find((k) => k.clave === v.categoria) || {};
+        if ((v.descripcion || '').length < 15) throw new Error('Describe con hechos qué ocurrió (al menos 15 caracteres).');
+        if (cat.requiere_evidencia && !v.evidencia_ref) throw new Error(`"${cat.nombre}" requiere evidencia: indica cuál es o dónde está.`);
+        Object.assign(row, { categoria: v.categoria, descripcion: v.descripcion, inicio: c.r ? c.r.ini : null, fin_real: c.r ? c.r.fin : null, evidencia_ref: v.evidencia_ref, observaciones: v.observaciones });
+      }
+      let saved;
+      if (edit) [saved] = await mustUpdate(db('jornada_registros').eq('id', x.id).update(row), 'el registro');
+      else [saved] = await db('jornada_registros').insert([{ employee_id: e.id, fecha, tipo, ...row }]);
+      const failed = fb.files.length && saved ? await subirJornada({ registro_id: saved.id }, fb.files, (i, n) => { btn.textContent = `Subiendo ${i} de ${n}…`; }) : [];
+      toast(failed.length ? `Guardado, pero no se subió: ${failed.join('; ')}. Agrégalo en "Evidencias".` : tipo === 'permiso' ? 'Permiso autorizado' : `${JR_TIPO[tipo]} registrado`, !!failed.length);
+      done && done();
+    } }] });
+  if (!edit) fb.wire(m.el);
+  const box = $('#jr_calc', m.el);
+  function calc() {
+    const val = (k) => { const i = $('#f_' + k, m.el); return i ? i.value : ''; };
+    if (tipo === 'permiso') {
+      const r = rangoMx(fecha, val('salida'), val('regreso'));
+      if (!r || !r.fin) return { html: 'Escribe la hora de salida y la de regreso para calcular la duración.' };
+      const cruza = permisos.find((p) => p.estado !== 'anulada' && new Date(p.inicio) < new Date(r.fin) && new Date(r.ini) < new Date(p.fin_prevista));
+      if (cruza) return { r, err: `Se cruza con otro permiso autorizado (${hmOf(cruza.inicio)} a ${hmOf(cruza.fin_prevista)}).`, html: `<span class="bad">Se cruza con otro permiso (${hmOf(cruza.inicio)}–${hmOf(cruza.fin_prevista)})</span>` };
+      return { r, html: `Duración solicitada: <b>${durTxt(r.min)}</b>${r.sigDia ? ' · el regreso es al día siguiente' : ''}` };
+    }
+    if (tipo === 'retardo') {
+      const p = val('programada'), q = val('real');
+      if (!p || !q) return { html: 'Escribe las dos horas para calcular el retardo.' };
+      const d = hmMin(q) - hmMin(p);
+      if (d <= 0) return { err: 'No hay retardo: la hora real de entrada es igual o anterior a la programada.', html: '<span class="bad">No hay retardo: llegó a tiempo o antes.</span>' };
+      return { html: `Retardo: <b>${durTxt(d)}</b>` };
+    }
+    if (tipo === 'desconexion') {
+      const r = rangoMx(fecha, val('desde'), val('hasta'));
+      if (!r) return { html: 'Escribe la hora de desconexión.' };
+      const perm = permisos.find((p) => p.estado !== 'anulada' && new Date(p.inicio) < new Date(r.fin || '9999-12-31') && new Date(r.ini) < new Date(p.fin_prevista));
+      const fuera = perm && r.fin ? Math.max(0, r.min - Math.max(0, minEntre(new Date(Math.max(new Date(r.ini), new Date(perm.inicio))), new Date(Math.min(new Date(r.fin), new Date(perm.fin_prevista)))))) : null;
+      return { r, perm, html: `${r.fin ? `Duración: <b>${durTxt(r.min)}</b>${r.sigDia ? ' · regresó al día siguiente' : ''}` : 'Queda <b>abierta</b> hasta registrar la reincorporación.'}${perm ? `<br>Se vincula al permiso de ${hmOf(perm.inicio)} a ${hmOf(perm.fin_prevista)}${fuera != null ? `: cuentan <b>${durTxt(fuera)}</b> fuera del permiso` : ''}.` : ''}` };
+    }
+    const r = val('desde') ? rangoMx(fecha, val('desde'), val('hasta')) : null;
+    if (val('hasta') && !val('desde')) return { err: 'Escribe también la hora "desde" del periodo.', html: '' };
+    return { r, html: r && r.fin ? `Periodo afectado: <b>${durTxt(r.min)}</b>` : '' };
+  }
+  const paint = () => { const c = calc(); box.innerHTML = c.html || ''; };
+  $$('input,select,textarea', m.el).forEach((i) => i.addEventListener('input', paint)); paint();
+}
+function regresoForm(e, x, st, done) {
+  const perm = x.tipo === 'permiso';
+  const f = [{ k: 'hora', label: perm ? 'Hora real de regreso' : 'Hora de reincorporación', type: 'time', req: true, val: nowHM() }];
+  const m = modal({ title: `${perm ? 'Regreso del permiso' : 'Reincorporación'} · ${fullName(e)}`,
+    body: `<div class="kv">${perm ? `<span>Salida</span><span>${hmOf(x.inicio)}</span><span>Regreso previsto</span><span>${hmOf(x.fin_prevista)} (${durTxt(x.minutos)})</span>` : `<span>Desconexión</span><span>${hmOf(x.inicio)}</span>`}</div>${fieldsHtml(f)}<div id="rg_calc" class="jr-calc"></div>`,
+    actions: [{ label: 'Cancelar' }, { label: 'Guardar regreso', cls: 'primary', run: async ({ el }) => {
+      const v = readFields(el, f);
+      const r = rangoMx(x.fecha, hmOf(x.inicio), v.hora);
+      const [saved] = await mustUpdate(db('jornada_registros').eq('id', x.id).update({ fin_real: r.fin }), 'el registro');
+      toast('Regreso registrado');
+      if (perm && saved && saved.minutos_reales > saved.minutos) {
+        setTimeout(async () => {
+          if (await confirmBox('Regresó después de lo previsto', `Regresó <b>${durTxt(saved.minutos_reales - saved.minutos)}</b> después de la hora prevista (${hmOf(saved.fin_prevista)}). ¿Registras ese tiempo como desconexión? El permiso no cambia.`, { okLabel: 'Registrar desconexión' })) {
+            jornadaForm(e, 'desconexion', null, st, done, { desde: hmOf(saved.fin_prevista), hasta: hmOf(saved.fin_real), motivo: 'Regresó después de la hora prevista del permiso' });
+          } else done && done();
+        }, 0);
+      } else done && done();
+    } }] });
+  const paint = () => { const h = $('#f_hora', m.el).value; const r = h ? rangoMx(x.fecha, hmOf(x.inicio), h) : null;
+    $('#rg_calc', m.el).innerHTML = !r ? '' : perm ? `Duración real: <b>${durTxt(r.min)}</b>${r.min > x.minutos ? ` · <span class="bad">${durTxt(r.min - x.minutos)} después de lo previsto</span>` : ''}` : `Duración: <b>${durTxt(r.min)}</b>${r.sigDia ? ' · al día siguiente' : ''}`; };
+  $('#f_hora', m.el).addEventListener('input', paint); paint();
+}
+function anularJornada(e, x, done) {
+  const f = [{ k: 'motivo', label: 'Motivo de la anulación', type: 'textarea', req: true, full: true }];
+  modal({ title: `Anular ${JR_TIPO[x.tipo].toLowerCase()} · ${fullName(e)}`, body: `<div class="notice n-warn">${esc(jrResumen(x))}<br>No se borra: queda como anulado en el historial, con quién y por qué.${x.tipo === 'retardo' ? ' El pase de la mañana vuelve a Presente.' : ''}</div>${fieldsHtml(f)}`,
+    actions: [{ label: 'Cancelar' }, { label: 'Anular', cls: 'danger solid', run: async ({ el }) => {
+      const v = readFields(el, f); await mustUpdate(db('jornada_registros').eq('id', x.id).update({ estado: 'anulada', anulada_motivo: v.motivo }), 'el registro'); toast('Anulado'); done && done();
+    } }] });
+}
+async function evidenciasJornada(padre, puedeAgregar, done) {
+  const k = padre.registro_id ? 'registro_id' : 'attendance_id';
+  const fs = await db('jornada_archivos').eq(k, padre[k]).order('created_at').get();
+  const fb = fileBox('jev_fb', { title: 'Agregar evidencias', label: 'Adjuntar archivos' });
+  const m = modal({ title: 'Evidencias', body: `${fs.length ? `<div class="evid-list">${fs.map((x) => `<a class="evid-item" data-jp="${esc(x.path)}" target="_blank" rel="noopener" aria-disabled="true"><span class="fic">${fileIcon(x.tipo)}</span><span class="grow"><b>${esc(x.nombre)}</b><span class="small muted">${esc(profName(x.uploaded_by))} · ${fmtDateTime(x.created_at)}</span></span><span class="go" aria-hidden="true">↗</span></a>`).join('')}</div>` : '<div class="small muted">Aún no hay archivos adjuntos.</div>'}${puedeAgregar ? fb.html : ''}`,
+    actions: puedeAgregar ? [{ label: 'Cerrar' }, { label: 'Subir', cls: 'primary', run: async ({ btn }) => {
+      if (!fb.files.length) throw new Error('Elige al menos un archivo.');
+      const failed = await subirJornada({ [k]: padre[k] }, fb.files, (i, n) => { btn.textContent = `Subiendo ${i} de ${n}…`; });
+      toast(failed.length ? 'No se subió: ' + failed.join('; ') : 'Evidencia agregada', !!failed.length); done && done();
+    } }] : [{ label: 'Cerrar' }] });
+  if (puedeAgregar) fb.wire(m.el);
+  $$('[data-jp]', m.el).forEach((a) => storageUrl(JR_BUCKET, a.dataset.jp).then((u) => { a.href = u; a.removeAttribute('aria-disabled'); }).catch((er) => { a.classList.add('err'); a.title = er.message; }));
 }
 
 // ───────────────────────── Personal ─────────────────────────
@@ -1169,7 +1520,7 @@ const EXP_TABS = {
   async asistencia(body, { e }) {
     const mes = EXP.mes || todayMX().slice(0, 7);
     const [y, m] = mes.split('-').map(Number); const ini = `${mes}-01`, fin = `${mes}-${String(lastDay(y, m)).padStart(2, '0')}`;
-    const att = await db('attendance').select('fecha,turno,status,incidencia,aviso,comentario').eq('employee_id', e.id).gte('fecha', ini).lte('fecha', fin).order('fecha').get();
+    const att = await db('attendance').select('fecha,turno,status,incidencia,aviso,comentario,codigo,codigo_motivo,codigo_justificante').eq('employee_id', e.id).gte('fecha', ini).lte('fecha', fin).order('fecha').get();
     const byDay = {}; att.forEach((a) => (byDay[a.fecha] = byDay[a.fecha] || []).push(a));
     const c = attCounts(); att.filter((a) => a.turno !== 'tarde').forEach((a) => countAtt(c, a));
     const firstDow = (new Date(Date.UTC(y, m - 1, 1)).getUTCDay() + 6) % 7;   // lunes = 0
@@ -1192,6 +1543,17 @@ const EXP_TABS = {
     const go = (n) => { const d = new Date(Date.UTC(y, m - 1 + n, 1)); EXP.mes = d.toISOString().slice(0, 7); viewExpediente(e.id); };
     $('#ex_prev').onclick = () => go(-1); $('#ex_next').onclick = () => go(1);
     $('#ex_mes').onchange = (ev) => { if (ev.target.value) { EXP.mes = ev.target.value; viewExpediente(e.id); } };
+    if (esCobranza(e.area_id)) {   // Cobranza: códigos, permisos, retardos, desconexiones e incidencias del mes
+      await cargarCategorias();
+      const [regs, cods] = await Promise.all([db('jornada_registros').eq('employee_id', e.id).gte('fecha', ini).lte('fecha', fin).order('fecha').get().catch(() => []),
+        Promise.resolve(att.filter((a) => a.codigo))]);
+      const div = document.createElement('div'); div.style.marginTop = '12px';
+      div.innerHTML = card(`Permisos e incidencias de jornada · ${MESES[m - 1]}`, (regs.length || cods.length) ? `<div class="scrollx"><table class="tbl sub"><tbody>
+        ${cods.map((a) => `<tr><td class="mono small">${fmtDate(a.fecha)}${a.turno === 'tarde' ? ' tarde' : ''}</td><td><span class="badge ${ATT_BADGE[a.codigo]}">${a.codigo}</span></td><td class="small">${esc(COD[a.codigo])} · ${esc(a.codigo_motivo || '')}${a.codigo_justificante ? ' · ' + esc(a.codigo_justificante) : ''}</td></tr>`).join('')}
+        ${regs.map((x) => `<tr${x.estado === 'anulada' ? ' style="opacity:.55"' : ''}><td class="mono small">${fmtDate(x.fecha)}</td><td><span class="badge ${(JR_ESTADO[x.estado] || [])[1] || ''}">${esc(JR_TIPO[x.tipo])}</span></td><td class="small">${esc(jrResumen(x))}${x.motivo || x.descripcion ? ' · ' + esc(x.motivo || x.descripcion) : ''}${x.estado === 'anulada' ? ' · <b>Anulado</b>: ' + esc(x.anulada_motivo || '') : ''}${x.nomina_revisado_at ? ' · revisado por Nómina' : ''}</td></tr>`).join('')}
+        </tbody></table></div>` : '<div class="small muted">Sin registros este mes.</div>');
+      body.appendChild(div);
+    }
   },
 
   async incidencias(body, { cases, docs }) {
@@ -2326,13 +2688,30 @@ function requestForm({ employee, tipo, fecha, existing, onDone }) {
     { k: 'hora_fin', label: 'Hora hasta (opcional)', type: 'time', val: c.hora_fin ? String(c.hora_fin).slice(0, 5) : '' }
   ];
   const isEdit = !!existing;
+  // Cobranza: datos propios de cada solicitud (se agregan al texto que recibe Daniel)
+  const extra = !isEdit && !riesgo && esCobranza(employee.area_id) ? ({
+    acta: [{ k: 'x_conducta', label: 'Conducta que se solicita revisar', req: true, full: true }],
+    carta: [{ k: 'x_incumplimiento', label: 'Incumplimiento', req: true, full: true }, { k: 'x_previas', label: 'Advertencias anteriores (si las hubo)', type: 'textarea', full: true, hint: 'Fechas y de qué fueron. Déjalo vacío si no hubo.' }],
+    cambio_equipo: (() => { const gs = S.groups.filter((g) => g.active && g.area_id === employee.area_id && g.tipo !== 'lideres' && !g.es_bolsa && g.id !== employee.group_id);
+      return [gs.length ? { k: 'x_destino', label: 'Equipo propuesto', type: 'select', options: [['', 'Sin propuesta'], ...gs.map((g) => [g.id, groupLabel(g) + (g.tl_id ? ' — ' + profName(g.tl_id) : '')])], full: true, hint: `Equipo de origen: ${groupName(employee.group_id)}` }
+        : { k: 'x_destino_txt', label: 'Equipo o líder propuesto (opcional)', full: true, hint: `Equipo de origen: ${groupName(employee.group_id)}` }]; })(),
+    baja: []
+  }[t] || []) : [];
   const fb = fileBox('evid_req');
   const m = modal({
     title: `${label} · ${fullName(employee)}`, wide: true,
     body: `<div class="notice ${riesgo ? 'n-bad' : 'n-info'}">${riesgo ? 'Incidencia de riesgo: va directo a Daniel y Supervisión no la ve.' : isEdit ? 'Daniel la regresó con un comentario: complétala y reenvíala.' : 'La solicitud va directo a Daniel. Tú reportas hechos; la decisión la toma Daniel.'}</div>
-      ${fieldsHtml(f.slice(0, 2))}${fb.html}${fieldsHtml(f.slice(2))}${isEdit ? fieldsHtml([{ k: 'comentario', label: 'Qué corregiste', full: true }]) : ''}`,
+      ${t === 'baja' && !riesgo ? '<div class="notice n-warn" style="margin-top:8px">Es una <b>solicitud</b>: la persona sigue activa y en tu lista hasta que Daniel la revise y autorice. No se da de baja sola.</div>' : ''}
+      ${extra.length ? fieldsHtml(extra) : ''}${fieldsHtml(f.slice(0, 2))}${fb.html}${fieldsHtml(f.slice(2))}${isEdit ? fieldsHtml([{ k: 'comentario', label: 'Qué corregiste', full: true }]) : ''}`,
     actions: [{ label: 'Cancelar' }, { label: isEdit ? 'Reenviar a Daniel' : riesgo ? 'Enviar a Daniel' : 'Enviar solicitud', cls: riesgo ? 'danger solid' : 'primary', run: async ({ el, btn }) => {
       const v = readFields(el, f);
+      if (extra.length) {
+        const xv = readFields(el, extra);
+        const partes = [xv.x_conducta && 'Conducta a revisar: ' + xv.x_conducta, xv.x_incumplimiento && 'Incumplimiento: ' + xv.x_incumplimiento,
+          t === 'carta' && 'Advertencias anteriores: ' + (xv.x_previas || 'ninguna registrada'),
+          t === 'cambio_equipo' && `Equipo de origen: ${groupName(employee.group_id)} · Equipo propuesto: ${xv.x_destino ? groupLabel(S.groups.find((g) => g.id === xv.x_destino)) : xv.x_destino_txt || 'sin propuesta'}`].filter(Boolean);
+        if (partes.length) v.razon = partes.join('\n') + '\n\nHechos: ' + v.razon;
+      }
       if (!v.evidencia && !fb.files.length) throw new Error('Falta: Evidencias. Descríbelas o adjunta al menos un archivo.');
       if (!v.evidencia) v.evidencia = 'Archivos adjuntos: ' + fb.files.map((x) => x.name).join(', ');
       if (v.fecha > todayMX() || (v.fecha_fin && v.fecha_fin > todayMX())) throw new Error('Las fechas no pueden ser futuras.');
@@ -4595,6 +4974,33 @@ function bajasPanel(p, bajas, lineas, fins, periodos) {
   $$('[data-bf]', m.el).forEach((b) => b.onclick = () => { const f = finDe.get(b.dataset.bf); if (f) { m.close(); finiquitoForm(p, f, periodos); } });
 }
 
+// Cobranza: registros de jornada y códigos de un periodo (para Nómina)
+async function jornadaPeriodo(ini, fin) {
+  await cargarCategorias();
+  const [regs, cods] = await Promise.all([db('jornada_registros').gte('fecha', ini).lte('fecha', fin).order('fecha').get(),
+    db('attendance').select('id,employee_id,fecha,turno,codigo,codigo_periodo,codigo_motivo,codigo_justificante,codigo_by,codigo_at').in('codigo', ['C4', 'Ab4', 'C8', 'Ab8']).gte('fecha', ini).lte('fecha', fin).order('fecha').get()]);
+  const ids = [...new Set([...regs.map((x) => x.employee_id), ...cods.map((a) => a.employee_id)])];
+  const emps = ids.length ? await db('employees').select('id,nombre,apellido_paterno,apellido_materno').in('id', ids).get() : [];
+  const nm = new Map(emps.map((e) => [e.id, fullName(e)]));
+  return { regs, cods, nom: (id) => nm.get(id) || '' };
+}
+// Tiempo no trabajado que Nómina debe revisar (no es un descuento automático)
+const jrMinRevision = (x) => x.estado === 'anulada' ? 0 : x.tipo === 'permiso' ? (x.pago === 'no_pagado' ? (x.minutos_reales || x.minutos) : 0)
+  : x.tipo === 'retardo' ? (x.clasificacion === 'sin_justificar' ? x.minutos : 0) : x.tipo === 'desconexion' ? (x.clasificacion === 'sin_justificar' ? x.minutos_fuera_permiso || 0 : 0) : 0;
+async function revisarJornada(ini, fin) {
+  const { regs, nom } = await jornadaPeriodo(ini, fin);
+  const pend = regs.filter((x) => x.estado !== 'anulada' && !x.nomina_revisado_at && x.tipo !== 'otra');
+  const m = modal({ title: 'Revisar registros de Cobranza', wide: true, body: pend.length ? `<div class="notice n-info">Permisos, retardos y desconexiones de la quincena sin revisar. Al marcarlos revisados, el líder ya no puede cambiarlos (si hace falta corregir, lo hace Nómina). No aplica descuentos.</div>
+    <label class="row small" style="gap:8px;margin:8px 0"><input type="checkbox" id="rv_all"> Seleccionar todos</label>
+    <div class="list">${pend.map((x) => `<label class="item" style="gap:10px"><input type="checkbox" data-rv="${x.id}"><span class="grow" style="min-width:0"><span class="nm">${esc(nom(x.employee_id))}</span> · ${fmtDate(x.fecha)}<br><span class="small">${esc(jrResumen(x))}</span>${jrMinRevision(x) ? `<br><span class="small" style="color:var(--warn)">${durTxt(jrMinRevision(x))} sujetos a revisión</span>` : ''}${['pendiente_regreso', 'abierta'].includes(x.estado) ? ' <span class="badge b-warn">Sin regreso</span>' : ''}</span></label>`).join('')}</div>` : '<div class="empty">No hay registros pendientes de revisión en la quincena.</div>',
+    actions: pend.length ? [{ label: 'Cerrar' }, { label: 'Marcar revisados', cls: 'primary', run: async ({ el }) => {
+      const ids = $$('[data-rv]:checked', el).map((c) => c.dataset.rv);
+      if (!ids.length) throw new Error('Selecciona al menos un registro.');
+      await db('jornada_registros').in('id', ids).update({ nomina_revisado_at: new Date().toISOString() });
+      toast(`${ids.length} revisado${ids.length === 1 ? '' : 's'}`);
+    } }] : [{ label: 'Cerrar' }] });
+  const all = $('#rv_all', m.el); if (all) all.onchange = () => $$('[data-rv]', m.el).forEach((c) => { c.checked = all.checked; });
+}
 // Descargas: pre-nómina en el formato de la empresa y listados de apoyo
 function descargasPanel(p, d) {
   const sufijo = p ? `${p.numero ? 'P' + p.numero + '_' : ''}${p.fecha_inicio}_al_${p.fecha_fin}${p.estado === 'autorizado' ? '' : '_BORRADOR'}` : `${d.ini}_al_${d.fin}`;
@@ -4607,10 +5013,32 @@ function descargasPanel(p, d) {
     ['bonos', 'Bonos y comisiones (Excel)', 'Quién recibe cada bono o comisión y cuánto.', !!p],
     ['bajas', 'Bajas y finiquitos (Excel)', 'Bajas de la quincena, días pagados y desglose del finiquito.', !!p],
     ['dispersion', 'Dispersión bancaria (Excel)', 'Una fila por cuenta con el importe a depositar (nómina + finiquito + pagos).', !!p],
-    ['recibos', 'Recibos para imprimir', 'Un recibo por persona con percepciones, deducciones y neto.', !!p]];
+    ['recibos', 'Recibos para imprimir', 'Un recibo por persona con percepciones, deducciones y neto.', !!p],
+    ...((S.areas || []).some((a) => a.modo_asistencia === 'cobranza') ? [['jornada', 'Jornada de Cobranza (Excel)', 'C4/Ab4/C8/Ab8, permisos pagados y no pagados, retardos, desconexiones e incidencias, con el tiempo sujeto a revisión y quién lo valida.', true],
+      ...(can('nomina.opera') ? [['revjornada', 'Revisar registros de Cobranza', 'Marca como revisados los permisos, retardos y desconexiones de la quincena.', true]] : [])] : [])];
   const m = modal({ title: 'Descargas', body: `<div class="list">${opts.map(([k, t, s, okk]) => `<button type="button" class="item" data-dl="${k}"${okk ? '' : ' disabled'}><span class="grow"><span class="nm">${t}</span><br><span class="small muted">${okk ? s : 'Disponible cuando exista la pre-nómina de la quincena.'}</span></span><span class="small muted">↓</span></button>`).join('')}</div>`, actions: [{ label: 'Cerrar' }] });
   const run = {
     prenomina: () => exportPrenomina(p, d.lineas, d.fins, d.pagos),
+    jornada: async () => {
+      const { regs, cods, nom } = await jornadaPeriodo(d.ini, d.fin);
+      const quien = (id) => profName(id) || '';
+      const rows = regs.map((x) => [D(x.fecha), T(nom(x.employee_id)), T(groupName(x.group_id)), T(JR_TIPO[x.tipo]), T(x.tipo === 'otra' ? ((S.incCats || []).find((c) => c.clave === x.categoria) || {}).nombre || x.categoria : x.motivo || ''),
+        T(hmOf(x.inicio)), T(hmOf(x.fin_prevista)), T(hmOf(x.fin_real)), I(x.minutos), I(x.minutos_reales), I(jrMinRevision(x)), T(JR_CLAS[x.clasificacion] || ''), T(JR_PAGO[x.pago] || ''),
+        T((JR_ESTADO[x.estado] || [x.estado])[0] + (x.estado === 'anulada' ? ': ' + (x.anulada_motivo || '') : '')), T(x.tipo === 'permiso' ? 'Autorizó ' + quien(x.autorizado_by) : quien(x.created_by)),
+        T(x.estado === 'anulada' ? '—' : x.nomina_revisado_at ? `Revisado por ${quien(x.nomina_revisado_by)} ${fmtDateTime(x.nomina_revisado_at)}` : 'Pendiente · valida Nómina')]);
+      const crow = cods.map((a) => [D(a.fecha), T(nom(a.employee_id)), T(a.turno === 'tarde' ? 'Tarde' : 'Mañana'), T(a.codigo), T(COD[a.codigo]), T(a.codigo_periodo || ''), T(a.codigo_motivo || ''), T(a.codigo_justificante || ''), T(quien(a.codigo_by))]);
+      const ids = [...new Set([...regs.map((x) => x.employee_id), ...cods.map((a) => a.employee_id)])].sort((a, b) => nom(a).localeCompare(nom(b), 'es'));
+      const sum = (id, fn) => regs.filter((x) => x.employee_id === id && x.estado !== 'anulada').reduce((s2, x) => s2 + (fn(x) || 0), 0);
+      const pers = ids.map((id) => [T(nom(id)), ...['C4', 'Ab4', 'C8', 'Ab8'].map((k) => I(cods.filter((a) => a.employee_id === id && a.codigo === k).length)),
+        I(sum(id, (x) => x.tipo === 'permiso' && x.pago === 'pagado' ? x.minutos : 0)), I(sum(id, (x) => x.tipo === 'permiso' && x.pago === 'no_pagado' ? (x.minutos_reales || x.minutos) : 0)),
+        I(sum(id, (x) => x.tipo === 'retardo' && x.clasificacion === 'justificada' ? x.minutos : 0)), I(sum(id, (x) => x.tipo === 'retardo' && x.clasificacion === 'sin_justificar' ? x.minutos : 0)),
+        I(sum(id, (x) => x.tipo === 'desconexion' && x.clasificacion === 'justificada' ? x.minutos_fuera_permiso : 0)), I(sum(id, (x) => x.tipo === 'desconexion' && x.clasificacion === 'sin_justificar' ? x.minutos_fuera_permiso : 0)),
+        I(sum(id, (x) => ['pendiente_regreso', 'abierta'].includes(x.estado) ? 1 : 0)), I(sum(id, (x) => !x.nomina_revisado_at ? 1 : 0))]);
+      bajar([hoja('REGISTROS', 'JORNADA DE COBRANZA · REGISTROS', ['Fecha', 'Nombre', 'Equipo', 'Tipo', 'Motivo / tipo', 'Inicio', 'Regreso previsto', 'Regreso real / fin', 'Minutos', 'Minutos reales', 'Tiempo sujeto a revisión (min)', 'Clasificación', 'Pago (permiso)', 'Estado', 'Registró / autorizó', 'Revisión'], rows, [11, 32, 18, 14, 34, 8, 9, 9, 9, 9, 14, 13, 12, 20, 24, 30]),
+        hoja('CODIGOS', 'CÓDIGOS DE ASISTENCIA (C4 / Ab4 / C8 / Ab8)', ['Fecha', 'Nombre', 'Pase', 'Código', 'Significado', 'Periodo', 'Motivo', 'Justificante', 'Registró'], crow, [11, 32, 9, 8, 28, 24, 34, 30, 22]),
+        hoja('POR PERSONA', 'RESUMEN POR PERSONA (minutos)', ['Nombre', 'C4', 'Ab4', 'C8', 'Ab8', 'Permiso pagado', 'Permiso no pagado', 'Retardo justificado', 'Retardo sin justificar', 'Desconexión justificada', 'Desconexión sin justificar', 'Sin regreso', 'Pendientes de revisión'], pers, [32, 6, 6, 6, 6, 12, 12, 12, 12, 13, 13, 10, 12])], `Jornada_Cobranza_${sufijo}.xlsx`);
+    },
+    revjornada: async () => { m.close(); await revisarJornada(d.ini, d.fin); },
     incidencias: () => {
       const xs = []; const depto = new Map(d.rows.map((r) => [r.nombre, r.departamento]));
       d.c.porDia.forEach((x) => { const dd = d.det.get(x.d);
