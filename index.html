@@ -141,7 +141,8 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .inc-note .btn{align-self:flex-start}
 /* Cobranza: asistencia con códigos y registros de jornada */
 .person .quick-cob{padding:0 14px 12px;display:flex;flex-direction:column;gap:6px}
-.quick-cob .att-row,.cob-att .att-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.quick-cob .att-row,.cob-att .att-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+@media (max-width:420px){.quick-cob .att-row button,.cob-att .att-row button{font-size:12.5px;padding:0 2px}}
 .cob-att{display:flex;flex-direction:column;gap:6px}
 .quick-cob .att-row button,.cob-att .att-row button{min-height:42px;border-radius:8px;font-size:14px;font-weight:600;border:1px solid var(--line2);background:#fff}
 .quick-cob .asistio,.cob-att .asistio{color:var(--ok)} .quick-cob .falta,.cob-att .falta{color:var(--bad)} .quick-cob .salida,.cob-att .salida{color:var(--warn)} .quick-cob .descanso,.cob-att .descanso{color:#56616C}
@@ -382,7 +383,7 @@ details.card summary{cursor:pointer}
 </head>
 <body>
 <div id="app"><div class="login"><div class="muted">Cargando…</div></div></div>
-<script src="config.js?v=0.28.0"></script>
-<script src="app.js?v=0.28.0"></script>
+<script src="config.js?v=0.28.1"></script>
+<script src="app.js?v=0.28.1"></script>
 </body>
 </html>

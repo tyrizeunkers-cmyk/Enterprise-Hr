@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.28.0';
+const APP_VERSION = '0.28.1';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -34,7 +34,7 @@ const STATUS = { alta_pendiente: ['Alta pendiente', 'b-warn'], activo: ['Activo'
 const ATT = { asistio: 'Asistencia', falta: 'Falta', retardo: 'Retardo' };
 const ATT_PM = { asistio: 'Presente', falta: 'Ausente', salida: 'Salida anticipada' };   // pase de la tarde (cierre)
 const TURNO = { manana: 'Mañana · Entrada', tarde: 'Tarde · Cierre' };
-const stLabel = (a) => a && a.status ? (a.turno === 'tarde' ? ATT_PM : ATT)[a.status] : null;
+const stLabel = (a) => a && a.status ? ((a.turno === 'tarde' ? ATT_PM : ATT)[a.status] || ATT_PM[a.status]) : null;
 const AVISO = { nuevo_ingreso: 'Nuevo ingreso', baja: 'Baja' };
 const INC = { permiso: 'Permiso', descanso: 'Descanso', inactividad: 'Inactividad', vacaciones: 'Vacaciones' };
 const INC_TL = ['permiso', 'inactividad'];   // las vacaciones las registra RH; el Descanso va junto a la asistencia
@@ -754,7 +754,7 @@ function personCard(e, r, faltas, locked, morning, vac, retiro) {
   const stBtn = (k) => `<button type="button" class="${k}${r && r.status === k ? ' on' : ''}" data-att="${k}" aria-pressed="${!!(r && r.status === k)}"${dis}>${ST[k]}</button>`;
   const avBtn = (k) => `<button type="button" class="aviso${r && r.aviso === k ? ' on' : ''}" data-aviso="${k}" aria-pressed="${!!(r && r.aviso === k)}"${dis}>${AVISO[k]}</button>`;
   const esDesc = !!(r && !r.status && r.incidencia === 'descanso');
-  const descBtn = () => tarde ? '' : `<button type="button" class="descanso${esDesc ? ' on' : ''}" data-desc aria-pressed="${esDesc}"${dis}>Descanso</button>`;
+  const descBtn = () => `<button type="button" class="descanso${esDesc ? ' on' : ''}" data-desc aria-pressed="${esDesc}"${dis}>Descanso</button>`;
   const incBtn = (k) => `<button type="button" class="${k}${r && r.incidencia === k ? ' on' : ''}" data-inc="${k}" aria-pressed="${!!(r && r.incidencia === k)}"${dis}>${INC[k]}</button>`;
   const reqRow = (k, l, risk) => `<button type="button" class="req-row${risk ? ' risk' : ''}" data-req="${k}"><b class="grow">${esc(l)}</b><span class="go" aria-hidden="true">›</span></button>`;
   return `<div class="person${open ? ' open' : ''}" data-id="${e.id}">
@@ -763,14 +763,14 @@ function personCard(e, r, faltas, locked, morning, vac, retiro) {
       <span class="grow"><span style="display:block;font-weight:600">${esc(fullName(e))}</span><span class="small muted">${esc(summary.length > 90 ? summary.slice(0, 90) + '…' : summary)}</span></span>
       ${vac ? '<span class="badge b-ok">Vacaciones</span>' : ''}${pendBadge(e)}${diff ? '<span class="badge b-warn">No coincide</span>' : ''}${faltasBadge(faltas)}<span class="more" aria-hidden="true">${open ? 'Cerrar ▴' : 'Detalle ▾'}</span>
     </button>
-    ${open ? '' : `<div class="quick${tarde ? '' : ' q4'}" role="group" aria-label="Asistencia rápida de ${esc(fullName(e))}">${Object.keys(ST).map((k) => `<button type="button" class="${k}${r && r.status === k ? ' on' : ''}" data-att="${k}" aria-pressed="${!!(r && r.status === k)}"${dis}>${k === 'salida' ? 'Salida' : ST[k]}</button>`).join('')}${descBtn()}</div>`}
+    ${open ? '' : `<div class="quick q4" role="group" aria-label="Asistencia rápida de ${esc(fullName(e))}">${Object.keys(ST).map((k) => `<button type="button" class="${k}${r && r.status === k ? ' on' : ''}" data-att="${k}" aria-pressed="${!!(r && r.status === k)}"${dis}>${k === 'salida' ? 'Salida' : ST[k]}</button>`).join('')}${descBtn()}</div>`}
     ${open ? `<div class="body">
       ${vac ? '<div class="notice n-info">De vacaciones autorizadas por RH. El día queda registrado como Vacaciones y no cuenta como falta.</div>' : ''}
       ${tarde ? `<div class="morning-ref${diff ? ' diff' : ''}"><span class="small muted">En la mañana</span><span>${morning ? attBadges(morning) : '<span class="badge b-mut">Sin registro</span>'}</span>${diff ? `<span class="small" style="color:var(--warn);font-weight:600">${esc(diff)}</span>` : ''}</div>` : ''}
       <section class="fbox">
         <header>${tarde ? 'Asistencia al cierre' : 'Asistencia'}</header>
         <div class="fbody">
-          <div class="att3${tarde ? '' : ' q4'}">${Object.keys(ST).map(stBtn).join('')}${descBtn()}</div>
+          <div class="att3 q4">${Object.keys(ST).map(stBtn).join('')}${descBtn()}</div>
           ${tarde ? '' : `<div class="aviso-row"><span class="small muted">Aviso a RH <span class="hint">(opcional, si sigue en lista)</span></span><div class="att2">${Object.keys(AVISO).map(avBtn).join('')}</div></div>`}
         </div>
       </section>
@@ -907,7 +907,7 @@ function cobLabel(r, tarde) {
   if (r.codigo) return `${r.codigo} · ${COD[r.codigo].toLowerCase()}`;
   if (r.incidencia === 'descanso' && !r.status) return 'Descanso';
   if (r.incidencia === 'vacaciones') return 'Vacaciones';
-  const L = tarde ? { asistio: 'Presente', falta: 'Ausente', salida: 'Salida anticipada' } : { asistio: 'Presente', falta: 'Ausente', retardo: 'Retardo' };
+  const L = { asistio: 'Presente', falta: 'Ausente', salida: 'Salida anticipada', retardo: 'Retardo' };
   return [L[r.status], r.incidencia && INC[r.incidencia]].filter(Boolean).join(' · ') || 'registrado';
 }
 function jrResumen(x) {
@@ -929,13 +929,13 @@ function personCardCob(e, st) {
   const col = r ? ATT_COLOR[attKey(r)] : null;
   const dis = locked ? ' disabled' : '';
   const fullDay = rM && ['C8', 'Ab8'].includes(rM.codigo);
-  const b1 = tarde ? [['asistio', 'Presente'], ['falta', 'Ausente'], ['salida', 'Salida']] : [['asistio', 'Presente'], ['falta', 'Ausente']];
+  const b1 = [['asistio', 'Presente'], ['falta', 'Ausente'], ['salida', 'Salida']];   // mismos botones en la mañana y en la tarde
   const on = (k) => !!(r && r.status === k && !r.codigo);
   const stBtns = b1.map(([k, l]) => `<button type="button" class="${k}${on(k) ? ' on' : ''}" data-att="${k}" aria-pressed="${on(k)}"${dis}>${l}</button>`).join('')
-    + (tarde ? '' : `<button type="button" class="descanso${r && !r.status && r.incidencia === 'descanso' ? ' on' : ''}" data-desc aria-pressed="${!!(r && !r.status && r.incidencia === 'descanso')}"${dis}>Descanso</button>`);
+    + (`<button type="button" class="descanso${r && !r.status && r.incidencia === 'descanso' ? ' on' : ''}" data-desc aria-pressed="${!!(r && !r.status && r.incidencia === 'descanso')}"${dis}>Descanso</button>`);
   const codOn = (k) => (r && r.codigo === k) || (tarde && ['C8', 'Ab8'].includes(k) && rM && rM.codigo === k);
   const codBtns = Object.keys(COD).map((k) => `<button type="button" class="${k.startsWith('Ab') ? 'ab' : 'c'}${codOn(k) ? ' on' : ''}" data-cod="${k}" title="${esc(COD[k])}" aria-pressed="${codOn(k)}"${dis}>${k}</button>`).join('');
-  const attGrid = (cls) => `<div class="${cls}"><div class="att-row r${tarde ? 3 : 3}">${stBtns}</div><div class="codes">${codBtns}</div></div>`;
+  const attGrid = (cls) => `<div class="${cls}"><div class="att-row">${stBtns}</div><div class="codes">${codBtns}</div></div>`;
   const resumen = `Mañana: ${cobLabel(rM, false)} · Tarde: ${cobLabel(rT, true)}`;
   const archN = (id) => (st.arch || {})[id] || 0;
   const jrItem = (x) => {
