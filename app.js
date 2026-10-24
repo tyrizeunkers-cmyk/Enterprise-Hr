@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.28.1';
+const APP_VERSION = '0.29.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -1386,6 +1386,7 @@ async function viewExpediente(id) {
   if (is('nomina') && e.status === 'activo') acts.push(['banco', 'Datos bancarios', '']);
   if ((is('developer') || (is('rh_general', 'rh_area') && inMyArea)) && ['activo', 'alta_pendiente'].includes(e.status)) acts.push(['linkdatos', 'Link para sus datos', '']);
   if (!is('developer') && canDocFin(e.area_id) && ['activo', 'baja'].includes(e.status)) acts.push(['finiq', 'Finiquito / liquidación', '']);
+  if (!is('developer') && is('rh_general', 'rh_area') && inMyArea && ['activo', 'baja'].includes(e.status)) acts.push(['constancia', 'Constancia / recomendación', '']);
   if (is('developer')) {
     if (e.status === 'activo') acts.push(['area', 'Cambiar área', '']);
     if (['activo', 'baja', 'alta_pendiente'].includes(e.status)) acts.push(['doc', 'Generar documento', '']);
@@ -1435,6 +1436,7 @@ async function expAction(k, { e, p }) {
   if (k === 'linkdatos') return linkRegistro({ id: e.id, nombre: e.nombre, nombreCompleto: fullName(e), telefono: p && p.telefono }).catch((er) => toast(er.message, true));
   if (k === 'area') return moveArea(e);
   if (k === 'doc') return newDocPicker({ employee: e });
+  if (k === 'constancia') return newDocPicker({ employee: e });
   if (k === 'finiq') return newDocPicker({ employee: e });
   if (k === 'baja') return bajaForm(e, priv0(p));
   if (k === 'eliminar') return deleteEmployeeForm(e);
@@ -1488,7 +1490,7 @@ const EXP_TABS = {
   async resumen(body, { e, p, g, full, cand, c30, faltan, contrato, cases, docs, archivos, metrics, acts30 }) {
     const pagos = canSeePrivate(e);
     const abiertos = cases.filter((k) => k.status !== 'cerrado').length;
-    const porFirmar = docs.filter((d) => ['emitido', 'con_lider'].includes(d.estado)).length;
+    const porFirmar = docs.filter((d) => ['emitido', 'con_lider'].includes(d.estado) && !DOC_CONST.includes(d.tipo)).length;
     body.innerHTML = `<div class="ex-grid">
       ${card('Perfil laboral', kvRows([
         ['No. empleado', esc(e.num_empleado || '')], ['Puesto', esc(e.puesto || '')], ['Área', esc(areaName(e.area_id))],
@@ -2924,14 +2926,18 @@ const DOC_TIPOS = {
   confidencialidad: { label: 'Acuerdo de confidencialidad', code: 'ACF', grupo: 'Contratación', desc: 'Obligaciones de confidencialidad y manejo de información.' },
   finiquito: { label: 'Recibo de finiquito', code: 'FIN', grupo: 'Finiquitos', desc: 'Desglose del finiquito de la pre-nómina, total con letra, firma y huella; con carta de no adeudo.' },
   liquidacion: { label: 'Recibo de liquidación', code: 'LIQ', grupo: 'Finiquitos', desc: 'Finiquito + indemnización de 3 meses, 20 días por año y prima de antigüedad con salario integrado.' },
-  ratificacion: { label: 'Convenio para ratificar', code: 'RAT', grupo: 'Finiquitos', desc: 'Convenio de terminación para ratificarse ante el Centro de Conciliación (Art. 33 LFT).' }
+  ratificacion: { label: 'Convenio para ratificar', code: 'RAT', grupo: 'Finiquitos', desc: 'Convenio de terminación para ratificarse ante el Centro de Conciliación (Art. 33 LFT).' },
+  constancia_laboral: { label: 'Constancia laboral', code: 'CLA', grupo: 'Constancias', desc: 'Hace constar que la persona trabaja (o trabajó) aquí: puesto, área y fechas; con o sin sueldo.' },
+  recomendacion: { label: 'Carta de recomendación', code: 'REC', grupo: 'Constancias', desc: 'Recomendación laboral con periodo, puesto, desempeño y datos de contacto.' }
 };
+const DOC_CONST = ['constancia_laboral', 'recomendacion'];   // Daniel y RH del área; activos o dados de baja; sin firma de la persona
+const canDocConst = (areaId) => is('developer') || (is('rh_general', 'rh_area') && S.myAreas.includes(areaId));
 const DOC_FIN = ['finiquito', 'liquidacion', 'ratificacion'];
 const canDocFin = (areaId) => can('doc.finiquito') && (is('developer', 'nomina', 'director') || S.myAreas.includes(areaId));
 const DOC_BAJA = ['renuncia', 'rescision', 'convenio'];
 const DOC_CONTRATA = ['contrato', 'reglamento', 'confidencialidad'];
 const CONTRATOS = { '15_dias': 'Periodo a prueba · 15 días', '30_dias': 'Periodo a prueba · 30 días', indeterminado: 'Tiempo indeterminado' };
-const docTipoBadge = (t) => t.grupo === 'Bajas' ? 'b-bad' : t.grupo === 'Contratación' ? 'b-ok' : t.grupo === 'Finiquitos' ? 'b-warn' : 'b-acc';
+const docTipoBadge = (t) => t.grupo === 'Bajas' ? 'b-bad' : t.grupo === 'Contratación' || t.grupo === 'Constancias' ? 'b-ok' : t.grupo === 'Finiquitos' ? 'b-warn' : 'b-acc';
 const DOC_LIDER = ['acta', 'advertencia'];
 const DOC_ST = { emitido: ['Emitido', 'b-acc'], con_lider: ['Con el líder', 'b-warn'], firmado: ['Firmado', 'b-ok'], negativa: ['Negativa de firma', 'b-bad'], anulado: ['Anulado', 'b-mut'] };
 const docBadge = (s) => `<span class="badge ${DOC_ST[s][1]}">${DOC_ST[s][0]}</span>`;
@@ -3052,6 +3058,21 @@ function docFields(tipo, d = {}) {
       { k: 'horario', label: 'Horario', val: d.horario || '', hint: 'Ej. Lunes a viernes 08:00 a 17:00' },
       { k: 'representante', label: 'Firma por la empresa', val: d.representante || S.me.full_name || '' }];
     case 'reglamento': case 'confidencialidad': return [];
+    case 'constancia_laboral': return [
+      { k: 'dirigida', label: 'Dirigida a', req: true, val: d.dirigida || 'A quien corresponda' },
+      { k: 'incluir_sueldo', label: '¿Incluir el sueldo?', type: 'select', req: true, val: d.incluir_sueldo || 'no', options: [['no', 'No'], ['si', 'Sí']] },
+      { k: 'sueldo_mensual', label: 'Sueldo mensual (MXN)', type: 'number', val: d.sueldo_mensual ?? '', hint: 'Solo si se incluye el sueldo.' },
+      { k: 'para', label: 'Para (opcional)', val: d.para || '', hint: 'Ej. "trámite de crédito Infonavit". Si se deja vacío dice "para los fines que convengan".' },
+      { k: 'rh_nombre', label: 'Firma', req: true, val: d.rh_nombre || S.me.full_name || '' },
+      { k: 'rh_puesto', label: 'Puesto de quien firma', req: true, val: d.rh_puesto || 'Recursos Humanos' },
+      { k: 'contacto', label: 'Teléfono o correo para verificar (opcional)', full: true, val: d.contacto || '' }];
+    case 'recomendacion': return [
+      { k: 'dirigida', label: 'Dirigida a', req: true, val: d.dirigida || 'A quien corresponda' },
+      { k: 'desempeno', label: 'Desempeño', type: 'textarea', req: true, full: true, val: d.desempeno || 'Durante su estancia demostró responsabilidad, puntualidad y compromiso con sus funciones, así como disposición para el trabajo en equipo y buen trato con clientes y compañeros.', hint: 'Escríbelo con hechos: logros, responsabilidades y conducta.' },
+      { k: 'cualidades', label: 'Cualidades a destacar (opcional)', type: 'textarea', full: true, val: d.cualidades || '', hint: 'Una por renglón. Ej. "Atención al cliente".' },
+      { k: 'rh_nombre', label: 'Firma', req: true, val: d.rh_nombre || S.me.full_name || '' },
+      { k: 'rh_puesto', label: 'Puesto de quien firma', req: true, val: d.rh_puesto || 'Recursos Humanos' },
+      { k: 'contacto', label: 'Teléfono o correo para referencias (opcional)', full: true, val: d.contacto || '' }];
     case 'constancia_baja': return [
       { k: 'tipo_salida', label: 'Tipo de salida', type: 'select', req: true, val: d.tipo_salida || '', options: [['', 'Elegir…'], ...opts(SALIDAS)] },
       { k: 'rh_nombre', label: 'Firma por RH', val: d.rh_nombre || S.me.full_name || '' },
@@ -3064,7 +3085,7 @@ function docFields(tipo, d = {}) {
 
 function empSnapshot(e) {
   const g = S.groups.find((x) => x.id === e.group_id) || {};
-  return { nombre: fullName(e), num: e.num_empleado || '', puesto: e.puesto || '', area: areaName(e.area_id), grupo: e.group_id ? g.name || '' : '', lider: g.tl_id ? profName(g.tl_id) : '', ingreso: e.fecha_ingreso || '' };
+  return { nombre: fullName(e), num: e.num_empleado || '', puesto: e.puesto || '', area: areaName(e.area_id), grupo: e.group_id ? g.name || '' : '', lider: g.tl_id ? profName(g.tl_id) : '', ingreso: e.fecha_ingreso || '', ...(e.status === 'baja' && e.fecha_baja ? { baja: e.fecha_baja } : {}) };
 }
 
 
@@ -3164,6 +3185,18 @@ const DOC_BLOCKS = {
     { k: 'segunda', label: 'Cláusula segunda (antes del desglose)', def: '**SEGUNDA.** La Empresa entrega en este acto a la Persona Trabajadora la cantidad de **{monto_letra}**, mediante {forma_pago}, por los conceptos siguientes:' },
     { k: 'resto', label: 'Cláusulas siguientes (después del desglose)', def: '**TERCERA.** La Persona Trabajadora recibe la cantidad señalada a su entera satisfacción y manifiesta que con ella le quedan cubiertos los conceptos desglosados en la cláusula anterior, cuyo cálculo le fue explicado.\n\n**CUARTA.** Las partes solicitan al Centro de Conciliación que apruebe el presente convenio por no contener renuncia de derechos de la Persona Trabajadora y que, una vez ratificado, le otorgue los efectos legales que correspondan conforme a la Ley Federal del Trabajo.\n\n**QUINTA.** Leído el presente convenio y enteradas las partes de su contenido y alcance, lo firman de conformidad.' }
   ],
+  constancia_laboral: [
+    { k: 'titulo', label: 'Título', def: 'CONSTANCIA LABORAL' },
+    { k: 'activo', label: 'Texto (persona activa)', def: 'Por medio de la presente, **{empresa}** hace constar que **{nombre}** labora en esta empresa desde el {ingreso}, desempeñando el puesto de **{puesto}** en el área de {area}.' },
+    { k: 'ex', label: 'Texto (persona que ya no labora)', def: 'Por medio de la presente, **{empresa}** hace constar que **{nombre}** laboró en esta empresa del {ingreso} al {fecha_baja}, desempeñando el puesto de **{puesto}** en el área de {area}.' },
+    { k: 'sueldo', label: 'Texto del sueldo (si se incluye)', def: '{sueldo_txt} un sueldo mensual de **{sueldo_mensual}**.' },
+    { k: 'cierre', label: 'Cierre', def: 'Se extiende la presente a petición de la persona interesada{para}, en {ciudad}, el {fecha}.' }
+  ],
+  recomendacion: [
+    { k: 'titulo', label: 'Título', def: 'CARTA DE RECOMENDACIÓN' },
+    { k: 'intro', label: 'Párrafo inicial', def: 'Por medio de la presente me permito recomendar a **{nombre}**, quien {labora_txt} en **{empresa}** {periodo_txt}, desempeñando el puesto de **{puesto}** en el área de {area}.' },
+    { k: 'cierre', label: 'Cierre', def: 'Por lo anterior, no tengo inconveniente en recomendarle para cualquier puesto acorde a su experiencia. Quedo a sus órdenes para cualquier información adicional.\n\nSe extiende la presente a petición de la persona interesada, en {ciudad}, el {fecha}.' }
+  ],
   constancia_baja: [
     { k: 'titulo', label: 'Título', def: 'CONSTANCIA ADMINISTRATIVA DE BAJA DE PERSONAL' },
     { k: 'constancia', label: 'Texto de la constancia', def: 'En {ciudad}, a {fecha}, se hace constar que Recursos Humanos registró administrativamente la baja de la persona trabajadora identificada en este documento, con efectos a partir del {fecha_efectiva}.\n\nLa presente constancia tiene exclusivamente fines de control, trazabilidad y cierre administrativo del expediente laboral. No sustituye la renuncia voluntaria, aviso de rescisión, convenio, recibo de finiquito, comprobante de pago o cualquier otro documento que resulte aplicable conforme a la naturaleza de la terminación.' }
@@ -3199,7 +3232,9 @@ function tplVars(d, B) {
     monto_letra: x.monto != null ? montoLetras(x.monto) : '________', forma_pago: String(x.forma_pago || '________').toLowerCase(),
     fecha_ingreso: fechaLarga(x.fecha_ingreso || s.ingreso), fecha_fin: fechaLarga(x.fecha_fin), sueldo: x.sueldo != null ? money(x.sueldo) + ' mensuales' : '________', horario: x.horario || 'el asignado por EL PATRÓN', supervisor: s.supervisor || s.lider || '',
     salario_diario: x.salario_diario != null ? money(x.salario_diario) : '________', sdi: x.sdi != null ? money(x.sdi) : '________', antiguedad: x.antiguedad_anios != null ? num(x.antiguedad_anios).toFixed(2) + ' años' : '________',
-    causa: x.causa || '________', centro: x.centro || 'Centro de Conciliación competente' };
+    causa: x.causa || '________', centro: x.centro || 'Centro de Conciliación competente',
+    fecha_baja: fechaLarga(s.baja), sueldo_mensual: x.sueldo_mensual != null ? money(x.sueldo_mensual) : '________', sueldo_txt: s.baja ? 'Su último sueldo fue de' : 'Actualmente percibe',
+    para: x.para ? ', para ' + x.para : ', para los fines que a sus intereses convengan', labora_txt: s.baja ? 'laboró' : 'labora', periodo_txt: s.baja ? `del ${fechaLarga(s.ingreso)} al ${fechaLarga(s.baja)}` : `desde el ${fechaLarga(s.ingreso)}` };
 }
 // Texto de bloque → HTML seguro: {campo} se sustituye, **negritas**, renglón en blanco = párrafo
 function fillInline(text, vars) {
@@ -3305,6 +3340,12 @@ function docHtml(d, extra = {}) {
     b = docHead(d, B, B.titulo, B.subtitulo) + P('proemio') + empTable(s, [['Fecha de ingreso', fmtDate(s.ingreso), 'Fecha de terminación', fmtDate(x.fecha_efectiva)]]) +
       h2('Declaraciones') + P('declaraciones') + h2('Cláusulas') + P('primera') + P('segunda') + finConceptosTabla(x) + P('resto') +
       firmas([x.representante || 'Representante', 'Por ' + B.empresa], [s.nombre, 'Persona trabajadora']) + pie(d);
+  } else if (DOC_CONST.includes(d.tipo)) {
+    const firma = `<div style="width:60%;margin:64px auto 0;border-top:1px solid #222;padding-top:6px;text-align:center;page-break-inside:avoid">${esc(x.rh_nombre || 'Recursos Humanos')}<br><span style="font-size:9pt">${esc(x.rh_puesto || 'Recursos Humanos')} · ${esc(B.empresa)}</span>${x.contacto ? `<br><span style="font-size:9pt">${esc(x.contacto)}</span>` : ''}</div>`;
+    const dest = `<p style="margin:18px 0 14px"><b>${esc(x.dirigida || 'A quien corresponda')}</b><br>Presente</p>`;
+    if (d.tipo === 'constancia_laboral') b = docHead(d, B, B.titulo) + dest + P(s.baja ? 'ex' : 'activo') + (x.incluir_sueldo === 'si' && x.sueldo_mensual != null ? P('sueldo') : '') + P('cierre') + firma + pie(d);
+    else b = docHead(d, B, B.titulo) + dest + P('intro') + `<p>${nl(x.desempeno)}</p>` +
+      (x.cualidades ? `<p>Entre sus cualidades destacan:</p><ul style="margin:4px 0 10px 18px;padding:0">${String(x.cualidades).split('\n').map((l) => l.replace(/^[-•]\s*/, '').trim()).filter(Boolean).map((l) => `<li>${esc(l)}</li>`).join('')}</ul>` : '') + P('cierre') + firma + pie(d);
   } else if (d.tipo === 'constancia_baja') {
     const o = extra.origen;
     b = docHead(d, B, B.titulo) + empTable(s, [['Fecha de ingreso', fmtDate(s.ingreso), 'Equipo', s.grupo || '—']]) +
@@ -3499,7 +3540,7 @@ async function shareDoc(d, extra, getFile) {
 
 // ── Vista ──
 const DS = { tab: null, q: '', tipo: '' };
-const docPending = (d) => is('developer') ? d.estado === 'emitido' : is('tl', 'supervisor') ? d.estado === 'con_lider' : false;
+const docPending = (d) => is('developer') ? d.estado === 'emitido' && !DOC_CONST.includes(d.tipo) : is('tl', 'supervisor') ? d.estado === 'con_lider' : false;
 async function viewDocumentos() {
   if (S.view === 'expediente' && EXP.id) return viewExpediente(EXP.id);
   const v = $('#view');
@@ -3513,7 +3554,7 @@ async function viewDocumentos() {
   const rows = (DS.tab === 'pend' ? pend : docs).filter((d) => (!DS.tipo || d.tipo === DS.tipo) && (!q || norm(`${d.snapshot.nombre} ${docFolio(d)} ${d.snapshot.num}`).includes(q)));
   const pendLabel = is('developer') ? 'Por firmar' : 'Por entregar';
   v.innerHTML = `<div class="pagehead"><div><h1>Documentos</h1><div class="muted small">${is('developer') ? `${pend.length} emitidos sin firma · ${docs.filter((d) => d.estado === 'con_lider').length} con el líder` : is('tl', 'supervisor') ? `${pend.length} por entregar` : `${docs.length} documentos`}</div></div>
-      <div class="row" style="gap:8px">${is('developer') ? '<button class="btn" id="zipall" title="ZIP con todos los documentos, copias firmadas e índice">Respaldo ZIP</button><button class="btn primary" id="newdoc">+ Nuevo documento</button>' : !is('developer') && can('doc.finiquito') && is('nomina', 'rh_general', 'rh_area', 'director', 'supervisor') ? '<button class="btn primary" id="newdoc">+ Finiquito / liquidación</button>' : ''}</div></div>
+      <div class="row" style="gap:8px">${is('developer') ? '<button class="btn" id="zipall" title="ZIP con todos los documentos, copias firmadas e índice">Respaldo ZIP</button><button class="btn primary" id="newdoc">+ Nuevo documento</button>' : is('rh_general', 'rh_area') ? '<button class="btn primary" id="newdoc">+ Nuevo documento</button>' : !is('developer') && can('doc.finiquito') && is('nomina', 'director', 'supervisor') ? '<button class="btn primary" id="newdoc">+ Finiquito / liquidación</button>' : ''}</div></div>
     <div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
       ${is('developer', 'tl', 'supervisor') ? `<div class="seg" role="group" aria-label="Filtro"><button type="button" data-dt="pend" class="${DS.tab === 'pend' ? 'on' : ''}">${pendLabel} (${pend.length})</button><button type="button" data-dt="all" class="${DS.tab === 'all' ? 'on' : ''}">Todos</button></div>` : ''}
       <div class="row" style="gap:8px"><input class="inp grow" id="dq" type="search" placeholder="Buscar por nombre, número o folio" value="${esc(DS.q)}" aria-label="Buscar documentos">
@@ -3541,14 +3582,14 @@ function updateDocBadge(n) {
 }
 async function refreshDocBadge() {
   if (!VIEWS.documentos || !VIEWS.documentos.roles.includes(role()) || !is('developer', 'tl', 'supervisor')) return;
-  try { const ds = await db('documents').select('id,estado').in('estado', ['emitido', 'con_lider']).get(); updateDocBadge(ds.filter(docPending).length); } catch { /* sin conexión */ }
+  try { const ds = await db('documents').select('id,estado,tipo').in('estado', ['emitido', 'con_lider']).get(); updateDocBadge(ds.filter(docPending).length); } catch { /* sin conexión */ }
 }
 
 // Paso 1: tipo de documento · Paso 2: trabajador · Paso 3: formato
 function newDocPicker({ emps, employee, caseRow, tipo } = {}) {
   if (tipo) return pickEmployee({ tipo, emps, employee, caseRow });
   const groups = {};
-  const okFor = (k) => (is('developer') || DOC_FIN.includes(k)) && (!employee || (employee.status === 'alta_pendiente' ? DOC_CONTRATA.includes(k) : employee.status === 'baja' ? k === 'constancia_baja' || DOC_FIN.includes(k) : k !== 'constancia_baja'));
+  const okFor = (k) => (is('developer') || (DOC_FIN.includes(k) && can('doc.finiquito')) || (DOC_CONST.includes(k) && is('rh_general', 'rh_area'))) && (!employee || (employee.status === 'alta_pendiente' ? DOC_CONTRATA.includes(k) : employee.status === 'baja' ? k === 'constancia_baja' || DOC_FIN.includes(k) || DOC_CONST.includes(k) : k !== 'constancia_baja'));
   Object.entries(DOC_TIPOS).filter(([k]) => okFor(k)).forEach(([k, t]) => { (groups[t.grupo] = groups[t.grupo] || []).push([k, t]); });
   const m = modal({ title: employee ? 'Nuevo documento · ' + fullName(employee) : 'Nuevo documento', wide: true,
     body: Object.entries(groups).map(([g, items]) => `<div class="eyebrow" style="margin:4px 0 8px">${esc(g)}</div><div class="doc-tiles">${items.map(([k, t]) => `<button type="button" class="doc-tile" data-nt="${k}"><span class="dt-code">${t.code}</span><b>${esc(t.label)}</b><span class="small muted">${esc(t.desc)}</span></button>`).join('')}</div>`).join('') });
@@ -3557,8 +3598,8 @@ function newDocPicker({ emps, employee, caseRow, tipo } = {}) {
 async function pickEmployee({ tipo, emps, employee, caseRow }) {
   if (DOC_FIN.includes(tipo)) return finPickEmployee(tipo, employee);
   if (employee) return docForm({ tipo, employee, caseRow });
-  emps = emps || await db('employees').select('id,nombre,apellido_paterno,apellido_materno,num_empleado,puesto,area_id,group_id,status,fecha_ingreso').get();
-  const pool = emps.filter((e) => tipo === 'constancia_baja' ? e.status === 'baja' : DOC_CONTRATA.includes(tipo) ? ['activo', 'alta_pendiente'].includes(e.status) : e.status === 'activo').sort(sortName);
+  emps = emps || await db('employees').select('id,nombre,apellido_paterno,apellido_materno,num_empleado,puesto,area_id,group_id,status,fecha_ingreso,fecha_baja').get();
+  const pool = emps.filter((e) => tipo === 'constancia_baja' ? e.status === 'baja' : DOC_CONTRATA.includes(tipo) ? ['activo', 'alta_pendiente'].includes(e.status) : DOC_CONST.includes(tipo) ? ['activo', 'baja'].includes(e.status) && canDocConst(e.area_id) : e.status === 'activo').sort(sortName);
   const m = modal({ title: DOC_TIPOS[tipo].label + ' · ¿para quién?',
     body: `<input class="inp" id="pq" type="search" placeholder="Escribe nombre o número" aria-label="Buscar trabajador"><div class="list pick-list" id="pl" style="margin-top:8px;max-height:52vh;overflow:auto"></div>` });
   const draw = () => {
@@ -3594,13 +3635,23 @@ async function docForm({ tipo, employee, caseRow, existing }) {
       ? `<label class="field" style="margin-top:12px">Documento que origina la baja<select id="f_origen"><option value="">Sin documento en la app</option>${origins.map((o) => `<option value="${o.id}"${(existing ? existing.origen_id : origins[origins.length - 1] && origins[origins.length - 1].id) === o.id ? ' selected' : ''}>${esc(DOC_TIPOS[o.tipo].label)} ${esc(docFolio(o))} · ${fmtDate(o.fecha)} (${DOC_ST[o.estado][0]})</option>`).join('')}</select></label>`
       : '';
   const fechaF = { k: '_fecha', label: 'Fecha del documento', type: 'date', req: true, val: existing ? existing.fecha : todayMX() };
+  let avisoConst = '';
+  if (DOC_CONST.includes(tipo) && !existing) {
+    const [pv] = await db('employee_private').select('salario_mensual,salario_diario,recontratable,motivo_baja').eq('employee_id', e.id).get().catch(() => []);
+    const sm = pv && (num(pv.salario_mensual) || (num(pv.salario_diario) ? r2(num(pv.salario_diario) * 30) : 0));
+    const fs = fields.find((f) => f.k === 'sueldo_mensual'); if (fs && sm) fs.val = sm;
+    if (tipo === 'recomendacion' && pv && pv.recontratable === false) avisoConst = `<div class="notice n-bad"><b>Atención:</b> esta persona está marcada como <b>NO recontratable</b>${pv.motivo_baja ? ' (' + esc(pv.motivo_baja) + ')' : ''}. Revisa si procede emitir una carta de recomendación.</div>`;
+    if (e.status === 'baja') avisoConst += `<div class="notice n-info">Ya no labora aquí (baja ${fmtDate(e.fecha_baja)}): el texto dice "laboró del ${fmtDate(e.fecha_ingreso)} al ${fmtDate(e.fecha_baja)}".</div>`;
+    if (!e.fecha_ingreso) avisoConst += '<div class="notice n-warn">No tiene fecha de ingreso registrada: complétala en su ficha para que el documento la muestre.</div>';
+  }
   const intro = `<div class="notice n-info"><b>${esc(fullName(e))}</b> · ${esc(e.num_empleado || 's/n')} · ${esc(e.puesto || 'sin puesto')} · ${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))}${caseRow ? `<br>Desde el caso #${caseRow.folio}` : ''}</div>`;
   const m = modal({ title: (existing ? 'Editar · ' : '') + DOC_TIPOS[tipo].label, wide: true,
-    body: intro + fieldsHtml([fechaF]) + fieldsHtml(fields) + extraHtml,
+    body: intro + avisoConst + fieldsHtml([fechaF]) + fieldsHtml(fields) + extraHtml,
     actions: [{ label: 'Cancelar' }, { label: 'Vista previa', run: async ({ el }) => { const doc = build(el); printDoc(doc, await docExtra(doc)); return false; } },
       { label: existing ? 'Guardar cambios' : 'Generar documento', cls: 'primary', run: async ({ el }) => {
         const doc = build(el);
         if (tipo === 'convenio' && !(Number(doc.datos.monto) > 0)) throw new Error('La cantidad total debe ser mayor a 0.');
+        if (tipo === 'constancia_laboral' && doc.datos.incluir_sueldo === 'si' && !(Number(doc.datos.sueldo_mensual) > 0)) throw new Error('Escribe el sueldo mensual o elige no incluirlo.');
         if (tipo === 'advertencia' && doc.datos.motivo === 'Otro / Personalizado' && !doc.datos.motivo_otro) throw new Error('Escribe el motivo personalizado.');
         if (doc.datos.periodo_inicio && doc.datos.periodo_fin && doc.datos.periodo_fin < doc.datos.periodo_inicio) throw new Error('El periodo evaluado termina antes de empezar.');
         const row = { fecha: doc.fecha, datos: doc.datos, snapshot: doc.snapshot, origen_id: doc.origen_id || null };
@@ -3866,17 +3917,18 @@ async function openDocument(id) {
   const getPdf = () => (pdfP = pdfP || docPdfFile(d, extra).catch((e) => { pdfP = null; throw e; }));
   const actions = [{ label: 'Compartir PDF', cls: canDeliver && d.estado === 'con_lider' ? 'primary' : '', run: async () => { await shareDoc(d, extra, getPdf); return false; } },
     { label: 'Imprimir', run: () => { printDoc(d, extra); return false; } }];
-  if ((is('developer') || fin) && d.estado === 'emitido') {
+  const cst = DOC_CONST.includes(d.tipo) && canDocConst(d.area_id);
+  if ((is('developer') || fin || cst) && d.estado === 'emitido') {
     actions.push({ label: 'Editar', run: async () => { if (DOC_FIN.includes(d.tipo)) { setTimeout(() => finDocForm({ tipo: d.tipo, employee: { id: d.employee_id }, existing: d }), 0); return; } const [e] = await db('employees').eq('id', d.employee_id).get(); setTimeout(() => docForm({ tipo: d.tipo, employee: e, existing: d }), 0); } });
     if (DOC_LIDER.includes(d.tipo)) actions.push({ label: 'Enviar al líder', cls: 'primary', run: async () => {
       if (!(await confirmBox('Enviar al líder', `El documento aparecerá a <b>${esc(responsable)}</b> para imprimirlo, entregarlo y subir la copia firmada.`, { okLabel: 'Enviar' }))) return false;
       await mustUpdate(db('documents').eq('id', d.id).update({ estado: 'con_lider' }), 'el documento'); toast('Enviado al líder'); reload(); setTimeout(() => openDocument(d.id), 0);
     } });
   }
-  if ((is('developer') && d.estado === 'emitido' && d.tipo !== 'constancia_baja') || canDeliver) actions.push({ label: d.estado === 'con_lider' ? 'Registrar entrega' : 'Registrar firma', cls: d.estado === 'emitido' && DOC_LIDER.includes(d.tipo) ? '' : 'primary', run: () => { setTimeout(() => deliveryForm(d), 0); } });
+  if ((is('developer') && d.estado === 'emitido' && d.tipo !== 'constancia_baja' && !DOC_CONST.includes(d.tipo)) || canDeliver) actions.push({ label: d.estado === 'con_lider' ? 'Registrar entrega' : 'Registrar firma', cls: d.estado === 'emitido' && DOC_LIDER.includes(d.tipo) ? '' : 'primary', run: () => { setTimeout(() => deliveryForm(d), 0); } });
   if (is('developer') && d.tipo === 'constancia_baja' && d.estado === 'emitido') actions.push({ label: 'Marcar firmada', cls: 'primary', run: () => { setTimeout(() => deliveryForm(d), 0); } });
   if (is('developer') && DOC_BAJA.includes(d.tipo) && ['firmado', 'negativa'].includes(d.estado)) actions.push({ label: 'Constancia de baja', run: async () => { const [e] = await db('employees').eq('id', d.employee_id).get(); setTimeout(() => docForm({ tipo: 'constancia_baja', employee: e }), 0); } });
-  if ((is('developer') || fin) && d.estado !== 'anulado') actions.push({ label: 'Anular', cls: 'danger', run: () => { setTimeout(() => simpleCaseAction('Anular ' + docFolio(d), [{ k: 'm', label: 'Motivo de la anulación', type: 'textarea', req: true, full: true }],
+  if ((is('developer') || fin || cst) && d.estado !== 'anulado') actions.push({ label: 'Anular', cls: 'danger', run: () => { setTimeout(() => simpleCaseAction('Anular ' + docFolio(d), [{ k: 'm', label: 'Motivo de la anulación', type: 'textarea', req: true, full: true }],
     async (v) => { await mustUpdate(db('documents').eq('id', d.id).update({ estado: 'anulado', anulado_motivo: v.m }), 'el documento'); }, () => { reload(); setTimeout(() => openDocument(d.id), 0); },
     d.baja_aplicada ? 'La baja ya se aplicó en Personal; anular el documento no la revierte.' : 'El documento queda visible como anulado; no se borra.'), 0); } });
   if (is('developer')) actions.push({ label: 'Ver ficha', run: () => { setTimeout(() => openEmployee(d.employee_id), 0); } });
