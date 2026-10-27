@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.31.1';
+const APP_VERSION = '0.32.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -2478,13 +2478,103 @@ function ldResumenHoja(resumen, titulo, sub) {
   return { name: 'RESUMEN', cols: [16, 22, 26, 9, ...LD_TOT.map(() => 11)], rows, merges: ldMerge(4 + LD_TOT.length), freeze: [0, 5], printRows: [5, 5], autoFilter: `A5:${colL(3 + LD_TOT.length)}${4 + resumen.length + 1}`, footer: ldPie() };
 }
 
+// ───── Formato "DÍA POR DÍA": una sola hoja, una fila por persona y una columna por fecha (diario o quincenal) ─────
+// Cada persona aparece una vez, en su equipo actual (o en el último equipo donde se le pasó lista si hoy no tiene).
+// El código de cada día es el de la persona, sin importar el equipo donde quedó registrado ese día.
+const DPD_LEYENDA = [
+  ['A', 'Asistió sin incidencias', 'Asistencia'],
+  ['A / R', 'Asistió con retardo', 'Asistencia con incidencia'],
+  ['A / SA', 'Asistió y tuvo salida anticipada', 'Asistencia con incidencia'],
+  ['A / AC', 'Asistió en la mañana y quedó ausente al cierre', 'Asistencia con incidencia'],
+  ['A / P', 'Asistió y tuvo un permiso durante la jornada', 'Asistencia con incidencia'],
+  ['A / I', 'Asistió con inactividad', 'Asistencia con incidencia'],
+  ['A / DC', 'Asistió y tuvo una desconexión (Cobranza)', 'Asistencia con incidencia'],
+  ['A / OI', 'Asistió y tuvo otra incidencia registrada (Cobranza)', 'Asistencia con incidencia'],
+  ['P', 'Permiso sin asistencia', 'Permiso'],
+  ['I', 'Inactividad sin asistencia', 'Inactividad'],
+  ['F', 'Falta confirmada', 'Falta'],
+  ['C8', 'Falta de día completo con justificante (Cobranza)', 'Falta'],
+  ['Ab8', 'Falta de día completo sin justificante (Cobranza)', 'Falta'],
+  ['C4', 'Medio día de ausencia con justificante (Cobranza)', 'Medio día'],
+  ['Ab4', 'Medio día de ausencia sin justificante (Cobranza)', 'Medio día'],
+  ['D', 'Descanso', 'Descanso (no es falta)'],
+  ['V', 'Vacaciones aprobadas', 'Vacaciones (no es falta)'],
+  ['NI', 'Nuevo ingreso: su primer día (puede ir junto a otro código, p. ej. A / NI)', 'Informativo'],
+  ['BAJA', 'Fecha de baja: ya no labora', 'Informativo (no es falta)'],
+  ['—', 'No laboraba ese día (antes de su ingreso o después de su baja)', 'No se cuenta'],
+  ['REV', 'Revisar: el pase de la mañana y el del cierre no coinciden, o falta el de la mañana', 'Pendiente de revisión'],
+  ['(vacío)', 'Sin registro de asistencia ese día', 'No es falta']
+];
+const DPD_CORTA = 'Claves: A asistió sin incidencias · A / R retardo · A / SA salida anticipada · A / AC ausente al cierre · A / P permiso con asistencia · A / I inactividad · A / DC desconexión · A / OI otra incidencia · P permiso sin asistencia · F falta · C8 / Ab8 falta de día completo con / sin justificante · C4 / Ab4 medio día con / sin justificante · D descanso · V vacaciones · NI nuevo ingreso · BAJA fecha de baja · — no laboraba · REV revisar · vacío: sin registro (no es falta). Detalle completo al final de la hoja.';
+function dpdCodigo(D, e, d, hoy) {
+  if (d > hoy) return '';
+  const x = (D.rec[e.id] || {})[d]; const a = x && (x.m || x.t);
+  if (!a && e.fecha_baja === d) return 'BAJA';
+  if (!a && !ldLabora(e, d)) return '—';
+  return ldMarca(e, d, ldCelda(x && x.m, x && x.t, D.vac[e.id] && D.vac[e.id].has(d), (D.jrs[e.id] || {})[d]).code, x);
+}
+function dpdHoja(D, grupos, days, periodoTxt) {
+  const hoy = todayMX(), gIds = new Set(grupos.map((g) => g.id)), gBy = Object.fromEntries(S.groups.map((g) => [g.id, g]));
+  const filas = [], cambios = [];
+  for (const e of D.emps) {
+    const r = D.rec[e.id] || {};
+    const regs = days.map((d) => r[d] && (r[d].m || r[d].t)).filter(Boolean);
+    const labora = days.some((d) => ldLabora(e, d) || e.fecha_baja === d);
+    if (!regs.length && !labora) continue;
+    let gid = e.group_id && gIds.has(e.group_id) ? e.group_id : null;
+    if (!gid) { const ult = [...regs].reverse().find((a) => a.group_id && gIds.has(a.group_id)); gid = ult ? ult.group_id : null; }
+    if (!gid) continue;   // fuera de los equipos que el usuario consulta
+    if (!regs.length && e.status !== 'baja' && e.group_id !== gid) continue;
+    const g = gBy[gid];
+    const otros = [...new Set(regs.filter((a) => a.group_id && a.group_id !== gid).map((a) => a.group_id))];
+    if (otros.length) cambios.push(`${fullName(e)}: ${otros.map((o) => { const og = gBy[o]; const ds = days.filter((d) => { const a = r[d] && (r[d].m || r[d].t); return a && a.group_id === o; }); return `${og ? groupLabel(og) + ' (' + areaName(og.area_id) + ')' : 'otro equipo'} el ${ds.map((d) => fmtDate(d).slice(0, 5)).join(', ')}`; }).join('; ')}`);
+    filas.push({ e, g, cods: days.map((d) => dpdCodigo(D, e, d, hoy)) });
+  }
+  const ordG = (g) => `${areaName(g.area_id)}|${g.tipo === 'lideres' ? '0' : '1'}${groupLabel(g)}`;
+  filas.sort((a, b) => ordG(a.g).localeCompare(ordG(b.g), 'es') || sortName(a.e, b.e));
+  const nCol = 3 + days.length, last = colL(nCol - 1);
+  const eqTxt = (g) => `${groupLabel(g)} · Líder: ${ldLider(g)}`;
+  const rows = [
+    [{ v: `${ldEmpresa()} · REPORTE DE ASISTENCIA · ${periodoTxt}`, s: XS.titleW }],
+    [{ v: DPD_CORTA, s: XS.wrap }],
+    [{ v: 'Área', s: XS.head }, { v: 'Equipo · Líder', s: XS.head }, { v: 'Nombre del empleado', s: XS.head }, ...days.map((d) => ({ v: dayLabel(d), s: XS.head }))]
+  ];
+  filas.forEach((f) => rows.push([{ v: areaName(f.g.area_id), s: XS.text }, { v: eqTxt(f.g), s: XS.text }, { v: fullName(f.e), s: XS.text }, ...f.cods.map((c) => ({ v: c, s: ldStyle(c) }))]));
+  const lastRow = rows.length;
+  rows.push([], [{ v: 'SIGNIFICADO DE LOS CÓDIGOS', s: XS.bold }], [{ v: 'Código', s: XS.head }, { v: 'Qué significa', s: XS.head }, { v: 'Cómo se cuenta', s: XS.head }]);
+  const leyIni = rows.length + 1;
+  DPD_LEYENDA.forEach(([c, s1, s2]) => rows.push([{ v: c, s: c === '(vacío)' ? XS.code : ldStyle(c) }, { v: s1, s: XS.wrap }, { v: s2, s: XS.wrap }]));
+  rows.push([], [{ v: 'NOTAS', s: XS.bold }]);
+  const notas = [
+    'Cada fila es una persona; la columna "Equipo · Líder" indica el equipo al que pertenece y quién lo dirige.',
+    'Los códigos salen de los pases de lista, permisos, descansos, vacaciones aprobadas, altas y bajas registrados en la app. Un día sin registro queda vacío y no se cuenta como falta.',
+    'Lo que va después de la diagonal (A / R, A / SA, A / P…) es la incidencia del día, no el pase de la tarde.',
+    ...(days[days.length - 1] > hoy ? [`Periodo en curso: los días posteriores al ${fmtDate(hoy)} todavía no ocurren y quedan vacíos.`] : []),
+    ...(cambios.length ? ['Cambios de equipo en el periodo (el código de esos días sí aparece en su fila): ' + cambios.join(' · ')] : []),
+    `Generado el ${fmtDateTime(new Date().toISOString())} por ${S.me.full_name || ''}.`
+  ];
+  notas.forEach((n) => rows.push([{ v: '• ' + n, s: XS.base }]));
+  // Anchos según el contenido para que ningún nombre, equipo o líder se corte
+  const wB = Math.max(16, Math.min(48, ...filas.map((f) => eqTxt(f.g).length + 2)));
+  const wC = Math.max(22, Math.min(44, ...filas.map((f) => fullName(f.e).length + 2)));
+  const anchoTot = 15 + wB + wC + days.length * 10.5;
+  const lin = (txt, ancho) => Math.max(1, Math.ceil(txt.length / ancho));
+  const heights = Object.assign([], { 0: 20 * lin(rows[0][0].v, anchoTot / 1.45) + 6, 1: 13 * lin(DPD_CORTA, anchoTot) + 6, 2: 30 });
+  DPD_LEYENDA.forEach(([, s1], i) => { const n = lin(s1, wB); if (n > 1) heights[leyIni - 1 + i] = 12.5 * n + 1; });
+  return {
+    name: 'DÍA POR DÍA', rows, cols: [15, wB, wC, ...days.map(() => 10.5)],
+    merges: [`A1:${last}1`, `A2:${last}2`], heights,
+    freeze: [3, 3], printRows: [3, 3], autoFilter: `A3:${last}${lastRow}`, portrait: days.length < 4, footer: ldPie(),
+    vacio: !filas.length
+  };
+}
 function imprimirAsistencia() {
   const t = todayMX(), grupos = ldGrupos();
   if (!grupos.length) return toast('No tienes equipos para consultar', true);
   const q = Number(t.slice(8)) <= 15 ? '1' : '2';
   const f = [
-    { k: 'modo', label: 'Reporte', type: 'select', val: 'diario', options: [['diario', 'Diario por líder'], ['quincenal', 'Quincenal por líder'], ['resumen', 'Resumen por área (día o periodo)']] },
-    { k: 'grupo', label: 'Líder / equipo', type: 'select', val: '', options: [['', grupos.length > 1 ? 'Todos mis equipos (una hoja por líder)' : groupLabel(grupos[0])], ...(grupos.length > 1 ? grupos.map((g) => [g.id, `${areaName(g.area_id)} · ${groupLabel(g)} — ${ldLider(g)}`]) : [])] },
+    { k: 'modo', label: 'Reporte', type: 'select', val: 'dpd_q', options: [['dpd_q', 'Día por día · quincenal (una sola hoja)'], ['dpd_d', 'Día por día · diario (una sola hoja)'], ['quincenal', 'Por líder · quincenal (una hoja por líder)'], ['diario', 'Por líder · diario (una hoja por líder)'], ['resumen', 'Resumen por área (día o periodo)']] },
+    { k: 'grupo', label: 'Líder / equipo', type: 'select', val: '', options: [['', grupos.length > 1 ? 'Todos mis equipos' : groupLabel(grupos[0])], ...(grupos.length > 1 ? grupos.map((g) => [g.id, `${areaName(g.area_id)} · ${groupLabel(g)} — ${ldLider(g)}`]) : [])] },
     { k: 'fecha', label: 'Fecha', type: 'date', val: AS.fecha || t, max: t },
     { k: 'mes', label: 'Mes', type: 'month', val: t.slice(0, 7), max: t.slice(0, 7) },
     { k: 'quin', label: 'Quincena', type: 'select', val: q, options: [['1', '1ra quincena (del 1 al 15)'], ['2', '2da quincena (del 16 al último día)']] }
@@ -2499,6 +2589,28 @@ function imprimirAsistencia() {
       let days, nombre, out;
       const areaTxt = ldSafe(new Set(sel.map((g) => g.area_id)).size === 1 ? areaName(sel[0].area_id) : 'Todas');
       const eqTxt = v.grupo ? '_' + ldSafe(groupLabel(sel[0])) : '';
+      if (v.modo === 'dpd_d' || v.modo === 'dpd_q') {
+        if (v.modo === 'dpd_d') {
+          if (!v.fecha || !/^\d{4}-\d{2}-\d{2}$/.test(v.fecha)) throw new Error('Elige una fecha válida.');
+          if (v.fecha > t) throw new Error('No se puede generar un reporte de una fecha futura.');
+          days = [v.fecha];
+        } else {
+          if (!v.mes || !/^\d{4}-\d{2}$/.test(v.mes)) throw new Error('Elige un mes válido.');
+          const [y, mo] = v.mes.split('-').map(Number), fin = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+          days = []; for (let d = v.quin === '1' ? 1 : 16; d <= (v.quin === '1' ? 15 : fin); d++) days.push(`${v.mes}-${String(d).padStart(2, '0')}`);
+          if (days[0] > t) throw new Error('Esa quincena todavía no empieza.');
+        }
+        const D = await ldDatos(days[0], days[days.length - 1]);
+        const [y, mo] = days[0].split('-').map(Number);
+        const per = v.modo === 'dpd_d' ? `${dayLabel(days[0]).toUpperCase()} · ${fmtDate(days[0])}`
+          : `DEL ${fmtDate(days[0])} AL ${fmtDate(days[days.length - 1])} · ${v.quin === '1' ? '1RA' : '2DA'} QUINCENA DE ${MESES[mo - 1].toUpperCase()} ${y}`;
+        const hoja = dpdHoja(D, sel, days, per);
+        if (hoja.vacio) throw new Error(v.grupo ? 'Ese equipo no tiene personal en ese periodo.' : 'Tus equipos no tienen personal en ese periodo.');
+        nombre = days.length === 1 ? `Asistencia_${days[0]}${v.grupo ? eqTxt : areaTxt === 'Todas' ? '' : '_' + areaTxt}.xlsx` : `Asistencia_${days[0]}_al_${days[days.length - 1]}${v.grupo ? eqTxt : areaTxt === 'Todas' ? '' : '_' + areaTxt}.xlsx`;
+        bajarArchivo(new File([xlsxBuild([hoja])], nombre, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+        toast('Excel listo: ' + nombre);
+        return;
+      }
       if (v.modo === 'diario') {
         if (!v.fecha || !/^\d{4}-\d{2}-\d{2}$/.test(v.fecha)) throw new Error('Elige una fecha válida.');
         if (v.fecha > t) throw new Error('No se puede generar un reporte de una fecha futura.');
@@ -2529,8 +2641,9 @@ function imprimirAsistencia() {
   const show = (k, on) => { $('#f_' + k, M).closest('label').style.display = on ? '' : 'none'; };
   const sync = () => {
     const m = $('#f_modo', M).value;
-    show('grupo', m !== 'resumen'); show('fecha', m === 'diario'); show('mes', m === 'quincenal'); show('quin', m === 'quincenal');
-    $('#ld_help', M).innerHTML = m === 'diario' ? 'Una hoja por líder con No., nombre, estado del día (código corto) y observaciones. Encabezado con empresa, departamento, líder, fecha y hora de generación.'
+    show('grupo', m !== 'resumen'); show('fecha', m === 'diario' || m === 'dpd_d'); show('mes', m === 'quincenal' || m === 'dpd_q'); show('quin', m === 'quincenal' || m === 'dpd_q');
+    $('#ld_help', M).innerHTML = m.startsWith('dpd') ? 'Formato DÍA POR DÍA: una sola hoja con Área, Equipo · Líder, Nombre y una columna por fecha. Incluye el significado de cada código al final. Quincenal: 1ra del 1 al 15; 2da del 16 al último día del mes.'
+      : m === 'diario' ? 'Una hoja por líder con No., nombre, estado del día (código corto) y observaciones. Encabezado con empresa, departamento, líder, fecha y hora de generación.'
       : m === 'quincenal' ? 'Una hoja por líder con una columna por día (día y mes) y totales por agente. 1ra quincena: 1 al 15; 2da: 16 al último día del mes.'
       : 'Abre el reporte por área (resumen por día o por periodo).';
   };
@@ -6176,7 +6289,7 @@ async function viewInformes() {
 // ───── Excel (.xlsx) en el formato de pre-nómina de la empresa ─────
 // Escritor mínimo de SpreadsheetML: celdas con valor, fórmula (con su resultado ya calculado) y estilos fijos.
 const XS = { base: 0, head: 1, money: 2, text: 3, date: 4, int: 5, title: 6, total: 7, time: 8, bold: 9, adj: 10, wrap: 11, sub: 12, warn: 13, dec: 14,
-  code: 15, codeF: 16, codeD: 17, codeR: 18, codeV: 19, codeRev: 20, intB: 21 };
+  code: 15, codeF: 16, codeD: 17, codeR: 18, codeV: 19, codeRev: 20, intB: 21, titleW: 22 };
 const xmlEsc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
 const colL = (n) => { let s = ''; for (n++; n; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s; return s; };
 const xlDate = (iso) => iso ? (Date.UTC(...iso.split('-').map((x, i) => Number(x) - (i === 1 ? 1 : 0))) - Date.UTC(1899, 11, 30)) / 86400000 : null;
@@ -6212,7 +6325,7 @@ function xlsxBuild(sheets) {
 <fills count="9"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF0070C0"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF8CBAD"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF4CCCC"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE7E6E6"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFE699"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFDDEBF7"/></patternFill></fill></fills>
 <borders count="3"><border/><border><left style="thin"><color rgb="FFBFBFBF"/></left><right style="thin"><color rgb="FFBFBFBF"/></right><top style="thin"><color rgb="FFBFBFBF"/></top><bottom style="thin"><color rgb="FFBFBFBF"/></bottom></border><border><top style="medium"/><bottom style="double"/></border></borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="22">
+<cellXfs count="23">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
 <xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>
@@ -6235,6 +6348,7 @@ function xlsxBuild(sheets) {
 <xf numFmtId="49" fontId="0" fillId="8" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
 <xf numFmtId="49" fontId="3" fillId="3" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
 <xf numFmtId="1" fontId="3" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>
+<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
 </cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
   const files = [
     { name: '[Content_Types].xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>` },
