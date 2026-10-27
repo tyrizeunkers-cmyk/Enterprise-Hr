@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.33.1';
+const APP_VERSION = '0.33.2';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -3317,7 +3317,7 @@ function caseForm({ employee, fecha, existing, onDone }) {
     { k: 'hora_inicio', label: 'Desde (hora)', type: 'time', val: c.hora_inicio ? String(c.hora_inicio).slice(0, 5) : '' },
     { k: 'hora_fin', label: 'Hasta (hora)', type: 'time', val: c.hora_fin ? String(c.hora_fin).slice(0, 5) : '' },
     { k: 'instruccion', label: 'Instrucción u obligación que existía', type: 'textarea', full: true, val: c.instruccion, hint: 'Obligatorio en casos ordinarios.' },
-    { k: 'indicador', label: 'Indicador incumplido', full: true, val: c.indicador, hint: 'Ej. 400 mensajes: cerró con 210. Obligatorio en casos ordinarios.' },
+    { k: 'indicador', label: 'Indicador incumplido', full: true, val: c.indicador, hint: 'Ej. 350 mensajes: cerró con 210. Obligatorio en casos ordinarios.' },
     { k: 'evidencia', label: 'Evidencia', type: 'textarea', req: true, full: true, val: c.evidencia, hint: 'Qué existe y dónde está: reporte, capturas, mensajes, testigos.' },
     { k: 'sugerencia', label: 'Sugerencia (opcional)', full: true, val: c.sugerencia, hint: 'Qué crees que procede. La decisión la toma RH.' }
   ];
