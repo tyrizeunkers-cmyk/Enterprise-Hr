@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.31.0';
+const APP_VERSION = '0.31.1';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -2114,7 +2114,7 @@ function repClasif(m, t, vac, jrs) {
   }
   for (const x of jrs || []) { if (x.tipo === 'permiso') f.permiso = true; det.push(jrResumen(x)); }
   if (m && m.aviso) det.push('Aviso: ' + AVISO[m.aviso]);
-  return { k, f, det: [...new Set(det)].join(' · '), m: m ? attShort(m) : '', t: t ? attShort(t) : '' };
+  return { k, f, det: [...new Set(det)].join(' · '), code: ldCelda(m, t, vac, jrs).code };
 }
 const repSum = () => ({ debe: 0, asistencia: 0, retardo: 0, falta: 0, descanso: 0, vacaciones: 0, medio: 0, inactividad: 0, sin: 0, permiso: 0, salida: 0 });
 const repAdd = (s, c) => { s.debe++; s[c.k]++; if (c.f.permiso) s.permiso++; if (c.f.salida) s.salida++; };
@@ -2149,7 +2149,8 @@ async function repDatos(from, to) {
       const gid = (a && a.group_id) || e.group_id, aid = (a && a.area_id) || e.area_id;
       if (AS.area && aid !== AS.area) continue;
       if (gid ? !gIds.has(gid) : !(seesAllAreas() || S.myAreas.includes(aid))) continue;
-      out.push({ e, gid, aid, c: repClasif(r && r.m, r && r.t, vac[d] && vac[d].has(e.id), (jrs[d] || {})[e.id]) });
+      const c = repClasif(r && r.m, r && r.t, vac[d] && vac[d].has(e.id), (jrs[d] || {})[e.id]); c.code = ldMarca(e, d, c.code, r);
+      out.push({ e, gid, aid, c });
     }
     return out;
   };
@@ -2223,10 +2224,10 @@ function repHojasDia(D, fecha) {
       const G = A.g[gid];
       det.push([]);
       det.push([{ v: `${areaName(aid).toUpperCase()} · ${gName(gid).toUpperCase()}${gTL(gid) ? ' · ' + gTL(gid) : ''}`, s: XS.bold }, null, null, null, null, null, { v: `${G.s.asistencia + G.s.retardo + G.s.inactividad} de ${G.s.debe} presentes`, s: XS.bold }]);
-      det.push(repHead(['#', 'Nombre', 'No.', 'Puesto', 'Mañana', 'Cierre', 'Resultado', 'Motivo / observaciones']));
+      det.push(repHead(['#', 'Nombre', 'No.', 'Puesto', 'Estado', 'Resultado', 'Motivo / observaciones']));
       G.p.sort((a, b) => sortName(a.e, b.e)).forEach((x, i) => det.push([
         { v: i + 1, s: XS.int }, { v: fullName(x.e), s: XS.text }, { v: x.e.num_empleado || '', s: XS.text }, { v: x.e.puesto || '', s: XS.text },
-        { v: x.c.m, s: XS.text }, { v: x.c.t, s: XS.text }, { v: REP_K[x.c.k], s: ['falta', 'sin'].includes(x.c.k) ? XS.warn : XS.text }, { v: x.c.det, s: XS.wrap }]));
+        { v: x.c.code, s: ldStyle(x.c.code) }, { v: REP_K[x.c.k], s: ['falta', 'sin'].includes(x.c.k) ? XS.warn : XS.text }, { v: x.c.det, s: XS.wrap }]));
     }
   }
   det.push([], [{ v: 'Claves: A asistencia/presente · F falta/ausente · R retardo · S salida anticipada · P permiso · D descanso · I inactividad · V vacaciones · C4/Ab4 medio día con/sin justificante · C8/Ab8 día completo con/sin justificante.', s: XS.sub }]);
@@ -2238,7 +2239,7 @@ function repHojasDia(D, fecha) {
 
   return [
     { name: 'RESUMEN', freeze: [0, 3], cols: [16, 22, 24, 9, 10, 10, 9, 8, 9, 10, 11, 10, 11, 9, 11, 11], rows: res },
-    { name: 'POR EQUIPO', cols: [5, 34, 9, 24, 9, 9, 16, 60], rows: det },
+    { name: 'POR EQUIPO', cols: [5, 34, 9, 24, 13, 18, 60], rows: det },
     { name: 'NOVEDADES', freeze: [0, 3], cols: [16, 22, 34, 22, 16, 60], rows: nov }
   ];
 }
@@ -2253,7 +2254,7 @@ function repHojasPeriodo(D, days) {
     lista.forEach((x) => {
       repAdd(sA[x.aid] = sA[x.aid] || repSum(), x.c);
       const P = per[x.e.id] = per[x.e.id] || { e: x.e, aid: x.aid, gid: x.gid, s: repSum(), cod: {} };
-      P.aid = x.aid; P.gid = x.gid; repAdd(P.s, x.c); P.cod[d] = [x.c.m, x.c.t].filter(Boolean).join('/') || (x.c.k === 'vacaciones' ? 'V' : '');
+      P.aid = x.aid; P.gid = x.gid; repAdd(P.s, x.c); P.cod[d] = x.c.code;
     });
     porDia.push({ d, sA, pase: true });
     Object.entries(sA).forEach(([aid, s]) => { const T = aTot[aid] = aTot[aid] || repSum(); Object.keys(s).forEach((k) => { T[k] += s[k]; }); });
@@ -2278,9 +2279,9 @@ function repHojasPeriodo(D, days) {
     pp.push([{ v: areaName(P.aid), s: XS.text }, { v: gName(P.gid), s: XS.text }, { v: fullName(P.e), s: XS.text }, { v: P.e.num_empleado || '', s: XS.text }, { v: P.e.puesto || '', s: XS.text }, ...f.slice(0, 4), P.s.falta >= 3 ? { v: P.s.falta, s: XS.warn } : f[4], ...f.slice(5)]);
   });
 
-  const grid = [[{ v: titulo, s: XS.title }], [{ v: 'Mañana/Cierre por día. A asistencia · F falta · R retardo · S salida · P permiso · D descanso · I inactividad · V vacaciones · C4/Ab4/C8/Ab8 códigos de Cobranza', s: XS.sub }],
+  const grid = [[{ v: titulo, s: XS.title }], [{ v: 'Un código por día. A asistencia · R retardo · SA salida anticipada · AC ausente al cierre · P permiso · I inactividad · F falta · D descanso · V vacaciones · C4/Ab4/C8/Ab8 Cobranza · NI nuevo ingreso · BAJA fecha de baja · — no laboraba · vacío: sin registro (no es falta)', s: XS.sub }],
     repHead(['Área', 'Equipo', 'Nombre', ...days.map((d) => dayLabel(d))])];
-  ps.forEach((P) => grid.push([{ v: areaName(P.aid), s: XS.text }, { v: gName(P.gid), s: XS.text }, { v: fullName(P.e), s: XS.text }, ...days.map((d) => ({ v: P.cod[d] || '', s: XS.text }))]));
+  ps.forEach((P) => grid.push([{ v: areaName(P.aid), s: XS.text }, { v: gName(P.gid), s: XS.text }, { v: fullName(P.e), s: XS.text }, ...days.map((d) => { const fi = P.e.fecha_ingreso, fb = P.e.fecha_baja; const v = P.cod[d] || (fb && d === fb ? 'BAJA' : (fb && d > fb) || (fi && d < fi) ? '—' : fi === d ? 'NI' : ''); return { v, s: ldStyle(v) }; })]));
 
   return [
     { name: 'RESUMEN POR DÍA', freeze: [0, 3], cols: [12, 14, 16, 9, 10, 10, 9, 8, 9, 10, 11, 10, 11, 9, 11, 11], rows: res },
@@ -2296,9 +2297,16 @@ const LD_CLAVES = [
   ['P', 'Permiso (con “A /”: permiso durante la jornada; solo: permiso sin asistencia)'], ['I', 'Inactividad'], ['DC', 'Desconexión (Cobranza)'], ['OI', 'Otra incidencia (Cobranza)'],
   ['F', 'Falta'], ['C8 / Ab8', 'Falta de día completo con / sin justificante (Cobranza)'], ['C4 / Ab4', 'Medio día con / sin justificante (Cobranza)'],
   ['D', 'Descanso'], ['V', 'Vacaciones aprobadas'], ['REV', 'Revisar: la mañana y el cierre no coinciden o falta el pase de la mañana'],
+  ['NI', 'Nuevo ingreso (su primer día)'], ['BAJA', 'Fecha de baja (ya no labora): no es falta'],
   ['OE', 'Ese día quedó registrado en otro equipo'], ['—', 'No laboraba (antes de su ingreso o después de su baja)'], ['(vacío)', 'Sin registro: no es falta']
 ];
-const ldStyle = (code) => !code || code === '—' || code === 'OE' ? XS.code : /REV/.test(code) ? XS.codeRev : /^(F|C8|Ab8)/.test(code) ? XS.codeF
+// Nuevo ingreso (fecha de ingreso o aviso del pase) y baja (fecha de baja o aviso) se marcan en el mismo calendario
+function ldMarca(e, d, code, x) {
+  const av = (k) => x && ((x.m && x.m.aviso === k) || (x.t && x.t.aviso === k));
+  const ni = e.fecha_ingreso === d || av('nuevo_ingreso'), bj = e.fecha_baja === d || av('baja');
+  return [code, ni && 'NI', bj && 'BAJA'].filter(Boolean).join(' / ');
+}
+const ldStyle = (code) => !code || code === '—' || code === 'OE' ? XS.code : /REV/.test(code) ? XS.codeRev : /\b(NI|BAJA)\b/.test(code) ? XS.codeV : /^(F|C8|Ab8)/.test(code) ? XS.codeF
   : /^(D|V)$/.test(code) ? (code === 'V' ? XS.codeV : XS.codeD) : / \/ |^(C4|Ab4|P|I)$/.test(code) ? XS.codeR : XS.code;
 const ldSum = () => ({ asist: 0, retardo: 0, salida: 0, falta: 0, c8: 0, descanso: 0, vacaciones: 0, permiso: 0, medio: 0, inactividad: 0, sin: 0, revisar: 0 });
 // Código de un día: mañana (manda), cierre, vacaciones aprobadas y registros de jornada no anulados
@@ -2374,11 +2382,14 @@ function ldDia(D, e, g, d, hoy) {
   if (d > hoy) return { code: '', obs: '', n: ldSum(), futuro: true };
   const x = (D.rec[e.id] || {})[d]; const a = x && (x.m || x.t);
   if (a && a.group_id && a.group_id !== g.id) { const og = S.groups.find((y) => y.id === a.group_id); return { code: 'OE', obs: 'Registrado en ' + (og ? areaName(og.area_id) + ' · ' + groupLabel(og) : 'otro equipo'), n: ldSum() }; }
+  if (!a && e.fecha_baja === d) return { code: 'BAJA', obs: 'Fecha de baja', n: ldSum() };
   if (!a && !ldLabora(e, d)) return { code: '—', obs: e.fecha_ingreso > d ? 'Aún no ingresaba' : 'Ya estaba de baja', n: ldSum() };
   const c = ldCelda(x && x.m, x && x.t, D.vac[e.id] && D.vac[e.id].has(d), (D.jrs[e.id] || {})[d]);
   // Sin registro solo cuenta si el equipo sí pasó lista ese día
   if (!c.code && !D.pase.has(g.id + '|' + d)) c.n.sin = 0;
   if (!c.code && e.group_id !== g.id) c.n.sin = 0;
+  const mk = ldMarca(e, d, c.code, x);
+  if (mk !== c.code) { if (!c.code) c.n.sin = 0; c.obs = [mk.includes('NI') ? 'Nuevo ingreso' : 'Baja', c.obs].filter(Boolean).join(' · '); c.code = mk; }
   return c;
 }
 const ldEmpresa = () => (latestTpl('general') || { bloques: {} }).bloques.empresa || EMPRESA;
