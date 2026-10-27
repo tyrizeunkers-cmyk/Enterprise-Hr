@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.30.0';
+const APP_VERSION = '0.31.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -2006,7 +2006,7 @@ async function viewAsistencia() {
   <div class="pagehead"><div><h1>Asistencia</h1><div class="muted small">${dayLabel(AS.fecha)}</div></div>
     <div class="row"><input type="date" class="inp mono" id="as_date" value="${AS.fecha}" max="${todayMX()}" aria-label="Fecha">
     ${areas.length > 1 ? `<select class="inp" id="as_area" aria-label="Área"><option value="">Todas las áreas</option>${areas.map((a) => `<option value="${a.id}"${AS.area === a.id ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}</select>` : ''}
-    <button class="btn primary" id="as_rep">Reporte de asistencia</button><button class="btn" id="as_exp">Exportar periodo</button></div></div>
+    <button class="btn primary" id="as_rep">Imprimir / Exportar asistencia</button><button class="btn" id="as_exp">Exportar periodo</button></div></div>
   ${asTabs()}
   ${alerts.length ? `<div class="card pad" style="margin-bottom:12px"><div class="eyebrow" style="margin-bottom:8px">Alertas · faltas en los últimos 30 días</div>
     <div class="list">${alerts.map((f) => { const e = empById[f.employee_id]; return `<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:8px"><span><b>${esc(fullName(e))}</b><br><span class="small muted">${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))}${f.retardos ? ` · ${f.retardos} retardos` : ''}</span></span>${faltasBadge(f.faltas)}</div>`; }).join('')}</div>
@@ -2037,7 +2037,7 @@ async function viewAsistencia() {
   });
   $$('[data-goto]').forEach((b) => b.onclick = () => { LS.group = b.dataset.goto; LS.fecha = AS.fecha; location.hash = '#/lista'; });
   $('#as_exp').onclick = exportPeriod;
-  $('#as_rep').onclick = reporteAsistencia;
+  $('#as_rep').onclick = imprimirAsistencia;
   bindAsTabs();
 }
 
@@ -2287,6 +2287,243 @@ function repHojasPeriodo(D, days) {
     { name: 'POR PERSONA', freeze: [3, 3], cols: [16, 20, 34, 9, 22, 7, 10, 10, 9, 8, 9, 10, 11, 10, 11, 9, 11, 11], rows: pp },
     { name: 'DÍA POR DÍA', freeze: [3, 3], cols: [16, 20, 34, ...days.map(() => 11)], rows: grid }
   ];
+}
+
+// ───── Imprimir / Exportar asistencia por líder: reporte diario y quincenal en Excel ─────
+// Usa el catálogo vigente del pase de lista (sin catálogo paralelo). Un día sin registro queda en blanco: nunca es falta.
+const LD_CLAVES = [
+  ['A', 'Asistió sin incidencias'], ['R', 'Retardo'], ['SA', 'Salida anticipada'], ['AC', 'Ausente al cierre (asistió en la mañana)'],
+  ['P', 'Permiso (con “A /”: permiso durante la jornada; solo: permiso sin asistencia)'], ['I', 'Inactividad'], ['DC', 'Desconexión (Cobranza)'], ['OI', 'Otra incidencia (Cobranza)'],
+  ['F', 'Falta'], ['C8 / Ab8', 'Falta de día completo con / sin justificante (Cobranza)'], ['C4 / Ab4', 'Medio día con / sin justificante (Cobranza)'],
+  ['D', 'Descanso'], ['V', 'Vacaciones aprobadas'], ['REV', 'Revisar: la mañana y el cierre no coinciden o falta el pase de la mañana'],
+  ['OE', 'Ese día quedó registrado en otro equipo'], ['—', 'No laboraba (antes de su ingreso o después de su baja)'], ['(vacío)', 'Sin registro: no es falta']
+];
+const ldStyle = (code) => !code || code === '—' || code === 'OE' ? XS.code : /REV/.test(code) ? XS.codeRev : /^(F|C8|Ab8)/.test(code) ? XS.codeF
+  : /^(D|V)$/.test(code) ? (code === 'V' ? XS.codeV : XS.codeD) : / \/ |^(C4|Ab4|P|I)$/.test(code) ? XS.codeR : XS.code;
+const ldSum = () => ({ asist: 0, retardo: 0, salida: 0, falta: 0, c8: 0, descanso: 0, vacaciones: 0, permiso: 0, medio: 0, inactividad: 0, sin: 0, revisar: 0 });
+// Código de un día: mañana (manda), cierre, vacaciones aprobadas y registros de jornada no anulados
+function ldCelda(m, t, vac, jrs) {
+  const obs = [], suf = [], n = ldSum();
+  const nota = (a, cuando) => { const x = [a.comentario, a.codigo_motivo && 'Motivo: ' + a.codigo_motivo, a.codigo_justificante && 'Justificante: ' + a.codigo_justificante].filter(Boolean).join(' · '); if (x) obs.push(`${cuando}: ${x}`); };
+  const pres = (a) => a && (a.status === 'asistio' || a.status === 'salida');
+  let base = '';
+  if (vac || (m && m.incidencia === 'vacaciones') || (t && t.incidencia === 'vacaciones')) { base = 'V'; n.vacaciones = 1; }
+  else if (m && (m.codigo === 'C8' || m.codigo === 'Ab8')) { base = m.codigo; n.falta = 1; if (m.codigo === 'C8') n.c8 = 1; }
+  else if (m && m.status === 'falta') { base = 'F'; n.falta = 1; if (pres(t)) { suf.push('REV'); n.revisar = 1; obs.push('Falta en la mañana pero presente al cierre: confirmar'); } }
+  else if (m && (m.status === 'asistio' || m.status === 'retardo')) { base = 'A'; n.asist = 1; if (m.status === 'retardo') { suf.push('R'); n.retardo = 1; } }
+  else if (m && (m.codigo === 'C4' || m.codigo === 'Ab4')) { base = m.codigo; n.medio = 1; }
+  else if (m && m.incidencia === 'descanso') { base = 'D'; n.descanso = 1; }
+  else if (m && m.incidencia === 'permiso') { base = 'P'; n.permiso = 1; }
+  else if (m && m.incidencia === 'inactividad') { base = 'I'; n.inactividad = 1; }
+  else if (m) { base = 'REV'; n.revisar = 1; obs.push('Registro de la mañana sin estatus reconocible'); }
+  else if (t) {
+    if (t.incidencia === 'descanso' && !t.status) { base = 'D'; n.descanso = 1; }
+    else if (t.codigo === 'C4' || t.codigo === 'Ab4') { base = t.codigo; n.medio = 1; obs.push('Sin pase de la mañana'); }
+    else { base = 'REV'; n.revisar = 1; obs.push(t.status === 'falta' ? 'Sin pase de la mañana; ausente al cierre' : 'Sin pase de la mañana; presente al cierre'); }
+  }
+  if (base === 'A' || base === 'C4' || base === 'Ab4') {
+    if (t && t.status === 'salida') { suf.push('SA'); n.salida = 1; }
+    if (t && t.status === 'falta' && base === 'A') { suf.push('AC'); n.revisar = 1; }
+    if (t && (t.codigo === 'C4' || t.codigo === 'Ab4') && base === 'A') { suf.push(t.codigo); n.medio = 1; }
+    if ([m, t].some((a) => a && a.incidencia === 'permiso') || (jrs || []).some((x) => x.tipo === 'permiso')) { suf.push('P'); n.permiso = 1; }
+    if ([m, t].some((a) => a && a.incidencia === 'inactividad')) { suf.push('I'); n.inactividad = 1; }
+    if (base === 'A' && !suf.includes('R') && (jrs || []).some((x) => x.tipo === 'retardo')) { suf.push('R'); n.retardo = 1; }
+    if ((jrs || []).some((x) => x.tipo === 'desconexion')) suf.push('DC');
+    if ((jrs || []).some((x) => x.tipo === 'otra')) suf.push('OI');
+  } else if ((jrs || []).length && base !== 'V') { n.revisar = 1; if (!suf.includes('REV')) suf.push('REV'); obs.push('Tiene registros de jornada en un día sin asistencia: confirmar'); }
+  if (!base) n.sin = 1;
+  if (m) nota(m, 'Mañana'); if (t) nota(t, 'Cierre');
+  if (m && m.aviso) obs.push('Aviso: ' + AVISO[m.aviso]);
+  (jrs || []).forEach((x) => obs.push(jrResumen(x) + (x.estado === 'pendiente_regreso' ? ' · pendiente de regreso' : x.estado === 'abierta' ? ' · abierta' : '')));
+  return { code: [base, ...[...new Set(suf)]].filter(Boolean).join(' / '), obs: obs.join(' · '), n };
+}
+
+async function ldDatos(from, to) {
+  let qa = db('attendance').select('employee_id,fecha,turno,status,aviso,incidencia,comentario,codigo,codigo_motivo,codigo_justificante,area_id,group_id').gte('fecha', from).lte('fecha', to);
+  let qj = db('jornada_registros').gte('fecha', from).lte('fecha', to);
+  const [att, emps, vacs, jr, days] = await Promise.all([
+    qa.order('fecha').getAll(),
+    db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,puesto,area_id,group_id,status,fecha_ingreso,fecha_baja').in('status', ['activo', 'alta_pendiente', 'baja']).getAll(),
+    db('vacaciones').select('employee_id,fechas,fecha_inicio').eq('estado', 'aprobada').eq('tipo', 'disfrute').lte('fecha_inicio', to).getAll().catch(() => []),
+    qj.getAll().catch(() => []),
+    db('attendance_days').gte('fecha', from).lte('fecha', to).getAll().catch(() => []),
+    cargarCategorias().catch(() => null)
+  ]);
+  const rec = {}; att.forEach((a) => { const x = ((rec[a.employee_id] = rec[a.employee_id] || {})[a.fecha] = rec[a.employee_id][a.fecha] || {}); x[a.turno === 'tarde' ? 't' : 'm'] = a; });
+  const vac = {}; vacs.forEach((x) => (x.fechas || []).forEach((d) => { if (d >= from && d <= to) (vac[x.employee_id] = vac[x.employee_id] || new Set()).add(d); }));
+  const jrs = {}; jr.filter((x) => x.estado !== 'anulada').forEach((x) => { (((jrs[x.employee_id] = jrs[x.employee_id] || {})[x.fecha]) = jrs[x.employee_id][x.fecha] || []).push(x); });
+  const pase = new Set(att.map((a) => a.group_id + '|' + a.fecha));
+  const dia = Object.fromEntries(days.map((d) => [d.group_id + '|' + d.fecha, d]));
+  return { emps, rec, vac, jrs, pase, dia };
+}
+// Equipos que el usuario puede consultar (mismas reglas que la página de Asistencia)
+const ldGrupos = () => S.groups.filter((g) => g.active && (seesAllAreas() || S.myAreas.includes(g.area_id)) && (!AS.area || g.area_id === AS.area))
+  .sort((a, b) => (areaName(a.area_id) + groupLabel(a)).localeCompare(areaName(b.area_id) + groupLabel(b), 'es'));
+const ldLider = (g) => { if (g.tl_id) { const n = profName(g.tl_id); if (n && n !== '—') return n; } return g.tipo === 'lideres' ? 'Supervisión' : 'Sin líder asignado'; };
+const ldLabora = (e, d) => (!e.fecha_ingreso || e.fecha_ingreso <= d) && (!e.fecha_baja || e.fecha_baja > d);
+// Integrantes de un equipo en el periodo: quien tenga registros en ese equipo, o lo tenga asignado hoy y haya laborado en el periodo
+function ldEquipo(D, g, days) {
+  return D.emps.filter((e) => {
+    const r = D.rec[e.id] || {};
+    if (days.some((d) => { const x = r[d]; const a = x && (x.m || x.t); return a && a.group_id === g.id; })) return true;
+    return e.group_id === g.id && days.some((d) => ldLabora(e, d));
+  }).sort(sortName);
+}
+// Celda de una persona en un equipo y día
+function ldDia(D, e, g, d, hoy) {
+  if (d > hoy) return { code: '', obs: '', n: ldSum(), futuro: true };
+  const x = (D.rec[e.id] || {})[d]; const a = x && (x.m || x.t);
+  if (a && a.group_id && a.group_id !== g.id) { const og = S.groups.find((y) => y.id === a.group_id); return { code: 'OE', obs: 'Registrado en ' + (og ? areaName(og.area_id) + ' · ' + groupLabel(og) : 'otro equipo'), n: ldSum() }; }
+  if (!a && !ldLabora(e, d)) return { code: '—', obs: e.fecha_ingreso > d ? 'Aún no ingresaba' : 'Ya estaba de baja', n: ldSum() };
+  const c = ldCelda(x && x.m, x && x.t, D.vac[e.id] && D.vac[e.id].has(d), (D.jrs[e.id] || {})[d]);
+  // Sin registro solo cuenta si el equipo sí pasó lista ese día
+  if (!c.code && !D.pase.has(g.id + '|' + d)) c.n.sin = 0;
+  if (!c.code && e.group_id !== g.id) c.n.sin = 0;
+  return c;
+}
+const ldEmpresa = () => (latestTpl('general') || { bloques: {} }).bloques.empresa || EMPRESA;
+const ldSafe = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w-]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+function ldHojaNombre(g, usados) {
+  let n = `${areaName(g.area_id)} ${groupLabel(g)}`.replace(/[\\/?*[\]:]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 28);
+  let k = n, i = 2; while (usados.has(k.toLowerCase())) k = n.slice(0, 26) + ' ' + i++;
+  usados.add(k.toLowerCase()); return k;
+}
+const ldDow = (d) => ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'][new Date(d + 'T12:00:00Z').getUTCDay()];
+const ldDiaCol = (d) => `${ldDow(d)} ${d.slice(8)}/${d.slice(5, 7)}`;
+const LD_TOT = [['asist', 'Asistencias'], ['retardo', 'Retardos'], ['salida', 'Salidas antic.'], ['falta', 'Faltas'], ['c8', 'De ellas C8 (justif.)'], ['descanso', 'Descansos'], ['vacaciones', 'Vacaciones'], ['permiso', 'Permisos'], ['medio', 'Medio día C4/Ab4'], ['inactividad', 'Inactividad'], ['sin', 'Sin registro'], ['revisar', 'Revisar']];
+const ldAdd = (s, n) => Object.keys(s).forEach((k) => { s[k] += n[k] || 0; });
+const ldLeyenda = (rows) => { rows.push([], [{ v: 'CLAVES', s: XS.bold }]); LD_CLAVES.forEach(([k, v]) => rows.push([null, { v: k, s: XS.code }, { v, s: XS.base }])); };
+const ldPie = () => '&L' + ldEmpresa().replace(/&/g, '&&') + ' · Asistencia&RPágina &P de &N';
+// Encabezado: una línea por celda (el texto se ve completo aunque la columna A sea angosta)
+function ldCabecera(g, titulo, extra) {
+  return [
+    [{ v: ldEmpresa(), s: XS.title }],
+    [{ v: titulo, s: XS.title }],
+    [{ v: `Departamento: ${areaName(g.area_id)}     ·     Equipo: ${groupLabel(g)}`, s: XS.bold }],
+    [{ v: `Líder: ${ldLider(g)}`, s: XS.bold }],
+    ...extra.map((x) => [{ v: x, s: XS.bold }]),
+    [{ v: `Generado: ${fmtDateTime(new Date().toISOString())} por ${S.me.full_name || ''}`, s: XS.sub }],
+    []
+  ];
+}
+const ldMerge = (n) => [`A1:${colL(n - 1)}1`, `A2:${colL(n - 1)}2`];
+
+function ldHojasDiario(D, grupos, fecha) {
+  const hoy = todayMX(), usados = new Set(), sheets = [], resumen = [];
+  for (const g of grupos) {
+    const gente = ldEquipo(D, g, [fecha]); if (!gente.length) continue;
+    const dd = D.dia[g.id + '|' + fecha] || {};
+    const pase = [dd.sent_at ? 'Mañana enviada ' + fmtTime(dd.sent_at) : 'Mañana sin enviar', dd.sent_pm_at ? 'cierre enviado ' + fmtTime(dd.sent_pm_at) : 'cierre sin enviar', dd.reviewed_at ? 'revisado por Nómina ' + fmtDateTime(dd.reviewed_at) : 'pendiente de revisión de Nómina'].join(' · ');
+    const rows = ldCabecera(g, 'REPORTE DIARIO DE ASISTENCIA', [`Fecha del reporte: ${ldDow(fecha)} ${fmtDate(fecha)}`, `Pase de lista: ${pase}`]);
+    const hr = rows.length + 1;
+    rows.push(['No.', 'Nombre del agente', 'No. empleado', 'Puesto', 'Estado del día', 'Observaciones'].map((h) => ({ v: h, s: XS.head })));
+    const tot = ldSum();
+    gente.forEach((e, i) => {
+      const c = ldDia(D, e, g, fecha, hoy); ldAdd(tot, c.n);
+      rows.push([{ v: i + 1, s: XS.int }, { v: fullName(e), s: XS.text }, { v: e.num_empleado || '', s: XS.text }, { v: e.puesto || '', s: XS.text }, { v: c.code, s: ldStyle(c.code) }, { v: c.obs || (c.code ? '' : 'Sin registro'), s: XS.wrap }]);
+    });
+    const last = rows.length;
+    rows.push([], [{ v: 'TOTALES DEL EQUIPO', s: XS.bold }]);
+    LD_TOT.forEach(([k, l]) => rows.push([null, { v: l, s: XS.text }, { v: tot[k], s: XS.int }]));
+    ldLeyenda(rows);
+    sheets.push({ name: ldHojaNombre(g, usados), cols: [6, 36, 12, 24, 14, 70], rows, merges: ldMerge(6), freeze: [0, hr], printRows: [hr, hr], autoFilter: `A${hr}:F${last}`, footer: ldPie() });
+    resumen.push({ g, n: gente.length, tot });
+  }
+  return { sheets, resumen };
+}
+
+function ldHojasQuincena(D, grupos, days, titulo) {
+  const hoy = todayMX(), usados = new Set(), sheets = [], resumen = [];
+  for (const g of grupos) {
+    const gente = ldEquipo(D, g, days); if (!gente.length) continue;
+    const rows = ldCabecera(g, 'REPORTE QUINCENAL DE ASISTENCIA', titulo);
+    const hr = rows.length + 1, nd = days.length;
+    rows.push([...['No.', 'Nombre del agente', 'No. empleado'], ...days.map(ldDiaCol), ...LD_TOT.map(([, l]) => l)].map((h) => ({ v: h, s: XS.head })));
+    const first = rows.length + 1, tot = ldSum();
+    const obsAll = [], obsMerge = [];
+    gente.forEach((e, i) => {
+      const s = ldSum(); const cells = days.map((d) => { const c = ldDia(D, e, g, d, hoy); ldAdd(s, c.n); if (c.obs && !['OE', '—'].includes(c.code)) obsAll.push([fullName(e), d, c.code, c.obs]); return { v: c.code, s: ldStyle(c.code) }; });
+      ldAdd(tot, s);
+      rows.push([{ v: i + 1, s: XS.int }, { v: fullName(e), s: XS.text }, { v: e.num_empleado || '', s: XS.text }, ...cells, ...LD_TOT.map(([k]) => ({ v: s[k], s: XS.int }))]);
+    });
+    const last = rows.length;
+    rows.push([null, { v: 'TOTAL DEL EQUIPO', s: XS.bold }, null, ...days.map(() => null), ...LD_TOT.map(([k], j) => { const c = colL(3 + nd + j); return { f: `SUM(${c}${first}:${c}${last})`, v: tot[k], s: XS.intB }; })]);
+    if (obsAll.length) {
+      rows.push([], [{ v: 'OBSERVACIONES DEL PERIODO', s: XS.bold }]);
+      const h = []; ['Agente', 'Fecha', 'Código', 'Detalle'].forEach((x, j) => { h[j + 1] = { v: x, s: XS.head }; }); rows.push(h); obsMerge.push(rows.length);
+      obsAll.forEach(([n, d, c, o]) => { const r = []; r[1] = { v: n, s: XS.text }; r[2] = { v: fmtDate(d), s: XS.text }; r[3] = { v: c, s: ldStyle(c) }; r[4] = { v: o, s: XS.text }; rows.push(r); obsMerge.push(rows.length); });
+    }
+    ldLeyenda(rows);
+    sheets.push({ name: ldHojaNombre(g, usados), cols: [5, 34, 11, ...days.map(() => 8.5), ...LD_TOT.map(() => 9)], rows, merges: [...ldMerge(3 + nd + LD_TOT.length), ...obsMerge.map((r) => `E${r}:${colL(2 + nd + LD_TOT.length)}${r}`)], freeze: [2, hr], printRows: [hr, hr], autoFilter: `A${hr}:${colL(2 + nd + LD_TOT.length)}${last}`, footer: ldPie(), heights: Object.assign([], { [hr - 1]: 40 }) });
+    resumen.push({ g, n: gente.length, tot });
+  }
+  return { sheets, resumen };
+}
+function ldResumenHoja(resumen, titulo, sub) {
+  const rows = [[{ v: ldEmpresa(), s: XS.title }], [{ v: titulo, s: XS.title }], [{ v: sub, s: XS.bold }], []];
+  rows.push(['Departamento', 'Equipo', 'Líder', 'Agentes', ...LD_TOT.map(([, l]) => l)].map((h) => ({ v: h, s: XS.head })));
+  resumen.forEach((x) => rows.push([{ v: areaName(x.g.area_id), s: XS.text }, { v: groupLabel(x.g), s: XS.text }, { v: ldLider(x.g), s: XS.text }, { v: x.n, s: XS.int }, ...LD_TOT.map(([k]) => ({ v: x.tot[k], s: XS.int }))]));
+  rows.push([], [{ v: 'Cada día de cada persona se cuenta una sola vez, en el equipo donde quedó registrado. “Sin registro” solo se cuenta en días en que el equipo sí pasó lista y nunca se cuenta como falta. Faltas = Falta, C8 y Ab8 de la mañana (misma regla que la pre-nómina).', s: XS.sub }]);
+  return { name: 'RESUMEN', cols: [16, 22, 26, 9, ...LD_TOT.map(() => 11)], rows, merges: ldMerge(4 + LD_TOT.length), freeze: [0, 5], printRows: [5, 5], autoFilter: `A5:${colL(3 + LD_TOT.length)}${4 + resumen.length + 1}`, footer: ldPie() };
+}
+
+function imprimirAsistencia() {
+  const t = todayMX(), grupos = ldGrupos();
+  if (!grupos.length) return toast('No tienes equipos para consultar', true);
+  const q = Number(t.slice(8)) <= 15 ? '1' : '2';
+  const f = [
+    { k: 'modo', label: 'Reporte', type: 'select', val: 'diario', options: [['diario', 'Diario por líder'], ['quincenal', 'Quincenal por líder'], ['resumen', 'Resumen por área (día o periodo)']] },
+    { k: 'grupo', label: 'Líder / equipo', type: 'select', val: '', options: [['', grupos.length > 1 ? 'Todos mis equipos (una hoja por líder)' : groupLabel(grupos[0])], ...(grupos.length > 1 ? grupos.map((g) => [g.id, `${areaName(g.area_id)} · ${groupLabel(g)} — ${ldLider(g)}`]) : [])] },
+    { k: 'fecha', label: 'Fecha', type: 'date', val: AS.fecha || t, max: t },
+    { k: 'mes', label: 'Mes', type: 'month', val: t.slice(0, 7), max: t.slice(0, 7) },
+    { k: 'quin', label: 'Quincena', type: 'select', val: q, options: [['1', '1ra quincena (del 1 al 15)'], ['2', '2da quincena (del 16 al último día)']] }
+  ];
+  modal({
+    title: 'Imprimir / Exportar asistencia',
+    body: fieldsHtml(f) + `<div class="small muted" id="ld_help" style="margin-top:8px"></div>`,
+    actions: [{ label: 'Cancelar' }, { label: 'Descargar Excel', cls: 'primary', run: async ({ el }) => {
+      const v = readFields(el, f);
+      if (v.modo === 'resumen') { setTimeout(reporteAsistencia, 0); return; }
+      const sel = v.grupo ? grupos.filter((g) => g.id === v.grupo) : grupos;
+      let days, nombre, out;
+      const areaTxt = ldSafe(new Set(sel.map((g) => g.area_id)).size === 1 ? areaName(sel[0].area_id) : 'Todas');
+      const eqTxt = v.grupo ? '_' + ldSafe(groupLabel(sel[0])) : '';
+      if (v.modo === 'diario') {
+        if (!v.fecha || !/^\d{4}-\d{2}-\d{2}$/.test(v.fecha)) throw new Error('Elige una fecha válida.');
+        if (v.fecha > t) throw new Error('No se puede generar un reporte de una fecha futura.');
+        days = [v.fecha];
+        const D = await ldDatos(v.fecha, v.fecha);
+        out = ldHojasDiario(D, sel, v.fecha);
+        if (out.sheets.length > 1) out.sheets.unshift(ldResumenHoja(out.resumen, 'REPORTE DIARIO DE ASISTENCIA · RESUMEN', `${ldDow(v.fecha)} ${fmtDate(v.fecha)}`));
+        nombre = `Asistencia_Diaria_${areaTxt}${eqTxt}_${v.fecha}.xlsx`;
+      } else {
+        if (!v.mes || !/^\d{4}-\d{2}$/.test(v.mes)) throw new Error('Elige un mes válido.');
+        const [y, mo] = v.mes.split('-').map(Number), fin = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+        const ini = v.quin === '1' ? 1 : 16, ult = v.quin === '1' ? 15 : fin;
+        days = []; for (let d = ini; d <= ult; d++) days.push(`${v.mes}-${String(d).padStart(2, '0')}`);
+        if (days[0] > t) throw new Error('Esa quincena todavía no empieza.');
+        const per = `${v.quin === '1' ? '1ra' : '2da'} quincena · del ${fmtDate(days[0])} al ${fmtDate(days[days.length - 1])}`;
+        const D = await ldDatos(days[0], days[days.length - 1]);
+        out = ldHojasQuincena(D, sel, days, [`Mes y año: ${MESES[mo - 1]} ${y}     ·     Periodo: ${per}`,
+          ...(days[days.length - 1] > t ? [`Quincena en curso: los días posteriores al ${fmtDate(t)} quedan en blanco.`] : [])]);
+        if (out.sheets.length > 1) out.sheets.unshift(ldResumenHoja(out.resumen, 'REPORTE QUINCENAL DE ASISTENCIA · RESUMEN', `${MESES[mo - 1]} ${y} · ${per}`));
+        nombre = `Asistencia_Quincenal_${areaTxt}${eqTxt}_${v.mes}_${v.quin === '1' ? '1ra' : '2da'}.xlsx`;
+      }
+      if (!out.sheets.length) throw new Error(v.grupo ? 'Ese equipo no tiene agentes asignados en ese periodo.' : 'Tus equipos no tienen agentes asignados en ese periodo.');
+      bajarArchivo(new File([xlsxBuild(out.sheets)], nombre, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      toast('Excel listo: ' + nombre);
+    } }]
+  });
+  const M = [...document.querySelectorAll('.modal-bg')].pop();
+  const show = (k, on) => { $('#f_' + k, M).closest('label').style.display = on ? '' : 'none'; };
+  const sync = () => {
+    const m = $('#f_modo', M).value;
+    show('grupo', m !== 'resumen'); show('fecha', m === 'diario'); show('mes', m === 'quincenal'); show('quin', m === 'quincenal');
+    $('#ld_help', M).innerHTML = m === 'diario' ? 'Una hoja por líder con No., nombre, estado del día (código corto) y observaciones. Encabezado con empresa, departamento, líder, fecha y hora de generación.'
+      : m === 'quincenal' ? 'Una hoja por líder con una columna por día (día y mes) y totales por agente. 1ra quincena: 1 al 15; 2da: 16 al último día del mes.'
+      : 'Abre el reporte por área (resumen por día o por periodo).';
+  };
+  $('#f_modo', M).onchange = sync; sync();
 }
 
 // ───────────────────────── Usuarios (solo Daniel) ─────────────────────────
@@ -5927,7 +6164,8 @@ async function viewInformes() {
 
 // ───── Excel (.xlsx) en el formato de pre-nómina de la empresa ─────
 // Escritor mínimo de SpreadsheetML: celdas con valor, fórmula (con su resultado ya calculado) y estilos fijos.
-const XS = { base: 0, head: 1, money: 2, text: 3, date: 4, int: 5, title: 6, total: 7, time: 8, bold: 9, adj: 10, wrap: 11, sub: 12, warn: 13, dec: 14 };
+const XS = { base: 0, head: 1, money: 2, text: 3, date: 4, int: 5, title: 6, total: 7, time: 8, bold: 9, adj: 10, wrap: 11, sub: 12, warn: 13, dec: 14,
+  code: 15, codeF: 16, codeD: 17, codeR: 18, codeV: 19, codeRev: 20, intB: 21 };
 const xmlEsc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
 const colL = (n) => { let s = ''; for (n++; n; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s; return s; };
 const xlDate = (iso) => iso ? (Date.UTC(...iso.split('-').map((x, i) => Number(x) - (i === 1 ? 1 : 0))) - Date.UTC(1899, 11, 30)) / 86400000 : null;
@@ -5943,16 +6181,27 @@ function xlsxSheet(sh) {
   const cols = sh.cols ? `<cols>${sh.cols.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('')}</cols>` : '';
   const pane = sh.freeze ? `<pane xSplit="${sh.freeze[0]}" ySplit="${sh.freeze[1]}" topLeftCell="${colL(sh.freeze[0])}${sh.freeze[1] + 1}" activePane="bottomRight" state="frozen"/>` : '';
   const merges = sh.merges && sh.merges.length ? `<mergeCells count="${sh.merges.length}">${sh.merges.map((m) => `<mergeCell ref="${m}"/>`).join('')}</mergeCells>` : '';
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><sheetViews><sheetView workbookViewId="0"${sh.zoom ? ` zoomScale="${sh.zoom}"` : ''}>${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/>${cols}<sheetData>${rows}</sheetData>${merges}<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>`;
+  const filtro = sh.autoFilter ? `<autoFilter ref="${sh.autoFilter}"/>` : '';
+  const pie = sh.footer ? `<headerFooter><oddFooter>${xmlEsc(sh.footer)}</oddFooter></headerFooter>` : '';
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><sheetViews><sheetView workbookViewId="0"${sh.zoom ? ` zoomScale="${sh.zoom}"` : ''}>${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/>${cols}<sheetData>${rows}</sheetData>${filtro}${merges}<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/><pageSetup orientation="${sh.portrait ? 'portrait' : 'landscape'}" fitToWidth="1" fitToHeight="0"/>${pie}</worksheet>`;
+}
+// Nombres definidos: filas que se repiten al imprimir y rango del filtro
+function xlsxNames(sheets) {
+  const q = (n) => `'${String(n).replace(/'/g, "''")}'`;
+  const d = sheets.flatMap((s, i) => [
+    s.printRows ? `<definedName name="_xlnm.Print_Titles" localSheetId="${i}">${xmlEsc(q(s.name) + '!$' + s.printRows[0] + ':$' + s.printRows[1])}</definedName>` : '',
+    s.autoFilter ? `<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">${xmlEsc(q(s.name) + '!' + s.autoFilter.replace(/([A-Z]+)(\d+)/g, '$$$1$$$2'))}</definedName>` : ''
+  ]).join('');
+  return d ? `<definedNames>${d}</definedNames>` : '';
 }
 function xlsxBuild(sheets) {
   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <numFmts count="3"><numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0.00;\\-&quot;$&quot;#,##0.00;&quot;-&quot;"/><numFmt numFmtId="165" formatCode="dd/mm/yyyy"/><numFmt numFmtId="166" formatCode="[h]:mm"/></numFmts>
 <fonts count="5"><font><sz val="10"/><name val="Arial"/></font><font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Arial"/></font><font><b/><sz val="13"/><name val="Arial"/></font><font><b/><sz val="10"/><name val="Arial"/></font><font><i/><sz val="9"/><color rgb="FF595959"/><name val="Arial"/></font></fonts>
-<fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF0070C0"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF8CBAD"/></patternFill></fill></fills>
+<fills count="9"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF0070C0"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF8CBAD"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF4CCCC"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE7E6E6"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFE699"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFDDEBF7"/></patternFill></fill></fills>
 <borders count="3"><border/><border><left style="thin"><color rgb="FFBFBFBF"/></left><right style="thin"><color rgb="FFBFBFBF"/></right><top style="thin"><color rgb="FFBFBFBF"/></top><bottom style="thin"><color rgb="FFBFBFBF"/></bottom></border><border><top style="medium"/><bottom style="double"/></border></borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="15">
+<cellXfs count="22">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
 <xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>
@@ -5968,11 +6217,18 @@ function xlsxBuild(sheets) {
 <xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>
 <xf numFmtId="49" fontId="0" fillId="4" borderId="1" xfId="0" applyNumberFormat="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>
 <xf numFmtId="4" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>
+<xf numFmtId="49" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="49" fontId="0" fillId="5" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="49" fontId="0" fillId="6" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="49" fontId="0" fillId="7" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="49" fontId="0" fillId="8" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="49" fontId="3" fillId="3" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+<xf numFmtId="1" fontId="3" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center"/></xf>
 </cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
   const files = [
     { name: '[Content_Types].xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>` },
     { name: '_rels/.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
-    { name: 'xl/workbook.xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((s, i) => `<sheet name="${xmlEsc(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets><calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>` },
+    { name: 'xl/workbook.xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((s, i) => `<sheet name="${xmlEsc(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets>${xlsxNames(sheets)}<calcPr calcId="191029" fullCalcOnLoad="1"/></workbook>` },
     { name: 'xl/_rels/workbook.xml.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
     { name: 'xl/styles.xml', data: styles },
     ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: xlsxSheet(s) }))
