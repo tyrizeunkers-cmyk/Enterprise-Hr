@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.33.2';
+const APP_VERSION = '0.34.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -1199,6 +1199,98 @@ async function evidenciasJornada(padre, puedeAgregar, done) {
 // ───────────────────────── Personal ─────────────────────────
 const PS = { q: '', area: '', group: '', status: 'activo' };
 let EMP_CACHE = [];
+// ───── Reporte de altas o bajas (Excel) desde Personal ─────
+// Bajas: nombre, ingreso, baja, antigüedad, tipo y motivo de baja, recontratable, puesto, área y equipo/líder + hoja de resumen.
+// Altas: nombre, No., puesto, área, equipo/líder, ingreso y estatus hoy.
+function abTipoBaja(m) {
+  const t = String(m || '').trim(); if (!t) return 'Sin motivo registrado';
+  const s = SALIDAS.find((x) => x !== 'Otro' && norm(t).startsWith(norm(x)));
+  if (s) return s;
+  const n = norm(t);
+  if (/renuncia/.test(n)) return 'Renuncia voluntaria';
+  if (/abandono/.test(n)) return 'Abandono de empleo';
+  if (/rescision|despido justificado|art\.? ?47/.test(n)) return 'Rescisión (despido justificado)';
+  if (/mutuo|convenio/.test(n)) return 'Terminación por mutuo consentimiento';
+  if (/contrato|periodo a prueba/.test(n)) return 'Término de contrato';
+  return 'Otro';
+}
+function abAntig(dias) {
+  if (dias == null || dias < 0) return '';
+  const a = Math.floor(dias / 365), m = Math.floor((dias % 365) / 30.4), d = Math.round(dias - a * 365 - m * 30.4);
+  return [a && `${a} año${a > 1 ? 's' : ''}`, m && `${m} mes${m > 1 ? 'es' : ''}`, (!a && d) && `${d} día${d > 1 ? 's' : ''}`].filter(Boolean).join(' ') || '0 días';
+}
+async function reporteAltasBajas() {
+  const t = todayMX();
+  const f = [
+    { k: 'tipo', label: 'Reporte', type: 'select', val: PS.status === 'baja' ? 'bajas' : 'altas', options: [['bajas', 'Bajas'], ['altas', 'Altas (ingresos)']] },
+    { k: 'area', label: 'Área', type: 'select', val: PS.area || '', options: [['', 'Todas mis áreas'], ...visibleAreas().map((a) => [a.id, a.name])] },
+    { k: 'from', label: 'Desde', type: 'date', req: true, val: t.slice(0, 8) + '01', max: t },
+    { k: 'to', label: 'Hasta', type: 'date', req: true, val: t, max: t }
+  ];
+  modal({
+    title: 'Reporte de altas o bajas (Excel)',
+    body: fieldsHtml(f) + '<div class="small muted" style="margin-top:8px"><b>Bajas</b> por fecha de baja: nombre, ingreso, baja, antigüedad, tipo y motivo de baja, recontratable, puesto, área y equipo/líder, más una hoja de resumen por tipo, área y antigüedad.<br><b>Altas</b> por fecha de ingreso: nombre, No. de empleado, puesto, área, equipo/líder, fecha de ingreso y estatus hoy.</div>',
+    actions: [{ label: 'Cancelar' }, { label: 'Descargar Excel', cls: 'primary', run: async ({ el }) => {
+      const v = readFields(el, f);
+      if (v.from > v.to) throw new Error('La fecha inicial es posterior a la final.');
+      const bajas = v.tipo === 'bajas';
+      let q = db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,puesto,area_id,group_id,status,fecha_ingreso,fecha_baja');
+      q = bajas ? q.eq('status', 'baja').gte('fecha_baja', v.from).lte('fecha_baja', v.to) : q.in('status', ['activo', 'alta_pendiente', 'baja']).gte('fecha_ingreso', v.from).lte('fecha_ingreso', v.to);
+      if (v.area) q = q.eq('area_id', v.area);
+      const emps = (await q.getAll()).filter((e) => seesAllAreas() || S.myAreas.includes(e.area_id)).sort((a, b) => (bajas ? (a.fecha_baja || '').localeCompare(b.fecha_baja || '') : (a.fecha_ingreso || '').localeCompare(b.fecha_ingreso || '')) || sortName(a, b));
+      if (!emps.length) throw new Error(`No hay ${bajas ? 'bajas' : 'altas'} del ${fmtDate(v.from)} al ${fmtDate(v.to)}${v.area ? ' en ' + areaName(v.area) : ''}.`);
+      const ids = emps.map((e) => e.id);
+      const priv = bajas ? await db('employee_private').select('employee_id,motivo_baja,recontratable').in('employee_id', ids).get().catch(() => []) : [];
+      const pv = Object.fromEntries(priv.map((p) => [p.employee_id, p]));
+      // Equipo: el actual; si ya no tiene (baja), el del último pase de lista
+      const sinG = emps.filter((e) => !e.group_id).map((e) => e.id); const ultG = {};
+      if (sinG.length) (await db('attendance').select('employee_id,group_id,fecha').in('employee_id', sinG).order('fecha', false).getAll().catch(() => [])).forEach((a) => { if (a.group_id && !ultG[a.employee_id]) ultG[a.employee_id] = a.group_id; });
+      const gOf = (e) => S.groups.find((g) => g.id === (e.group_id || ultG[e.id]));
+      const eq = (e) => { const g = gOf(e); return g ? groupLabel(g) : 'Sin equipo'; }, lid = (e) => { const g = gOf(e); return g ? ldLider(g) : ''; };
+      const T = (x) => ({ v: x ?? '', s: XS.text }), Dt = (x) => (x ? { v: xlDate(x), s: XS.date } : T('')), N = (x) => ({ v: x, s: XS.int });
+      const titulo = `${ldEmpresa()} · REPORTE DE ${bajas ? 'BAJAS' : 'ALTAS'} · DEL ${fmtDate(v.from)} AL ${fmtDate(v.to)}${v.area ? ' · ' + areaName(v.area).toUpperCase() : ''}`;
+      const sub = `${emps.length} ${bajas ? 'baja' : 'alta'}${emps.length === 1 ? '' : 's'} · generado ${fmtDateTime(new Date().toISOString())} por ${S.me.full_name || ''}`;
+      const hoja = (name, hs, rows, cols, nota) => {
+        const last = colL(hs.length - 1), hr = 3;
+        const r = [[{ v: titulo, s: XS.titleW }], [{ v: sub, s: XS.sub }], hs.map((h) => ({ v: h, s: XS.head })), ...rows];
+        if (nota) r.push([], [{ v: nota, s: XS.sub }]);
+        return { name, cols, rows: r, merges: [`A1:${last}1`], heights: Object.assign([], { 0: 30, 2: 30 }), freeze: [2, hr], printRows: [hr, hr], autoFilter: `A${hr}:${last}${hr + rows.length}`, footer: ldPie().replace('Asistencia', 'Personal') };
+      };
+      let sheets, nombre;
+      if (bajas) {
+        const filas = emps.map((e) => { const p = pv[e.id] || {}; const dias = e.fecha_ingreso && e.fecha_baja ? diasEntre(e.fecha_ingreso, e.fecha_baja) : null;
+          return { e, p, dias, tipo: abTipoBaja(p.motivo_baja) }; });
+        const rows = filas.map(({ e, p, dias, tipo }, i) => [N(i + 1), T(fullName(e)), T(e.num_empleado || ''), Dt(e.fecha_ingreso), Dt(e.fecha_baja), dias == null ? T('') : N(dias), T(abAntig(dias)), T(tipo),
+          { v: p.motivo_baja || '', s: XS.wrap }, p.recontratable == null ? T('Sin dato') : p.recontratable ? T('Sí') : { v: 'No', s: XS.warn }, T(e.puesto || ''), T(areaName(e.area_id)), T(eq(e)), T(lid(e))]);
+        const det = hoja('BAJAS', ['#', 'Nombre', 'No. empleado', 'Fecha de ingreso', 'Fecha de baja', 'Días trabajados', 'Antigüedad', 'Tipo de baja', 'Motivo de baja', 'Recontratable', 'Puesto', 'Área', 'Equipo', 'Líder'], rows,
+          [5, 34, 11, 12, 12, 10, 16, 30, 50, 15, 24, 16, 18, 26], 'Días trabajados: de la fecha de ingreso a la fecha de baja. Tipo de baja: clasificado a partir del motivo registrado. Equipo: el asignado o, si ya no tiene, el del último pase de lista.');
+        // Resumen
+        const cnt = (key) => { const m = {}; filas.forEach((x) => { const k = key(x); m[k] = (m[k] || 0) + 1; }); return Object.entries(m).sort((a, b) => b[1] - a[1]); };
+        const pct = (n) => ({ v: Math.round(n / filas.length * 1000) / 10, s: XS.dec });
+        const bloque = (titulo2, pares) => [[{ v: titulo2, s: XS.bold }], [{ v: 'Concepto', s: XS.head }, { v: 'Bajas', s: XS.head }, { v: '%', s: XS.head }], ...pares.map(([k, n]) => [T(k), N(n), pct(n)]), [{ v: 'Total', s: XS.bold }, { v: filas.length, s: XS.intB }], []];
+        const rangoA = ({ dias }) => dias == null ? 'Sin fecha de ingreso' : dias < 30 ? 'Menos de 30 días' : dias < 90 ? 'De 30 a 89 días' : dias < 180 ? 'De 90 a 179 días' : dias < 365 ? 'De 6 a 12 meses' : 'Más de un año';
+        const ordR = ['Menos de 30 días', 'De 30 a 89 días', 'De 90 a 179 días', 'De 6 a 12 meses', 'Más de un año', 'Sin fecha de ingreso'];
+        const res = [[{ v: titulo, s: XS.titleW }], [{ v: sub, s: XS.sub }], [],
+          ...bloque('POR TIPO DE BAJA', cnt((x) => x.tipo)),
+          ...bloque('POR ÁREA', cnt((x) => areaName(x.e.area_id))),
+          ...bloque('POR ANTIGÜEDAD AL SALIR', cnt(rangoA).sort((a, b) => ordR.indexOf(a[0]) - ordR.indexOf(b[0]))),
+          ...bloque('RECONTRATABLE', cnt((x) => x.p.recontratable == null ? 'Sin dato' : x.p.recontratable ? 'Sí' : 'No')),
+          ...bloque('POR EQUIPO', cnt((x) => `${areaName(x.e.area_id)} · ${eq(x.e)}`))];
+        sheets = [det, { name: 'RESUMEN', cols: [40, 10, 9], rows: res, merges: ['A1:C1'], heights: Object.assign([], { 0: 48 }), footer: ldPie().replace('Asistencia', 'Personal'), portrait: true }];
+        nombre = `Bajas_${v.from}_al_${v.to}${v.area ? '_' + ldSafe(areaName(v.area)) : ''}.xlsx`;
+      } else {
+        const rows = emps.map((e, i) => [N(i + 1), T(fullName(e)), T(e.num_empleado || ''), T(e.puesto || ''), T(areaName(e.area_id)), T(eq(e)), T(lid(e)), Dt(e.fecha_ingreso),
+          e.status === 'baja' ? { v: `Baja${e.fecha_baja ? ' (' + fmtDate(e.fecha_baja) + ')' : ''}`, s: XS.warn } : T(STATUS[e.status][0])]);
+        sheets = [hoja('ALTAS', ['#', 'Nombre', 'No. empleado', 'Puesto', 'Área', 'Equipo', 'Líder', 'Fecha de ingreso', 'Estatus hoy'], rows, [5, 34, 11, 24, 16, 18, 26, 12, 18],
+          'Incluye a quien ingresó en el periodo aunque hoy esté en alta pendiente o ya se haya dado de baja.')];
+        nombre = `Altas_${v.from}_al_${v.to}${v.area ? '_' + ldSafe(areaName(v.area)) : ''}.xlsx`;
+      }
+      bajarArchivo(new File([xlsxBuild(sheets)], nombre, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      toast('Excel listo: ' + nombre);
+    } }]
+  });
+}
+
 async function viewPersonal() {
   if (S.view === 'expediente' && EXP.id) return viewExpediente(EXP.id);   // tras editar desde el perfil, se queda en el perfil
   const v = $('#view');
@@ -1218,7 +1310,7 @@ async function viewPersonal() {
   const statusOpts = [['activo', 'Activos'], ['alta_pendiente', 'Altas pendientes'], ['baja', 'Bajas'], ['', 'Todos']].filter(([k]) => !k || counts[k] || k === 'activo' || PS.status === k);
   v.innerHTML = `
   <div class="pagehead"><div><h1>Personal</h1><div class="muted small">${counts.activo} activos${counts.alta_pendiente ? ` · <b style="color:var(--warn)">${counts.alta_pendiente} altas pendientes</b>` : ''}</div></div>
-    <div class="row" style="gap:6px">${canRequest ? '<button class="btn" id="bandDatos">Datos pendientes</button>' : ''}${canRequest ? `<button class="btn primary" id="newEmp">${is('developer') ? '+ Nuevo ingreso' : '+ Solicitar alta'}</button>` : ''}</div></div>
+    <div class="row" style="gap:6px">${is('developer', 'director', 'rh_general', 'rh_area') ? '<button class="btn" id="repAB">Reporte altas / bajas</button>' : ''}${canRequest ? '<button class="btn" id="bandDatos">Datos pendientes</button>' : ''}${canRequest ? `<button class="btn primary" id="newEmp">${is('developer') ? '+ Nuevo ingreso' : '+ Solicitar alta'}</button>` : ''}</div></div>
   ${retiros.length ? `<div class="card pad" style="margin-bottom:12px;border-color:var(--warn)"><div class="eyebrow" style="margin-bottom:6px;color:var(--warn)">Retiros de lista solicitados (${retiros.length})${is('developer') ? ' · aplica la baja' : ''}</div><div class="list">${retiros.map((x) => { const e = emps.find((y) => y.id === x.employee_id);
     return `<button type="button" class="item" data-ret="${x.id}"><span class="grow"><span class="nm">${esc(e ? fullName(e) : 'Persona')}</span><br><span class="small muted">${e ? esc(areaName(e.area_id)) + ' · ' + esc(groupName(e.group_id)) + ' · ' : ''}último día ${fmtDate(x.ultimo_dia)} · ${esc(x.motivo)} · pidió ${esc(profName(x.solicitado_by))}</span></span><span class="badge b-warn">Pendiente</span></button>`; }).join('')}</div></div>` : ''}
   ${cambios.length ? `<div class="card pad" style="margin-bottom:12px;border-color:var(--accent)"><div class="eyebrow" style="margin-bottom:6px;color:var(--accent)">Cambios de equipo solicitados (${cambios.length})${is('developer', 'rh_general', 'rh_area') ? ' · acepta o rechaza' : ' · esperando a RH'}</div><div class="list">${cambios.map((x) => { const e = emps.find((y) => y.id === x.employee_id); const de = S.groups.find((g) => g.id === x.de_group), a = S.groups.find((g) => g.id === x.a_group);
@@ -1252,6 +1344,7 @@ async function viewPersonal() {
   if ($('#pa')) $('#pa').onchange = (e) => { PS.area = e.target.value; PS.group = ''; viewPersonal(); };
   $('#pg').onchange = (e) => { PS.group = e.target.value; draw(); };
   if ($('#newEmp')) $('#newEmp').onclick = () => altaForm();
+  if ($('#repAB')) $('#repAB').onclick = () => reporteAltasBajas();
   $$('[data-cea]').forEach((b) => b.onclick = async () => { b.disabled = true; try { await rpc('cambio_equipo_resolver', { p_id: b.dataset.cea, p_aprobar: true, p_nota: null }); toast('Cambio aceptado'); await loadCatalogs(); viewPersonal(); } catch (e) { toast(e.message, true); b.disabled = false; } });
   $$('[data-cer]').forEach((b) => b.onclick = () => { const f = [{ k: 'nota', label: 'Motivo del rechazo', type: 'textarea', req: true, full: true }];
     modal({ title: 'Rechazar cambio de equipo', body: fieldsHtml(f), actions: [{ label: 'Cancelar' }, { label: 'Rechazar', cls: 'danger solid', run: async ({ el }) => { const v = readFields(el, f); await rpc('cambio_equipo_resolver', { p_id: b.dataset.cer, p_aprobar: false, p_nota: v.nota }); toast('Solicitud rechazada'); viewPersonal(); } }] }); });
