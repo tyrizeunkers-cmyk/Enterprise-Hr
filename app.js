@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.34.0';
+const APP_VERSION = '0.35.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -33,7 +33,7 @@ const STATUS = { alta_pendiente: ['Alta pendiente', 'b-warn'], activo: ['Activo'
 // Pase de lista: estatus (A/F/R) + aviso opcional (Nuevo ingreso / Baja) + incidencia del día (Permiso / Descanso / Inactividad, con comentario)
 const ATT = { asistio: 'Asistencia', falta: 'Falta', retardo: 'Retardo' };
 const ATT_PM = { asistio: 'Presente', falta: 'Ausente', salida: 'Salida anticipada' };   // pase de la tarde (cierre)
-const TURNO = { manana: 'Mañana · Entrada', tarde: 'Tarde · Cierre' };
+const TURNO = { manana: 'Mañana · Asistencia', tarde: 'Cierre · Actividad' };   // un solo pase de asistencia; al cierre se captura la actividad
 const stLabel = (a) => a && a.status ? ((a.turno === 'tarde' ? ATT_PM : ATT)[a.status] || ATT_PM[a.status]) : null;
 const AVISO = { nuevo_ingreso: 'Nuevo ingreso', baja: 'Baja' };
 const INC = { permiso: 'Permiso', descanso: 'Descanso', inactividad: 'Inactividad', vacaciones: 'Vacaciones' };
@@ -516,16 +516,19 @@ async function viewLista() {
   ]);
   emps.sort(sortName);
   const ids = emps.map((e) => e.id);
-  const [att, faltas] = ids.length ? await Promise.all([
+  const metrics = g.tipo === 'lideres' ? [] : metricsOf(g.area_id);
+  const [att, faltas, acts] = ids.length ? await Promise.all([
     db('attendance').in('employee_id', ids).eq('fecha', LS.fecha).get(),
-    db('faltas_30d').in('employee_id', ids).get()
-  ]) : [[], []];
+    db('faltas_30d').in('employee_id', ids).get(),
+    metrics.length ? db('activity_daily').in('employee_id', ids).eq('fecha', LS.fecha).get().catch(() => []) : Promise.resolve([])
+  ]) : [[], [], []];
+  const act = Object.fromEntries(acts.map((a) => [a.employee_id, a]));
   const recM = {}, recT = {};
   att.forEach((a) => { (a.turno === 'tarde' ? recT : recM)[a.employee_id] = a; });
   const fx = Object.fromEntries(faltas.map((f) => [f.employee_id, f.faltas]));
   const d = day[0] || {};
   // Turno inicial: la tarde si la mañana ya se envió y el cierre está habilitado
-  if (!LS.turno) LS.turno = d.sent_at && !d.sent_pm_at && pmOpen(g.area_id, LS.fecha) ? 'tarde' : (d.sent_pm_at ? 'tarde' : 'manana');
+  if (!LS.turno) LS.turno = 'manana';   // siempre abre en la asistencia; si falta el cierre se avisa arriba
   const lockedDay = !!d.reviewed_at && !is('developer', 'nomina');
   // Retiro solicitado (dejó de venir): desde el día siguiente a su último día sale de la lista
   const rets = ids.length ? await db('retiros_lista').select('id,employee_id,ultimo_dia,motivo').in('employee_id', ids).eq('estado', 'pendiente').get().catch(() => []) : [];
@@ -555,7 +558,7 @@ async function viewLista() {
     const fs = [...f1, ...f2];
     fs.forEach((f) => { const k = f.registro_id || f.attendance_id; arch[k] = (arch[k] || 0) + 1; });
   }
-  renderLista({ emps, recM, recT, fx, d, lockedDay, g, vac, retirados, rets, desc, pendAyer, cob, jor, arch, sinEq: (sinEq || []).filter((x) => x.area_id === g.area_id) }, groups);
+  renderLista({ emps, recM, recT, fx, d, lockedDay, g, vac, retirados, rets, desc, pendAyer, cob, jor, arch, metrics, act, sinEq: (sinEq || []).filter((x) => x.area_id === g.area_id) }, groups);
 }
 const canDescanso = (g) => is('developer') || (is('tl') && g.tl_id === S.me.id) || (is('rh_general', 'rh_area', 'supervisor') && S.myAreas.includes(g.area_id));
 async function descansoForm(g, desc, done) {
@@ -582,16 +585,75 @@ async function descansoForm(g, desc, done) {
   $$('input[name=ds_t]', m.el).forEach((r) => r.onchange = () => { $('#ds_sw', m.el).hidden = $('input[name=ds_t]:checked', m.el).value !== 'suplente'; });
   $$('[data-dsc]', m.el).forEach((b) => b.onclick = async () => { b.disabled = true; try { await rpc('grupo_descanso_cancelar', { p_group: g.id, p_fecha: b.dataset.dsc }); toast('Descanso cancelado'); m.close(); done(); } catch (e) { toast(e.message, true); b.disabled = false; } });
 }
+// ───── Cierre del día: actividad por persona (llamadas, mensajes, registros…) + salida anticipada ─────
+// Se pide a quien trabajó ese día según el pase de la mañana (presente, retardo, salida o medio día) y está activo.
+const presenteManana = (m) => !!m && (['asistio', 'retardo', 'salida'].includes(m.status) || ['C4', 'Ab4'].includes(m.codigo));
+const cierreRequiere = (e, st) => (st.metrics || []).length > 0 && e.status === 'activo' && presenteManana(st.recM[e.id]);
+function cierreCard(e, st, locked) {
+  const m = st.recM[e.id], t = st.recT[e.id], a = st.act[e.id], vals = (a && a.valores) || {};
+  const req = cierreRequiere(e, st), dis = locked ? ' disabled' : '';
+  const salida = (t && t.status === 'salida') || (m && m.status === 'salida');
+  const estado = m ? (st.cob ? cobLabel(m) : attLabel(m)) : 'Sin pase de la mañana';
+  const motivo = !req ? (e.status !== 'activo' ? 'Alta pendiente: la actividad se captura cuando se confirme su alta.' : !m ? 'No tiene pase de la mañana: no se captura actividad.' : !(st.metrics || []).length ? '' : 'No trabajó este día: no se captura actividad.') : '';
+  const inputs = req ? `<div class="act-grid">${st.metrics.map((x) => { const v = vals[x.key]; const goal = Number(x.daily_goal);
+      const pct = v != null && goal ? Math.round(v * 100 / goal) : null;
+      return `<label class="field">${esc(x.label)} <span style="font-weight:400">${goal ? `meta ${goal}` : 'sin meta'}${pct != null ? ` · <b style="color:${pct >= 100 ? 'var(--ok)' : pct >= 80 ? 'var(--warn)' : 'var(--bad)'}">${pct}%</b>` : ''}</span>
+        <input type="number" inputmode="numeric" min="0" step="1" data-met="${esc(x.key)}" value="${v ?? ''}" placeholder="0"${dis}></label>`; }).join('')}</div>` : '';
+  const salBtn = presenteManana(m) && !st.cob ? `<button type="button" class="btn sm${salida ? ' on-warn' : ''}" data-salida aria-pressed="${salida}"${dis}>${salida ? '✓ Salida anticipada' : 'Salida anticipada'}</button>` : '';
+  const ok = req && a;
+  return `<div class="person cierre" data-id="${e.id}">
+    <div class="ph" style="cursor:default">
+      <span class="dot" style="${ok ? 'background:var(--ok);border-color:var(--ok)' : !req ? 'background:#c9d0d6;border-color:#c9d0d6' : ''}"></span>
+      <span class="grow"><span style="display:block;font-weight:600">${esc(fullName(e))}</span><span class="small muted">Mañana: ${esc(estado)}${salida ? ' · Salida anticipada' : ''}</span></span>
+      ${pendBadge(e)}${ok ? `<span class="badge b-ok">Capturado ${fmtTime(a.updated_at)}</span>` : req ? '<span class="badge b-warn">Falta actividad</span>' : ''}
+    </div>
+    <div class="body" style="padding-top:0">${inputs}${motivo ? `<div class="small muted">${esc(motivo)}</div>` : ''}${salBtn ? `<div class="row" style="margin-top:8px">${salBtn}</div>` : ''}</div>
+  </div>`;
+}
+function wireCierre(card, st, groups) {
+  const id = card.dataset.id; const redraw = () => renderLista(st, groups);
+  const inputs = $$('[data-met]', card);
+  inputs.forEach((inp) => inp.onchange = async () => {
+    const valores = {};
+    for (const i of inputs) {
+      if (i.value === '') continue;
+      const n = Number(i.value);
+      if (!Number.isInteger(n) || n < 0) { toast('Escribe números enteros de 0 o más', true); return; }
+      valores[i.dataset.met] = n;
+    }
+    // Se guarda cuando están todos los indicadores (un 0 también cuenta)
+    if (Object.keys(valores).length < inputs.length) return;
+    try {
+      const [saved] = await db('activity_daily').insert([{ employee_id: id, fecha: LS.fecha, valores }], { onConflict: 'employee_id,fecha' });
+      st.act[id] = saved; toast('Actividad guardada'); redraw();
+    } catch (e) { toast(e.message, true); }
+  });
+  const sb = $('[data-salida]', card);
+  if (sb) sb.onclick = () => salidaAnticipada(id, st, redraw, sb);
+}
+// Salida anticipada: queda como registro del cierre (la asistencia de la mañana no cambia, p. ej. "A / R / SA")
+async function salidaAnticipada(id, st, redraw, btn) {
+  const t = st.recT[id], on = !(t && t.status === 'salida');
+  if (btn) btn.disabled = true;
+  try {
+    const [saved] = await db('attendance').insert([{ employee_id: id, fecha: LS.fecha, turno: 'tarde', status: on ? 'salida' : 'asistio', aviso: null, incidencia: null, comentario: null, incidencias: [] }], { onConflict: 'employee_id,fecha,turno' });
+    st.recT[id] = saved; toast(on ? 'Salida anticipada registrada' : 'Salida anticipada quitada');
+  } catch (e) { toast(e.message, true); }
+  redraw();
+}
 function renderLista(st, groups) {
   const v = $('#view');
   const { emps, recM, recT, fx, d, lockedDay, g } = st;
   const tarde = LS.turno === 'tarde';
   const rec = st.rec = tarde ? recT : recM;
   const open = !tarde || pmOpen(g.area_id, LS.fecha);
-  const locked = lockedDay || !open;
+  const locked = lockedDay;   // la actividad se puede capturar antes de la hora de cierre; solo el envío espera
   st.locked = locked;
-  const done = emps.filter((e) => rec[e.id]).length, total = emps.length, pct = total ? Math.round(done * 100 / total) : 0;
-  const diffs = tarde ? emps.filter((e) => attMismatch(recM[e.id], recT[e.id])).length : 0;
+  // Cierre: se captura la actividad de quien trabajó ese día (no se vuelve a pasar asistencia)
+  const reqAct = tarde ? emps.filter((e) => cierreRequiere(e, st)) : [];
+  const done = tarde ? reqAct.filter((e) => st.act[e.id]).length : emps.filter((e) => rec[e.id]).length;
+  const total = tarde ? reqAct.length : emps.length, pct = total ? Math.round(done * 100 / total) : 100;
+  const diffs = 0;
   const multiArea = new Set(groups.map((x) => x.area_id)).size > 1;
   const sentAt = tarde ? d.sent_pm_at : d.sent_at, sentBy = tarde ? d.sent_pm_by : d.sent_by;
   const lider = g.tipo === 'lideres';
@@ -613,16 +675,17 @@ function renderLista(st, groups) {
   ${canDescanso(g) && !(is('tl') && g.tl_id !== S.me.id) ? '<div class="row" style="margin-bottom:10px;justify-content:flex-end"><button type="button" class="btn sm" id="lf_desc">Día de descanso / suplente</button></div>' : ''}
   ${lockedDay ? `<div class="notice n-warn" style="margin-bottom:10px">Nómina ya revisó este día (${fmtDateTime(d.reviewed_at)}). Para corregir, pídelo a Nómina.</div>` : ''}
   ${d.reviewed_at && !lockedDay ? `<div class="notice n-info" style="margin-bottom:10px">Día revisado por ${esc(profName(d.reviewed_by))} · ${fmtDateTime(d.reviewed_at)}. Puedes corregir porque tienes rol de ${esc(ROLES[role()])}.</div>` : ''}
-  ${tarde && !open ? `<div class="notice n-info" style="margin-bottom:10px">El pase de la tarde (cierre) se habilita a partir de las <b>${areaCierre(g.area_id)}</b>.</div>` : ''}
+  ${!tarde && d.sent_at && !d.sent_pm_at && pmOpen(g.area_id, LS.fecha) ? '<div class="notice n-warn" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="grow">Falta enviar el <b>cierre del día</b> con la actividad de cada persona.</span><button type="button" class="btn sm primary" id="lf_cierre">Ir al cierre</button></div>' : ''}
+  ${tarde && !open ? `<div class="notice n-info" style="margin-bottom:10px">El cierre se envía a partir de las <b>${areaCierre(g.area_id)}</b>. Puedes ir capturando la actividad antes.</div>` : ''}
   ${tarde && open && diffs ? `<div class="notice n-warn" style="margin-bottom:10px"><b>${diffs}</b> ${diffs === 1 ? 'persona no coincide' : 'personas no coinciden'} con el pase de la mañana. Revísalas antes de enviar el cierre.</div>` : ''}
-  ${total && !locked && !(st.cob && tarde) ? `<div class="row" style="margin-bottom:10px"><button class="btn ghost grow" id="allok"${done === total ? ' disabled' : ''}>${tarde ? 'Marcar pendientes igual que en la mañana' : st.cob ? 'Marcar pendientes como “Presente”' : 'Marcar pendientes como “Asistencia”'}</button></div>` : ''}
-  ${st.cob && tarde && open && !locked ? '<div class="notice n-info" style="margin-bottom:10px">Cierre de la jornada: registra a cada persona según cómo terminó el día. No se copia el pase de la mañana.</div>' : ''}
-  <div class="list" id="people">${total ? emps.map((e) => st.cob ? personCardCob(e, st) : personCard(e, rec[e.id], fx[e.id], locked, tarde ? recM[e.id] : null, st.vac && st.vac.has(e.id), (st.rets || []).find((x) => x.employee_id === e.id))).join('') : `<div class="card empty">${lider ? 'Aún no hay líderes en este grupo. Asígnalos desde Personal (grupo “Líderes”).' : 'No hay personal activo en este grupo.'}</div>`}</div>
+  ${total && !locked && !tarde ? `<div class="row" style="margin-bottom:10px"><button class="btn ghost grow" id="allok"${done === total ? ' disabled' : ''}>${st.cob ? 'Marcar pendientes como “Presente”' : 'Marcar pendientes como “Asistencia”'}</button></div>` : ''}
+  ${tarde ? `<div class="notice n-info" style="margin-bottom:10px">${st.metrics.length ? `Al final del día captura la actividad de cada persona que trabajó (${st.metrics.map((m) => esc(m.label.toLowerCase())).join(', ')}). La asistencia ya quedó en el pase de la mañana; aquí solo marca <b>Salida anticipada</b> si alguien se fue antes.` : 'Esta área no tiene indicadores de actividad: revisa si alguien tuvo salida anticipada y envía el cierre.'}</div>` : ''}
+  <div class="list" id="people">${emps.length ? emps.map((e) => tarde ? cierreCard(e, st, locked) : st.cob ? personCardCob(e, st) : personCard(e, rec[e.id], fx[e.id], locked, null, st.vac && st.vac.has(e.id), (st.rets || []).find((x) => x.employee_id === e.id), st.recT[e.id])).join('') : `<div class="card empty">${lider ? 'Aún no hay líderes en este grupo. Asígnalos desde Personal (grupo “Líderes”).' : 'No hay personal activo en este grupo.'}</div>`}</div>
   ${(st.retirados || []).length ? `<div class="card pad small" style="margin-top:10px"><b>Retiro solicitado (${st.retirados.length})</b> · ya no aparecen en la lista:<br>${st.retirados.map((x) => `${esc(fullName(x.e))} · último día ${fmtDate(x.ultimo_dia)} (${esc(x.motivo)})`).join('<br>')}<div class="muted" style="margin-top:4px">Nómina les paga hasta su último día. Daniel aplica la baja o RH la rechaza.</div></div>` : ''}
-  ${canAddToList(g) && !lockedDay ? '<button type="button" class="btn ghost add-person" id="addPerson">+ Agregar persona que no aparece en la lista</button>' : ''}
-  ${total ? `<div class="stickybar">
-    <button class="btn primary" id="send" ${done < total || locked ? 'disabled' : ''} style="${sentAt && done === total ? 'background:var(--ok);border-color:var(--ok)' : ''}">${done < total ? `Faltan ${total - done} por registrar` : sentAt ? `${tarde ? 'Cierre enviado' : 'Entrada enviada'} ✓ · reenviar` : tarde ? 'Enviar cierre (tarde)' : 'Enviar entrada (mañana)'}</button>
-    <span class="small muted" style="text-align:center">${sentAt ? `Enviado por ${esc(profName(sentBy))} a las ${fmtTime(sentAt)}. ` : ''}Se envía dos veces al día: entrada por la mañana y cierre al final de la jornada.</span>
+  ${canAddToList(g) && !lockedDay && !tarde ? '<button type="button" class="btn ghost add-person" id="addPerson">+ Agregar persona que no aparece en la lista</button>' : ''}
+  ${total || (tarde && emps.length) ? `<div class="stickybar">
+    <button class="btn primary" id="send" ${done < total || locked || !open ? 'disabled' : ''} style="${sentAt && done === total ? 'background:var(--ok);border-color:var(--ok)' : ''}">${done < total ? (tarde ? `Falta capturar la actividad de ${total - done}` : `Faltan ${total - done} por registrar`) : sentAt ? `${tarde ? 'Cierre enviado' : 'Asistencia enviada'} ✓ · reenviar` : tarde ? 'Enviar cierre del día' : 'Enviar asistencia (mañana)'}</button>
+    <span class="small muted" style="text-align:center">${sentAt ? `Enviado por ${esc(profName(sentBy))} a las ${fmtTime(sentAt)}. ` : ''}La asistencia se pasa una vez, en la mañana. Al final del día se envía el cierre con la actividad.</span>
   </div>` : ''}`;
   const reload = () => viewLista().catch((e) => toast(e.message, true));
   $('#lf_date').onchange = (e) => { const val = e.target.value; if (!val || val > todayMX()) { e.target.value = LS.fecha; return toast('No se puede pasar lista a futuro', true); } LS.fecha = val; LS.turno = null; reload(); };
@@ -630,6 +693,7 @@ function renderLista(st, groups) {
   if ($('#addPerson')) $('#addPerson').onclick = () => addPersonForm(g, reload);
   if ($('#lf_desc')) $('#lf_desc').onclick = () => descansoForm(g, st.desc || [], reload);
   if ($('#lf_sineq')) $('#lf_sineq').onclick = () => sinEquipoForm(st.sinEq, g, reload);
+  if ($('#lf_cierre')) $('#lf_cierre').onclick = () => { LS.turno = 'tarde'; renderLista(st, groups); window.scrollTo(0, 0); };
   if ($('#lf_ayer')) $('#lf_ayer').onclick = () => { LS.fecha = addDays(todayMX(), -1); LS.turno = null; reload(); };
   $$('[data-turno]').forEach((b) => b.onclick = () => { if (LS.turno === b.dataset.turno) return; LS.turno = b.dataset.turno; renderLista(st, groups); });
   if ($('#allok')) $('#allok').onclick = async (ev) => {
@@ -648,10 +712,10 @@ function renderLista(st, groups) {
   };
   if ($('#send')) $('#send').onclick = async (ev) => {
     ev.target.disabled = true;
-    try { await rpc('send_turno', { p_group: g.id, p_fecha: LS.fecha, p_turno: LS.turno }); toast(tarde ? 'Cierre enviado' : 'Entrada enviada'); reload(); }
+    try { await rpc('send_turno', { p_group: g.id, p_fecha: LS.fecha, p_turno: LS.turno }); toast(tarde ? 'Cierre enviado' : 'Asistencia enviada'); reload(); }
     catch (e) { toast(e.message, true); ev.target.disabled = false; }
   };
-  $$('#people .person').forEach((card) => (st.cob ? wirePersonCob : wirePerson)(card, st, groups));
+  $$('#people .person').forEach((card) => (tarde ? wireCierre : st.cob ? wirePersonCob : wirePerson)(card, st, groups));
 }
 // El líder (o Supervisión/RH) avisa que alguien dejó de venir: sale de su lista desde el día siguiente a su último día
 function retiroForm(e, done) {
@@ -742,7 +806,7 @@ function addPersonForm(g, onDone) {
 const HOJA_REQ = [['curp', 'CURP'], ['rfc', 'RFC'], ['nss', 'NSS'], ['fecha_nacimiento', 'fecha de nacimiento'], ['domicilio', 'domicilio'], ['telefono', 'teléfono']];
 const faltaHoja = (p) => HOJA_REQ.filter(([k]) => !String((p && p[k]) ?? '').trim()).map(([, l]) => l).join(', ');
 const pendBadge = (e) => e.status === 'alta_pendiente' ? `<span class="badge b-warn">${e.origen === 'lider' ? 'Agregado por líder · falta alta' : 'Alta pendiente'}</span>${e.datos_pendientes ? ' <span class="badge b-bad">Datos pendientes</span>' : ''}` : '';
-function personCard(e, r, faltas, locked, morning, vac, retiro) {
+function personCard(e, r, faltas, locked, morning, vac, retiro, pm) {
   const lockedOrig = locked;
   if (vac) locked = true;   // vacaciones aprobadas por RH: el día queda fijo
   const open = LS.open === e.id;
@@ -761,7 +825,7 @@ function personCard(e, r, faltas, locked, morning, vac, retiro) {
     <button type="button" class="ph" aria-expanded="${open}">
       <span class="dot" style="${col ? `background:${col};border-color:${col}` : ''}"></span>
       <span class="grow"><span style="display:block;font-weight:600">${esc(fullName(e))}</span><span class="small muted">${esc(summary.length > 90 ? summary.slice(0, 90) + '…' : summary)}</span></span>
-      ${vac ? '<span class="badge b-ok">Vacaciones</span>' : ''}${pendBadge(e)}${diff ? '<span class="badge b-warn">No coincide</span>' : ''}${faltasBadge(faltas)}<span class="more" aria-hidden="true">${open ? 'Cerrar ▴' : 'Detalle ▾'}</span>
+      ${vac ? '<span class="badge b-ok">Vacaciones</span>' : ''}${pm && pm.status === 'salida' ? '<span class="badge b-warn">Salida anticipada</span>' : ''}${pendBadge(e)}${diff ? '<span class="badge b-warn">No coincide</span>' : ''}${faltasBadge(faltas)}<span class="more" aria-hidden="true">${open ? 'Cerrar ▴' : 'Detalle ▾'}</span>
     </button>
     ${open ? '' : `<div class="quick q4" role="group" aria-label="Asistencia rápida de ${esc(fullName(e))}">${Object.keys(ST).map((k) => `<button type="button" class="${k}${r && r.status === k ? ' on' : ''}" data-att="${k}" aria-pressed="${!!(r && r.status === k)}"${dis}>${k === 'salida' ? 'Salida' : ST[k]}</button>`).join('')}${descBtn()}</div>`}
     ${open ? `<div class="body">
@@ -777,7 +841,7 @@ function personCard(e, r, faltas, locked, morning, vac, retiro) {
       <section class="fbox">
         <header>Incidencias del día</header>
         <div class="fbody">
-          <div class="att3">${INC_TL.map(incBtn).join('')}</div>
+          <div class="att3">${INC_TL.map(incBtn).join('')}${!tarde ? `<button type="button" class="salida${pm && pm.status === 'salida' ? ' on' : ''}" data-salida aria-pressed="${!!(pm && pm.status === 'salida')}"${presenteManana(r) ? dis : ' disabled'}>Salida anticipada</button>` : ''}</div>
           ${!vac && !tarde && e.status === 'activo' && canEditVac(e) && !lockedOrig ? '<button type="button" class="btn sm" data-vacbtn style="margin-top:8px">🌴 Registrar vacaciones…</button>' : ''}
           ${r && r.incidencia && (r.incidencia !== 'descanso' || r.comentario) ? `<div class="inc-note"><div class="small muted">Comentarios</div><div>${esc(r.comentario || '')}</div>${locked ? '' : '<button type="button" class="btn sm ghost" data-inc-edit>Editar comentario</button>'}</div>` : '<div class="small muted">Si eliges una incidencia se pide un comentario obligatorio.</div>'}
         </div>
@@ -825,6 +889,7 @@ function wirePerson(card, st, groups) {
     run(cur && cur.incidencia === 'descanso' ? { status: k, incidencia: null, comentario: null } : { status: k });
   });
   // Descanso: es parte de la asistencia del día (no pide comentario); reemplaza Asistencia/Retardo/Falta e incidencias
+  const sal = $('[data-salida]', card); if (sal) sal.onclick = () => salidaAnticipada(id, st, redraw, sal);
   $$('[data-desc]', card).forEach((b) => b.onclick = () => {
     const cur = rec[id];
     if (cur && !cur.status && cur.incidencia === 'descanso') return;
@@ -2108,12 +2173,12 @@ async function viewAsistencia() {
   ${alerts.length ? `<div class="card pad" style="margin-bottom:12px"><div class="eyebrow" style="margin-bottom:8px">Alertas · faltas en los últimos 30 días</div>
     <div class="list">${alerts.map((f) => { const e = empById[f.employee_id]; return `<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:8px"><span><b>${esc(fullName(e))}</b><br><span class="small muted">${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))}${f.retardos ? ` · ${f.retardos} retardos` : ''}</span></span>${faltasBadge(f.faltas)}</div>`; }).join('')}</div>
     <div class="small muted" style="margin-top:8px">Rojo: más de 3 faltas en 30 días (LFT art. 47 fr. X). Ámbar: 3 faltas.</div></div>` : ''}
-  <div class="card scrollx"><table class="tbl"><thead><tr><th>Grupo</th><th>Mañana</th><th>F</th><th>R</th><th>Tarde</th><th>S</th><th>Dif.</th><th>Revisión</th></tr></thead><tbody>
+  <div class="card scrollx"><table class="tbl"><thead><tr><th>Grupo</th><th>Asistencia</th><th>F</th><th>R</th><th>Cierre</th><th>S</th><th>Dif.</th><th>Revisión</th></tr></thead><tbody>
     ${rows.map((r) => `<tr data-g="${r.g.id}" style="cursor:pointer">
       <td><b>${esc(groupLabel(r.g))}</b><br><span class="small muted">${esc(areaName(r.g.area_id))}${r.g.tl_id ? ' · ' + esc(profName(r.g.tl_id)) : r.g.tipo === 'lideres' ? ' · pasa lista Supervisión' : ' · sin TL'}</span></td>
       <td class="mono small">${r.n}/${r.people.length}<br>${r.d.sent_at ? `<span class="badge b-ok">✓ ${fmtTime(r.d.sent_at)}</span>` : '<span class="badge b-mut">sin enviar</span>'}</td>
       <td class="mono" style="color:var(--bad)">${r.c.falta || ''}</td><td class="mono" style="color:var(--warn)">${r.c.retardo || ''}</td>
-      <td class="mono small">${r.nT}/${r.people.length}<br>${r.d.sent_pm_at ? `<span class="badge b-ok">✓ ${fmtTime(r.d.sent_pm_at)}</span>` : '<span class="badge b-mut">sin enviar</span>'}</td>
+      <td class="mono small">${r.d.sent_pm_at ? `<span class="badge b-ok">✓ ${fmtTime(r.d.sent_pm_at)}</span>` : '<span class="badge b-mut">sin enviar</span>'}</td>
       <td class="mono" style="color:var(--warn)">${r.c.salida || ''}</td>
       <td>${r.dif ? `<span class="badge b-warn">${r.dif}</span>` : r.nT ? '<span class="small muted">0</span>' : ''}</td>
       <td>${r.d.reviewed_at ? `<span class="badge b-ok">Revisado ${fmtTime(r.d.reviewed_at)}</span>` : '<span class="badge b-mut">Pendiente</span>'}
@@ -2186,7 +2251,7 @@ function repClasif(m, t, vac, jrs) {
   else if (m && m.codigo && /8$/.test(m.codigo)) { k = 'falta'; det.push(`${m.codigo} (${COD[m.codigo].toLowerCase()})`); }
   else if (m && m.status === 'falta') k = 'falta';
   else if (m && m.status === 'retardo') k = 'retardo';
-  else if (m && m.status === 'asistio') k = m.incidencia === 'inactividad' ? 'inactividad' : 'asistencia';
+  else if (m && (m.status === 'asistio' || m.status === 'salida')) k = m.incidencia === 'inactividad' ? 'inactividad' : 'asistencia';
   else if (m && m.incidencia === 'descanso') k = 'descanso';
   else if (m && m.codigo) k = 'medio';
   else if (m && m.incidencia === 'inactividad') k = 'inactividad';
@@ -2204,7 +2269,7 @@ function repClasif(m, t, vac, jrs) {
     if (a.codigo && /4$/.test(a.codigo)) { f.medio = true; if (k !== 'medio') det.push(`${a.codigo} en el pase de la ${cuando === 'mañana' ? 'mañana' : 'tarde'}`); }
     if (a.incidencia === 'permiso') { f.permiso = true; det.push(`Permiso (${cuando})`); }
     if (a.incidencia === 'inactividad' && k !== 'inactividad') det.push(`Inactividad (${cuando})`);
-    if (cuando === 'cierre' && a.status === 'salida') { f.salida = true; det.push('Salida anticipada'); }
+    if (a.status === 'salida') { f.salida = true; det.push('Salida anticipada'); }
     if (cuando === 'cierre' && a.status === 'falta' && (k === 'asistencia' || k === 'retardo')) det.push('Ausente al cierre');
     if (cuando === 'cierre' && a.incidencia === 'descanso' && !a.status && k !== 'descanso') det.push('Descanso al cierre');
     const n = nota(a); if (n) det.push(n);
@@ -2415,7 +2480,7 @@ function ldCelda(m, t, vac, jrs) {
   if (vac || (m && m.incidencia === 'vacaciones') || (t && t.incidencia === 'vacaciones')) { base = 'V'; n.vacaciones = 1; }
   else if (m && (m.codigo === 'C8' || m.codigo === 'Ab8')) { base = m.codigo; n.falta = 1; if (m.codigo === 'C8') n.c8 = 1; }
   else if (m && m.status === 'falta') { base = 'F'; n.falta = 1; if (pres(t)) { suf.push('REV'); n.revisar = 1; obs.push('Falta en la mañana pero presente al cierre: confirmar'); } }
-  else if (m && (m.status === 'asistio' || m.status === 'retardo')) { base = 'A'; n.asist = 1; if (m.status === 'retardo') { suf.push('R'); n.retardo = 1; } }
+  else if (m && ['asistio', 'retardo', 'salida'].includes(m.status)) { base = 'A'; n.asist = 1; if (m.status === 'retardo') { suf.push('R'); n.retardo = 1; } if (m.status === 'salida') { suf.push('SA'); n.salida = 1; } }
   else if (m && (m.codigo === 'C4' || m.codigo === 'Ab4')) { base = m.codigo; n.medio = 1; }
   else if (m && m.incidencia === 'descanso') { base = 'D'; n.descanso = 1; }
   else if (m && m.incidencia === 'permiso') { base = 'P'; n.permiso = 1; }
