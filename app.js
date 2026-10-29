@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.35.0';
+const APP_VERSION = '0.36.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -2812,13 +2812,90 @@ function imprimirAsistencia() {
   $('#f_modo', M).onchange = sync; sync();
 }
 
+// ───── Respaldo completo (solo Daniel): todas las tablas, usuarios, archivos y la app publicada en un ZIP ─────
+async function respaldoCompleto(btn) {
+  const label = btn.textContent; const st = (t) => { btn.textContent = t; };
+  btn.disabled = true;
+  try {
+    const files = [], resumen = [], ahora = new Date().toISOString();
+    st('Leyendo tablas…');
+    const tablas = await rpc('respaldo_tablas');
+    const sql = [`-- Respaldo de datos Enterprise HR · ${fmtDateTime(ahora)} · versión ${APP_VERSION}`,
+      '-- Restaurar: 1) crear el proyecto y correr las migraciones db/0001… en orden; 2) correr este archivo como administrador (SQL Editor de Supabase).',
+      '-- Desactiva temporalmente las reglas (triggers) para cargar los datos tal como estaban.',
+      'begin;', 'set local session_replication_role = replica;'];
+    const datos = {};
+    for (let i = 0; i < tablas.length; i++) {
+      const { tabla, filas } = tablas[i]; const rows = [];
+      for (let off = 0; off < Math.max(filas, 1); off += 2000) {
+        st(`Tablas ${i + 1}/${tablas.length} · ${tabla}${filas > 2000 ? ` (${Math.min(off + 2000, filas)}/${filas})` : ''}…`);
+        const part = await rpc('respaldo_tabla', { p_tabla: tabla, p_offset: off, p_limit: 2000 });
+        rows.push(...(part || [])); if (!part || part.length < 2000) break;
+      }
+      datos[tabla] = rows;
+      files.push({ name: `datos/${tabla}.json`, data: JSON.stringify(rows) });
+      resumen.push(`${tabla}: ${rows.length} registros`);
+      if (rows.length) for (let k = 0; k < rows.length; k += 500) {
+        const j = JSON.stringify(rows.slice(k, k + 500)).replace(/\$hrdump\$/g, '$ hrdump$');
+        sql.push(`insert into public.${tabla} overriding system value select * from jsonb_populate_recordset(null::public.${tabla}, $hrdump$${j}$hrdump$::jsonb) on conflict do nothing;`);
+      }
+    }
+    // Folios (columnas identity): que el siguiente número continúe después del último restaurado
+    sql.push(`do $$ declare r record; begin for r in select table_name, column_name from information_schema.columns where table_schema = 'public' and is_identity = 'YES' loop execute format('select setval(pg_get_serial_sequence(%L, %L), greatest(coalesce((select max(%I) from public.%I), 0), 1))', 'public.' || r.table_name, r.column_name, r.column_name, r.table_name); end loop; end $$;`);
+    sql.push('commit;');
+    files.push({ name: 'restaurar_datos.sql', data: sql.join('\n') });
+    // Usuarios (sin contraseñas)
+    st('Usuarios…');
+    const us = await rpc('respaldo_usuarios'); const prof = Object.fromEntries((datos.profiles || []).map((p) => [p.id, p]));
+    const q = (v) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+    files.push({ name: 'usuarios.csv', data: '﻿' + [['Nombre', 'Correo', 'Rol', 'Activo', 'Creado', 'Último acceso'].map(q).join(','),
+      ...us.map((u) => { const p = prof[u.id] || {}; return [p.full_name || '', u.email, ROLES[p.role] || p.role || '', p.active === false ? 'No' : 'Sí', fmtDateTime(u.creado), u.ultimo_acceso ? fmtDateTime(u.ultimo_acceso) : ''].map(q).join(','); })].join('\r\n') });
+    // Personal legible (Excel)
+    st('Excel de personal…');
+    const pv = Object.fromEntries((datos.employee_private || []).map((p) => [p.employee_id, p]));
+    const areaN = Object.fromEntries((datos.areas || []).map((a) => [a.id, a.name])), grpN = Object.fromEntries((datos.groups || []).map((g) => [g.id, g.name]));
+    const cols = ['No. empleado', 'Nombre', 'Apellido paterno', 'Apellido materno', 'Estatus', 'Área', 'Equipo', 'Puesto', 'Fecha de ingreso', 'Fecha de baja', 'CURP', 'RFC', 'NSS', 'Nacimiento', 'Nacionalidad', 'Sexo', 'Estado civil', 'Teléfono', 'Correo', 'Domicilio', 'Contacto de emergencia', 'Salario diario', 'Salario mensual', 'CLABE', 'Banco', 'Beneficiario', 'Motivo de baja', 'Recontratable'];
+    const T = (v) => ({ v: v ?? '', s: XS.text });
+    const prow = (datos.employees || []).slice().sort((a, b) => sortName(a, b)).map((e) => { const p = pv[e.id] || {};
+      return [e.num_empleado, e.nombre, e.apellido_paterno, e.apellido_materno, (STATUS[e.status] || [e.status])[0], areaN[e.area_id], grpN[e.group_id], e.puesto, e.fecha_ingreso, e.fecha_baja, p.curp, p.rfc, p.nss, p.fecha_nacimiento, p.nacionalidad, p.sexo, p.estado_civil, p.telefono, p.correo, p.domicilio, p.contacto_emergencia, p.salario_diario, p.salario_mensual, p.clabe, p.banco, p.beneficiario, p.motivo_baja, p.recontratable == null ? '' : p.recontratable ? 'Sí' : 'No'].map(T); });
+    files.push({ name: 'personal.xlsx', data: new Uint8Array(await xlsxBuild([{ name: 'PERSONAL', freeze: [2, 1], cols: cols.map((c) => Math.max(12, Math.min(40, c.length + 4))), rows: [cols.map((c) => ({ v: c, s: XS.head })), ...prow], autoFilter: `A1:${colL(cols.length - 1)}${prow.length + 1}` }]).arrayBuffer()) });
+    // Archivos
+    const arch = await rpc('respaldo_archivos'); const fallos = [];
+    for (let i = 0; i < arch.length; i++) {
+      const f = arch[i]; st(`Archivos ${i + 1}/${arch.length}…`);
+      try { const r = await fetch(await storageUrl(f.bucket, f.ruta)); if (!r.ok) throw new Error('HTTP ' + r.status); files.push({ name: `archivos/${f.bucket}/${f.ruta}`, data: new Uint8Array(await r.arrayBuffer()) }); }
+      catch (e) { fallos.push(`${f.bucket}/${f.ruta} (${e.message})`); }
+    }
+    files.push({ name: 'archivos/lista.csv', data: '﻿' + [['Carpeta', 'Ruta', 'Tamaño (bytes)', 'Tipo', 'Subido', 'En el respaldo'].map(q).join(','), ...arch.map((f) => [f.bucket, f.ruta, f.bytes, f.tipo, fmtDateTime(f.creado), fallos.some((x) => x.startsWith(f.bucket + '/' + f.ruta + ' ')) ? 'NO' : 'Sí'].map(q).join(','))].join('\r\n') });
+    // App publicada
+    st('Copia de la app…');
+    for (const n of ['index.html', 'app.js', 'sw.js', 'config.js', 'manifest.webmanifest']) {
+      try { const r = await fetch(n + '?respaldo=' + Date.now(), { cache: 'no-store' }); if (r.ok) files.push({ name: `app/${n}`, data: new Uint8Array(await r.arrayBuffer()) }); } catch { /* opcional */ }
+    }
+    files.unshift({ name: 'LEEME.txt', data: [
+      `RESPALDO COMPLETO · Enterprise HR · ${fmtDateTime(ahora)} · versión ${APP_VERSION}`, `Generado por ${S.me.full_name || ''}.`, '',
+      'CONTENIDO', '- personal.xlsx: todo el personal con sus datos personales y de pago, para consulta.', '- usuarios.csv: usuarios de la app (nombre, correo, rol). Las contraseñas no se pueden respaldar.',
+      '- datos/*.json: cada tabla completa de la base de datos.', '- restaurar_datos.sql: script para volver a cargar todos los datos en una base nueva.',
+      '- archivos/: documentos firmados, evidencias, CVs y demás archivos subidos (lista.csv indica cuáles se descargaron).', '- app/: la app publicada al momento del respaldo.', '',
+      'CÓMO RESTAURAR', '1) Crear un proyecto nuevo de Supabase y correr las migraciones db/0001 … db/0045 de la copia del código, en orden.',
+      '2) Correr restaurar_datos.sql en el SQL Editor (como administrador).', '3) Subir de nuevo la carpeta archivos/ a los buckets con el mismo nombre y ruta.',
+      '4) Volver a crear los usuarios (correo y contraseña nueva) con el mismo id, o pedir a cada uno que restablezca su contraseña.', '',
+      'RESUMEN', ...resumen, '', `Archivos: ${arch.length - fallos.length} de ${arch.length} descargados.`, ...(fallos.length ? ['No se pudieron descargar:', ...fallos] : []), '',
+      'AVISO: contiene datos personales sensibles (CURP, NSS, cuentas bancarias, salarios). Guárdalo en un lugar seguro y no lo compartas.'].join('\r\n') });
+    st('Armando el ZIP…');
+    const name = `Respaldo_EnterpriseHR_${todayMX()}_${nowHM().replace(':', '')}.zip`;
+    bajarArchivo(new File([zipStore(files)], name, { type: 'application/zip' }));
+    toast(`Respaldo listo: ${tablas.length} tablas, ${arch.length - fallos.length} archivos${fallos.length ? ` (${fallos.length} sin descargar, ver LEEME)` : ''}`, !!fallos.length);
+  } catch (e) { toast('No se pudo completar el respaldo: ' + e.message, true); }
+  btn.disabled = false; btn.textContent = label;
+}
 // ───────────────────────── Usuarios (solo Daniel) ─────────────────────────
 async function viewUsuarios() {
   const v = $('#view');
   const [profiles, ua] = await Promise.all([db('profiles').order('full_name').get(), db('user_areas').get()]);
   S.profiles = profiles;
   const areasOf = (id) => ua.filter((x) => x.user_id === id).map((x) => x.area_id);
-  v.innerHTML = `<div class="pagehead"><div><h1>Usuarios</h1><div class="muted small">${profiles.length} usuarios</div></div><button class="btn primary" id="nu">+ Nuevo usuario</button></div>
+  v.innerHTML = `<div class="pagehead"><div><h1>Usuarios</h1><div class="muted small">${profiles.length} usuarios</div></div><div class="row" style="gap:6px"><button class="btn" id="respaldo" title="Descarga un ZIP con todos los datos, usuarios y archivos">Respaldo completo</button><button class="btn primary" id="nu">+ Nuevo usuario</button></div></div>
   <div class="notice n-info" style="margin-bottom:12px">Dirección, Nómina y Administrador ven todas las áreas. RH, Supervisores necesitan sus áreas marcadas. A los Team Leaders se les asigna su grupo en “Áreas y grupos”.</div>
   <div class="card scrollx"><table class="tbl"><thead><tr><th>Usuario</th><th>Rol</th><th>Áreas</th><th>Estado</th><th></th></tr></thead><tbody>
   ${profiles.map((p) => `<tr><td><b>${esc(p.full_name)}</b><br><span class="small muted">${esc(p.email || '')}</span></td>
@@ -2828,6 +2905,7 @@ async function viewUsuarios() {
     <td style="white-space:nowrap">${p.id === S.me.id ? '<span class="small muted">Tú</span>' : `<button class="btn sm" data-ed="${p.id}">Editar</button> <button class="btn sm" data-pm="${p.id}">Permisos${Object.keys(p.permisos || {}).length ? ' <span class="badge b-warn">' + Object.keys(p.permisos).length + '</span>' : ''}</button>`}</td></tr>`).join('')}
   </tbody></table></div>`;
   $('#nu').onclick = () => userForm(null, [], () => viewUsuarios());
+  $('#respaldo').onclick = (ev) => respaldoCompleto(ev.currentTarget);
   $$('[data-ed]').forEach((b) => b.onclick = () => { const p = profiles.find((x) => x.id === b.dataset.ed); userForm(p, areasOf(p.id), () => viewUsuarios()); });
   $$('[data-pm]').forEach((b) => b.onclick = () => permisosForm(profiles.find((x) => x.id === b.dataset.pm), () => viewUsuarios()));
 }
