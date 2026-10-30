@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.37.0';
+const APP_VERSION = '0.37.1';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -650,6 +650,7 @@ async function descansoForm(g, desc, done) {
 // ───── Cierre del día: actividad por persona (llamadas, mensajes, registros…) + salida anticipada ─────
 // Se pide a quien trabajó ese día según el pase de la mañana (presente, retardo, salida o medio día) y está activo.
 const presenteManana = (m) => !!m && (['asistio', 'retardo', 'salida'].includes(m.status) || ['C4', 'Ab4'].includes(m.codigo));
+const actCompleta = (a, st) => !!a && (st.metrics || []).every((x) => (a.valores || {})[x.key] != null);
 const cierreRequiere = (e, st) => (st.metrics || []).length > 0 && e.status === 'activo' && presenteManana(st.recM[e.id]);
 function cierreCard(e, st, locked) {
   const m = st.recM[e.id], t = st.recT[e.id], a = st.act[e.id], vals = (a && a.valores) || {};
@@ -662,18 +663,23 @@ function cierreCard(e, st, locked) {
       return `<label class="field">${esc(x.label)} <span style="font-weight:400">${goal ? `meta ${goal}` : 'sin meta'}${pct != null ? ` · <b style="color:${pct >= 100 ? 'var(--ok)' : pct >= 80 ? 'var(--warn)' : 'var(--bad)'}">${pct}%</b>` : ''}</span>
         <input type="number" inputmode="numeric" min="0" step="1" data-met="${esc(x.key)}" value="${v ?? ''}" placeholder="0"${dis}></label>`; }).join('')}</div>` : '';
   const salBtn = presenteManana(m) && !st.cob ? `<button type="button" class="btn sm${salida ? ' on-warn' : ''}" data-salida aria-pressed="${salida}"${dis}>${salida ? '✓ Salida anticipada' : 'Salida anticipada'}</button>` : '';
-  const ok = req && a;
+  const ok = req && actCompleta(a, st), parcial = req && a && !ok && Object.keys(a.valores || {}).length;
   return `<div class="person cierre" data-id="${e.id}">
     <div class="ph" style="cursor:default">
       <span class="dot" style="${ok ? 'background:var(--ok);border-color:var(--ok)' : !req ? 'background:#c9d0d6;border-color:#c9d0d6' : ''}"></span>
       <span class="grow"><span style="display:block;font-weight:600">${esc(fullName(e))}</span><span class="small muted">Mañana: ${esc(estado)}${salida ? ' · Salida anticipada' : ''}</span></span>
-      ${pendBadge(e)}${ok ? `<span class="badge b-ok">Capturado ${fmtTime(a.updated_at)}</span>` : req ? '<span class="badge b-warn">Falta actividad</span>' : ''}
+      ${pendBadge(e)}${ok ? `<span class="badge b-ok">Capturado ${fmtTime(a.updated_at)}</span>` : parcial ? `<span class="badge b-warn">Parcial ${fmtTime(a.updated_at)}</span>` : req ? '<span class="badge b-mut">Sin actividad</span>' : ''}
     </div>
     <div class="body" style="padding-top:0">${inputs}${motivo ? `<div class="small muted">${esc(motivo)}</div>` : ''}${salBtn ? `<div class="row" style="margin-top:8px">${salBtn}</div>` : ''}</div>
   </div>`;
 }
 function wireCierre(card, st, groups) {
-  const id = card.dataset.id; const redraw = () => renderLista(st, groups);
+  const id = card.dataset.id;
+  // Al redibujar se conserva el campo donde está escribiendo (para pasar con Tab al siguiente sin perderlo)
+  const redraw = () => { const a = document.activeElement, pc = a && a.closest && a.closest('.person.cierre');
+    const key = pc && a.dataset.met ? [pc.dataset.id, a.dataset.met, a.value] : null;
+    renderLista(st, groups);
+    if (key) { const el = document.querySelector(`.person.cierre[data-id="${key[0]}"] [data-met="${key[1]}"]`); if (el) { if (el.value !== key[2]) el.value = key[2]; el.focus(); } } };
   const inputs = $$('[data-met]', card);
   inputs.forEach((inp) => inp.onchange = async () => {
     const valores = {};
@@ -683,8 +689,8 @@ function wireCierre(card, st, groups) {
       if (!Number.isInteger(n) || n < 0) { toast('Escribe números enteros de 0 o más', true); return; }
       valores[i.dataset.met] = n;
     }
-    // Se guarda cuando están todos los indicadores (un 0 también cuenta)
-    if (Object.keys(valores).length < inputs.length) return;
+    // Se guarda lo que se tenga; un campo vacío queda "sin dato" (no cuenta como 0)
+    if (!Object.keys(valores).length && !st.act[id]) return;
     try {
       const [saved] = await db('activity_daily').insert([{ employee_id: id, fecha: LS.fecha, valores }], { onConflict: 'employee_id,fecha' });
       st.act[id] = saved; toast('Actividad guardada'); redraw();
@@ -713,7 +719,7 @@ function renderLista(st, groups) {
   st.locked = locked;
   // Cierre: se captura la actividad de quien trabajó ese día (no se vuelve a pasar asistencia)
   const reqAct = tarde ? emps.filter((e) => cierreRequiere(e, st)) : [];
-  const done = tarde ? reqAct.filter((e) => st.act[e.id]).length : emps.filter((e) => rec[e.id]).length;
+  const done = tarde ? reqAct.filter((e) => actCompleta(st.act[e.id], st)).length : emps.filter((e) => rec[e.id]).length;
   const total = tarde ? reqAct.length : emps.length, pct = total ? Math.round(done * 100 / total) : 100;
   const diffs = 0;
   const multiArea = new Set(groups.map((x) => x.area_id)).size > 1;
@@ -746,7 +752,7 @@ function renderLista(st, groups) {
   ${(st.retirados || []).length ? `<div class="card pad small" style="margin-top:10px"><b>Retiro solicitado (${st.retirados.length})</b> · ya no aparecen en la lista:<br>${st.retirados.map((x) => `${esc(fullName(x.e))} · último día ${fmtDate(x.ultimo_dia)} (${esc(x.motivo)})`).join('<br>')}<div class="muted" style="margin-top:4px">Nómina les paga hasta su último día. Daniel aplica la baja o RH la rechaza.</div></div>` : ''}
   ${canAddToList(g) && !lockedDay && !tarde ? '<button type="button" class="btn ghost add-person" id="addPerson">+ Agregar persona que no aparece en la lista</button>' : ''}
   ${total || (tarde && emps.length) ? `<div class="stickybar">
-    <button class="btn primary" id="send" ${done < total || locked || !open ? 'disabled' : ''} style="${sentAt && done === total ? 'background:var(--ok);border-color:var(--ok)' : ''}">${done < total ? (tarde ? `Falta capturar la actividad de ${total - done}` : `Faltan ${total - done} por registrar`) : sentAt ? `${tarde ? 'Cierre enviado' : 'Asistencia enviada'} ✓ · reenviar` : tarde ? 'Enviar cierre del día' : 'Enviar asistencia (mañana)'}</button>
+    <button class="btn primary" id="send" ${(done < total && !tarde) || locked || !open ? 'disabled' : ''} style="${sentAt && done === total ? 'background:var(--ok);border-color:var(--ok)' : ''}">${done < total && !tarde ? `Faltan ${total - done} por registrar` : tarde && done < total ? `${sentAt ? 'Reenviar' : 'Enviar'} cierre · ${total - done} sin actividad completa` : sentAt ? `${tarde ? 'Cierre enviado' : 'Asistencia enviada'} ✓ · reenviar` : tarde ? 'Enviar cierre del día' : 'Enviar asistencia (mañana)'}</button>
     <span class="small muted" style="text-align:center">${sentAt ? `Enviado por ${esc(profName(sentBy))} a las ${fmtTime(sentAt)}. ` : ''}La asistencia se pasa una vez, en la mañana. Al final del día se envía el cierre con la actividad.</span>
   </div>` : ''}`;
   const reload = () => viewLista().catch((e) => toast(e.message, true));
@@ -772,10 +778,18 @@ function renderLista(st, groups) {
       saved.forEach((r) => { rec[r.employee_id] = r; }); toast(`${saved.length} registrados`); renderLista(st, groups);
     } catch (e) { toast(e.message, true); ev.target.disabled = false; }
   };
-  if ($('#send')) $('#send').onclick = async (ev) => {
-    ev.target.disabled = true;
+  const enviar = async (btn) => {
+    btn.disabled = true;
     try { await rpc('send_turno', { p_group: g.id, p_fecha: LS.fecha, p_turno: LS.turno }); toast(tarde ? 'Cierre enviado' : 'Asistencia enviada'); reload(); }
-    catch (e) { toast(e.message, true); ev.target.disabled = false; }
+    catch (e) { toast(e.message, true); btn.disabled = false; }
+  };
+  if ($('#send')) $('#send').onclick = (ev) => {
+    const btn = ev.currentTarget;
+    if (!(tarde && done < total)) return enviar(btn);
+    const falt = reqAct.filter((e) => !actCompleta(st.act[e.id], st));
+    modal({ title: 'Enviar cierre incompleto', body: `<div class="notice n-warn">${falt.length === 1 ? '1 persona no tiene' : `${falt.length} personas no tienen`} la actividad completa. Los campos vacíos se guardan como <b>sin dato</b> (no cuentan como 0). Puedes completarlos después y reenviar.</div>
+      <div class="small" style="margin-top:8px">${falt.map((e) => esc(fullName(e))).join(' · ')}</div>`,
+      actions: [{ label: 'Seguir capturando' }, { label: 'Enviar así', cls: 'primary', run: () => enviar(btn) }] });
   };
   $$('#people .person').forEach((card) => (tarde ? wireCierre : st.cob ? wirePersonCob : wirePerson)(card, st, groups));
 }
