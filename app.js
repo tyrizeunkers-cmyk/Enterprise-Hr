@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.36.0';
+const APP_VERSION = '0.37.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -106,9 +106,13 @@ async function http(path, { method = 'GET', body, headers = {}, auth = true } = 
   }
   return data;
 }
+// Nivel de la sesión (aal1: solo contraseña · aal2: con código de verificación en dos pasos)
+function jwtAal(t) { try { return JSON.parse(atob(String(t).split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).aal || null; } catch { return null; } }
+const factorTotp = (u) => ((u && u.factors) || []).find((f) => f.factor_type === 'totp' && f.status === 'verified');
 function setSession(d) {
   if (!d) { S.session = null; store.del('hr.session'); return; }
-  S.session = { access_token: d.access_token, refresh_token: d.refresh_token, expires_at: d.expires_at || Math.floor(Date.now() / 1000) + (d.expires_in || 3600), user: d.user };
+  const aal = jwtAal(d.access_token) || d.aal || (S.session && S.session.aal) || 'aal1';
+  S.session = { access_token: d.access_token, refresh_token: d.refresh_token, expires_at: d.expires_at || Math.floor(Date.now() / 1000) + (d.expires_in || 3600), user: d.user, aal };
   store.set('hr.session', S.session);
 }
 let refreshing = null;
@@ -161,6 +165,8 @@ class Q {
     return http(path, { method: 'POST', body: rows, headers });
   }
   update(patch) { return http(`/rest/v1/${this.t}?${this.qs()}`, { method: 'PATCH', body: patch, headers: { Prefer: 'return=representation' } }); }
+  // Sin devolver la fila (para tablas con columnas protegidas, como profiles)
+  updateMin(patch) { const u = new URLSearchParams(this.qs()); u.delete('select'); return http(`/rest/v1/${this.t}?${u}`, { method: 'PATCH', body: patch, headers: { Prefer: 'return=minimal' } }); }
   remove() { return http(`/rest/v1/${this.t}?${this.qs()}`, { method: 'DELETE', headers: { Prefer: 'return=representation' } }); }
 }
 const db = (t) => new Q(t);
@@ -265,7 +271,10 @@ async function boot() {
   try {
     await ensureFresh();
     const uid = S.session.user.id;
-    const [me] = await db('profiles').eq('id', uid).get();
+    // Con verificación en dos pasos activada, la sesión solo con contraseña pide el código
+    if (S.session.aal !== 'aal2' && !CFG.demo) { const u = await http('/auth/v1/user').catch(() => null); const f = factorTotp(u); if (f) return renderMfa(f.id); }
+    let me = null;
+    try { me = await rpc('mi_perfil'); } catch { [me] = await db('profiles').eq('id', uid).get(); }
     S.me = me || null;
     if (!S.me || !S.me.role || !S.me.active) return renderNoRole();
     await loadCatalogs();
@@ -273,15 +282,15 @@ async function boot() {
     route();
   } catch (e) {
     if (!S.session) return renderLogin(e.message);
-    $('#app').innerHTML = `<div class="login"><div class="card"><b>No se pudo cargar</b><span class="muted">${esc(e.message)}</span><button class="btn primary" onclick="location.reload()">Reintentar</button><button class="btn" id="lo">Cerrar sesión</button></div></div>`;
-    $('#lo').onclick = logout;
+    $('#app').innerHTML = `<div class="login"><div class="card"><b>No se pudo cargar</b><span class="muted">${esc(e.message)}</span><button class="btn primary" id="reint">Reintentar</button><button class="btn" id="lo">Cerrar sesión</button></div></div>`;
+    $('#lo').onclick = logout; $('#reint').onclick = () => location.reload();
   }
 }
 async function loadCatalogs() {
   const [areas, groups, profiles, ua, blocks, metricsRows] = await Promise.all([
     db('areas').order('name').get(),
     db('groups').order('name').get(),
-    db('profiles').select('id,full_name,email,role,active').order('full_name').get(),
+    db('profiles').select('id,full_name,role,active').order('full_name').get(),
     db('user_areas').eq('user_id', S.me.id).get(),
     db('area_transfer_blocks').get(),
     db('area_metrics').order('sort').get()
@@ -306,11 +315,60 @@ function renderLogin(err) {
     const fd = new FormData(ev.target); const btn = $('button[type=submit]', ev.target); btn.disabled = true;
     try {
       const d = await http('/auth/v1/token?grant_type=password', { method: 'POST', auth: false, body: { email: fd.get('email').trim(), password: fd.get('password') } });
-      setSession(d); await boot();
+      setSession({ ...d, aal: 'aal1' });
+      const f = factorTotp(d.user);
+      if (f && S.session.aal !== 'aal2') return renderMfa(f.id);
+      await boot();
     } catch (e) { renderLogin(e.message); }
   };
   $$('#demoUsers [data-em]').forEach((bt) => bt.onclick = () => { $('input[name=email]').value = bt.dataset.em; $('input[name=password]').value = window.HR_DEMO.password; $('#lf').requestSubmit(); });
   $('#forgot').onclick = () => modal({ title: 'Recuperar contraseña', body: '<p style="margin:0">Pídele a Daniel que te asigne una contraseña nueva desde Usuarios.</p>', actions: [{ label: 'Entendido', cls: 'primary' }] });
+}
+// Segundo paso del inicio de sesión: código de 6 dígitos de la app de autenticación
+function renderMfa(factorId, err) {
+  $('#app').innerHTML = `<form class="login" id="mf"><div class="card">
+    <div class="logo">HR</div>
+    <div><h1>Verificación en dos pasos</h1><div class="muted">Escribe el código de 6 dígitos de tu app de autenticación (Google Authenticator, Microsoft Authenticator…).</div></div>
+    ${err ? `<div class="notice n-bad">${esc(err)}</div>` : ''}
+    <label class="field">Código<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required autofocus></label>
+    <button class="btn primary" type="submit">Verificar</button>
+    <button class="btn sm" type="button" id="mf_out" style="border:0;color:var(--accent)">Cancelar y salir</button>
+  </div></form>`;
+  $('#mf_out').onclick = logout;
+  $('#mf').onsubmit = async (ev) => {
+    ev.preventDefault(); const code = String(new FormData(ev.target).get('code') || '').replace(/\D/g, ''); const b = $('button[type=submit]', ev.target); b.disabled = true;
+    try { await mfaVerificar(factorId, code); await boot(); }
+    catch (e) { renderMfa(factorId, /invalid|inválid|code/i.test(e.message) ? 'Código incorrecto o vencido. Intenta con el código actual.' : e.message); }
+  };
+}
+async function mfaVerificar(factorId, code) {
+  if (!/^\d{6}$/.test(code)) throw new Error('Escribe los 6 dígitos.');
+  const ch = await http(`/auth/v1/factors/${factorId}/challenge`, { method: 'POST', body: {} });
+  const d = await http(`/auth/v1/factors/${factorId}/verify`, { method: 'POST', body: { challenge_id: ch.id, code } });
+  setSession({ ...d, aal: 'aal2' });
+}
+// Activar o desactivar la verificación en dos pasos (Mi cuenta)
+async function mfaForm() {
+  const u = await http('/auth/v1/user'); const f = factorTotp(u);
+  if (f) {
+    return modal({ title: 'Verificación en dos pasos', body: '<div class="notice n-info"><b>Activada.</b> Cada vez que entres se te pedirá el código de tu app de autenticación.</div><p class="small muted">Si cambias de teléfono, desactívala aquí antes y vuelve a activarla en el nuevo.</p>',
+      actions: [{ label: 'Cerrar' }, { label: 'Desactivar', cls: 'danger', run: async () => {
+        if (!(await confirmBox('Desactivar verificación en dos pasos', 'Tu cuenta quedará protegida solo con la contraseña.', { okLabel: 'Desactivar' }))) return false;
+        await http(`/auth/v1/factors/${f.id}`, { method: 'DELETE' }); toast('Verificación en dos pasos desactivada');
+      } }] });
+  }
+  for (const x of (u.factors || []).filter((y) => y.status !== 'verified')) await http(`/auth/v1/factors/${x.id}`, { method: 'DELETE' }).catch(() => {});
+  const nf = await http('/auth/v1/factors', { method: 'POST', body: { factor_type: 'totp', friendly_name: 'Enterprise HR ' + new Date().toISOString().slice(0, 16) } });
+  const fields = [{ k: 'code', label: 'Código de 6 dígitos', req: true, full: true }];
+  modal({ title: 'Activar verificación en dos pasos', wide: true,
+    body: `<div class="notice n-info">1) Abre tu app de autenticación (Google Authenticator, Microsoft Authenticator…) y escanea este código. 2) Escribe el código de 6 dígitos que te muestra.</div>
+      <div style="display:flex;justify-content:center;margin:12px 0"><img alt="Código QR" src="${esc(nf.totp.qr_code)}" style="width:200px;height:200px;background:#fff;padding:8px;border-radius:8px"></div>
+      <div class="small muted" style="text-align:center;margin-bottom:10px">¿No puedes escanear? Escribe esta clave en la app: <span class="mono" style="user-select:all">${esc(nf.totp.secret)}</span></div>${fieldsHtml(fields)}`,
+    actions: [{ label: 'Cancelar', run: async () => { await http(`/auth/v1/factors/${nf.id}`, { method: 'DELETE' }).catch(() => {}); } },
+      { label: 'Activar', cls: 'primary', run: async ({ el }) => {
+        const v = readFields(el, fields); await mfaVerificar(nf.id, String(v.code).replace(/\D/g, ''));
+        toast('Verificación en dos pasos activada');
+      } }] });
 }
 function renderNoRole() {
   $('#app').innerHTML = `<div class="login"><div class="card"><div class="logo">HR</div><b>${esc(S.me ? S.me.full_name : 'Tu usuario')}</b>
@@ -433,7 +491,7 @@ function renderShell() {
   }
   $('#menu').onclick = () => modal({
     title: S.me.full_name, body: `<div class="kv"><span>Rol</span><span>${esc(ROLES[role()])}</span><span>Correo</span><span>${esc(S.me.email || '')}</span><span>Versión</span><span>${APP_VERSION}</span></div>`,
-    actions: [{ label: 'Sugerencias y errores', run: () => { setTimeout(() => openFeedback(), 0); } }, { label: 'Cambiar contraseña', run: () => { setTimeout(changePassword, 0); } }, { label: 'Cerrar sesión', cls: 'danger', run: () => { logout(); } }]
+    actions: [{ label: 'Sugerencias y errores', run: () => { setTimeout(() => openFeedback(), 0); } }, { label: 'Cambiar contraseña', run: () => { setTimeout(changePassword, 0); } }, ...(CFG.demo ? [] : [{ label: 'Verificación en dos pasos', run: () => { setTimeout(() => mfaForm().catch((e) => toast(e.message, true)), 0); } }]), { label: 'Cerrar sesión', cls: 'danger', run: () => { logout(); } }]
   });
 }
 function route() {
@@ -465,13 +523,17 @@ function route() {
 window.addEventListener('hashchange', () => { if (S.me) route(); });
 
 function changePassword() {
-  const fields = [{ k: 'p1', label: 'Contraseña nueva', type: 'password', req: true, ac: 'new-password', full: true, hint: 'Mínimo 8 caracteres' }, { k: 'p2', label: 'Repite la contraseña', type: 'password', req: true, ac: 'new-password', full: true }];
+  const fields = [{ k: 'p0', label: 'Contraseña actual', type: 'password', req: true, ac: 'current-password', full: true }, { k: 'p1', label: 'Contraseña nueva', type: 'password', req: true, ac: 'new-password', full: true, hint: 'Mínimo 10 caracteres' }, { k: 'p2', label: 'Repite la contraseña', type: 'password', req: true, ac: 'new-password', full: true }];
   modal({
     title: 'Cambiar contraseña', body: fieldsHtml(fields), actions: [{ label: 'Cancelar' }, {
       label: 'Guardar', cls: 'primary', run: async ({ el }) => {
         const v = readFields(el, fields);
-        if (v.p1.length < 8) throw new Error('La contraseña debe tener al menos 8 caracteres.');
+        if (v.p1.length < 10) throw new Error('La contraseña nueva debe tener al menos 10 caracteres.');
         if (v.p1 !== v.p2) throw new Error('Las contraseñas no coinciden.');
+        if (v.p1 === v.p0) throw new Error('La contraseña nueva debe ser distinta de la actual.');
+        // Confirma la contraseña actual (sin cambiar la sesión) antes de permitir el cambio
+        try { await http('/auth/v1/token?grant_type=password', { method: 'POST', auth: false, body: { email: S.me.email || S.session.user.email, password: v.p0 } }); }
+        catch (e) { if (e.status === 400) throw new Error('La contraseña actual no es correcta.'); throw e; }
         await http('/auth/v1/user', { method: 'PUT', body: { password: v.p1 } });
         toast('Contraseña actualizada');
       }
@@ -2892,7 +2954,7 @@ async function respaldoCompleto(btn) {
 // ───────────────────────── Usuarios (solo Daniel) ─────────────────────────
 async function viewUsuarios() {
   const v = $('#view');
-  const [profiles, ua] = await Promise.all([db('profiles').order('full_name').get(), db('user_areas').get()]);
+  const [profiles, ua] = await Promise.all([rpc('usuarios_admin').catch(() => db('profiles').order('full_name').get()), db('user_areas').get()]);
   S.profiles = profiles;
   const areasOf = (id) => ua.filter((x) => x.user_id === id).map((x) => x.area_id);
   v.innerHTML = `<div class="pagehead"><div><h1>Usuarios</h1><div class="muted small">${profiles.length} usuarios</div></div><div class="row" style="gap:6px"><button class="btn" id="respaldo" title="Descarga un ZIP con todos los datos, usuarios y archivos">Respaldo completo</button><button class="btn primary" id="nu">+ Nuevo usuario</button></div></div>
@@ -2922,12 +2984,12 @@ function permisosForm(p, done) {
     body: `<div class="notice n-info">Rol: <b>${esc(ROLES[p.role])}</b>. Las casillas parten de lo que da su rol; desmarca para quitar o marca para dar. Lo que no cambies sigue al rol si después le cambias el rol.</div>
       <div class="eyebrow" style="margin:12px 0 6px">Módulos que ve</div><div class="list">${mods.map(modRow).join('')}</div>
       <div class="eyebrow" style="margin:12px 0 6px">Acciones</div><div class="list">${Object.entries(PERM_ACC).map(accRow).join('')}</div>`,
-    actions: [{ label: 'Cancelar' }, { label: 'Restablecer al rol', run: async () => { await mustUpdate(db('profiles').eq('id', p.id).update({ permisos: {} }), 'el usuario'); toast('Permisos del rol restablecidos'); done(); } },
+    actions: [{ label: 'Cancelar' }, { label: 'Restablecer al rol', run: async () => { await db('profiles').eq('id', p.id).updateMin({ permisos: {} }); toast('Permisos del rol restablecidos'); done(); } },
       { label: 'Guardar', cls: 'primary', run: async ({ el }) => {
         const out = {};
         $$('[data-pmod]', el).forEach((c) => { if (!c.disabled && !c.checked) out['mod.' + c.dataset.pmod] = false; });
         $$('[data-pacc]', el).forEach((c) => { if (c.disabled) return; const a = PERM_ACC[c.dataset.pacc], def = a.roles.includes(p.role); if (c.checked !== def) out[c.dataset.pacc] = c.checked; });
-        await mustUpdate(db('profiles').eq('id', p.id).update({ permisos: out }), 'el usuario');
+        await db('profiles').eq('id', p.id).updateMin({ permisos: out });
         toast(Object.keys(out).length ? `Permisos guardados · ${Object.keys(out).length} cambio(s) sobre su rol` : 'Sin cambios sobre su rol'); done();
       } }] });
 }
@@ -2951,11 +3013,11 @@ function userForm(p, areas, done) {
       const sel = $$('.chips input:checked', el).map((i) => i.value);
       let id = p && p.id;
       if (isNew) {
-        if (v.password.length < 8) throw new Error('La contraseña debe tener al menos 8 caracteres.');
+        if (v.password.length < 10) throw new Error('La contraseña debe tener al menos 10 caracteres.');
         const r = await http('/functions/v1/admin-users', { method: 'POST', body: { action: 'create', email: v.email, password: v.password, full_name: v.full_name } });
         id = r.id;
       }
-      await mustUpdate(db('profiles').eq('id', id).update({ full_name: v.full_name, role: v.role, ...(isNew ? {} : { active: v.active === '1' }) }), 'el usuario');
+      await db('profiles').eq('id', id).updateMin({ full_name: v.full_name, role: v.role, ...(isNew ? {} : { active: v.active === '1' }) });
       const toDel = areas.filter((a) => !sel.includes(a)); const toAdd = sel.filter((a) => !areas.includes(a));
       for (const a of toDel) await db('user_areas').eq('user_id', id).eq('area_id', a).remove();
       if (toAdd.length) await db('user_areas').insert(toAdd.map((a) => ({ user_id: id, area_id: a })));
@@ -2966,7 +3028,7 @@ function userForm(p, areas, done) {
   if (rp) rp.onclick = () => {
     const pf = [{ k: 'password', label: 'Contraseña nueva', req: true, val: genPass(), full: true, hint: 'Compártela por un medio seguro.' }];
     modal({ title: 'Contraseña nueva · ' + p.full_name, body: fieldsHtml(pf), actions: [{ label: 'Cancelar' }, { label: 'Asignar', cls: 'primary', run: async ({ el }) => {
-      const v = readFields(el, pf); if (v.password.length < 8) throw new Error('Mínimo 8 caracteres.');
+      const v = readFields(el, pf); if (v.password.length < 10) throw new Error('Mínimo 10 caracteres.');
       await http('/functions/v1/admin-users', { method: 'POST', body: { action: 'set_password', user_id: p.id, password: v.password } });
       toast('Contraseña asignada');
     } }] });
