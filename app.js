@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.37.1';
+const APP_VERSION = '0.37.2';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -392,7 +392,6 @@ const VIEWS = {
   casos: { label: 'Casos', ic: '⚑', grupo: 'Operación', roles: ['developer', 'director', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewCasos() },
   reclutamiento: { label: 'Reclutamiento', short: 'Reclut.', ic: '＋', grupo: 'Personal', roles: ['developer', 'director', 'rh_general', 'rh_area', 'supervisor'], render: () => viewReclutamiento() },
   documentos: { label: 'Documentos', short: 'Docs', ic: '📄', grupo: 'Personal', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewDocumentos() },
-  operacion: { label: 'Actividad', ic: '◔', grupo: 'Operación', roles: ['developer', 'supervisor'], render: () => viewOperacion() },
   asistencia: { label: 'Asistencia', ic: '▦', grupo: 'Operación', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor'], render: () => viewAsistencia() },
   chat: { label: 'Mensajes', short: 'Chat', ic: '💬', grupo: 'Comunicación', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewChat() },
   prenomina: { label: 'Pre-nómina', short: 'Nómina', ic: '$', grupo: 'Nómina', roles: ['developer', 'director', 'nomina'], render: () => viewPrenomina() },
@@ -424,7 +423,6 @@ const ICONS = {
   casos: '<path d="M6 21V4"/><path d="M6 4h11l-2.5 4 2.5 4H6"/>',
   reclutamiento: '<circle cx="10" cy="8" r="3.5"/><path d="M3.5 20c.7-3.7 3.4-5.8 6.5-5.8 1.4 0 2.7.4 3.8 1.2"/><path d="M18 14v6M15 17h6"/>',
   documentos: '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M10 12h5M10 15.5h5"/>',
-  operacion: '<path d="M3 12h4l2.5-6 4 12 2.5-6H21"/>',
   asistencia: '<rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
   usuarios: '<circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2 2M14 9l2 2"/>',
   catalogos: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
@@ -440,9 +438,9 @@ const ICONS = {
 };
 const icon = (k, sz = 22) => `<svg viewBox="0 0 24 24" width="${sz}" height="${sz}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[k] || ''}</svg>`;
 // En el celular: máximo 4 secciones abajo + "Más" (el resto en un panel agrupado)
-const TAB_PRIO = ['lista', 'personal', 'chat', 'casos', 'documentos', 'reclutamiento', 'asistencia', 'prenomina', 'catalogos', 'informes', 'operacion', 'buzon', 'usuarios', 'plantillas', 'bitacora'];
+const TAB_PRIO = ['lista', 'personal', 'chat', 'casos', 'documentos', 'reclutamiento', 'asistencia', 'prenomina', 'catalogos', 'informes', 'buzon', 'usuarios', 'plantillas', 'bitacora'];
 // Supervisión: su trabajo diario es la lista y la actividad; documentos va en "Más"
-const TAB_PRIO_SUP = ['lista', 'personal', 'casos', 'operacion', 'chat', 'asistencia', 'reclutamiento', 'documentos'];
+const TAB_PRIO_SUP = ['lista', 'personal', 'casos', 'chat', 'asistencia', 'reclutamiento', 'documentos'];
 // Nómina: su trabajo diario es la pre-nómina
 const TAB_PRIO_NOM = ['lista', 'prenomina', 'chat', 'personal', 'asistencia', 'documentos'];
 const navCount = (k) => Number(($(`.nav a[data-v="${k}"] .cnt`) || {}).textContent || 0);
@@ -3255,100 +3253,9 @@ function describeLog(l, empName) {
 
 // ───────────────────────── Operación diaria: actividad y correcciones ─────────────────────────
 const metricsOf = (areaId) => (S.metrics || []).filter((m) => m.area_id === areaId).sort((a, b) => a.sort - b.sort);
-const canCorrect = () => is('developer', 'supervisor');
 const canReportCase = () => is('developer', 'supervisor', 'tl', 'rh_general', 'rh_area');
 const RESULTADO = { pendiente: ['Pendiente', 'b-mut'], corrigio: ['Corrigió', 'b-ok'], no_corrigio: ['No corrigió', 'b-bad'] };
 
-function opsHtml(e, st) {
-  if (!st) return '';
-  const { metrics, act, corr } = st;
-  const a = act[e.id]; const vals = (a && a.valores) || {};
-  const corrs = corr[e.id] || [];
-  const metricHtml = metrics.length ? `<div><div class="eyebrow" style="margin-bottom:6px">Actividad del día${a ? ` · <span style="text-transform:none;letter-spacing:0;font-weight:400">guardado ${fmtTime(a.updated_at)}</span>` : ''}</div>
-    <div class="grid2">${metrics.map((m) => { const v = vals[m.key]; const pct = v != null && Number(m.daily_goal) ? Math.round(v * 100 / Number(m.daily_goal)) : null;
-      return `<label class="field">${esc(m.label)} <span style="font-weight:400">meta ${Number(m.daily_goal)}${pct != null ? ` · <b style="color:${pct >= 100 ? 'var(--ok)' : pct >= 80 ? 'var(--warn)' : 'var(--bad)'}">${pct}%</b>` : ''}</span>
-        <input type="number" inputmode="numeric" min="0" step="1" data-met="${esc(m.key)}" value="${v ?? ''}" placeholder="0"></label>`; }).join('')}</div></div>` : '';
-  const corrHtml = canCorrect() ? `<div><div class="eyebrow" style="margin-bottom:6px">Correcciones operativas del día</div>
-    ${corrs.length ? `<div class="list">${corrs.map((c) => `<div class="card" style="padding:10px 12px;display:flex;flex-direction:column;gap:6px">
-      <div class="row small"><b class="mono">${esc(String(c.hora).slice(0, 5))}</b><span class="grow">${esc(c.avance)} · ${esc(c.instruccion)}</span><span class="badge ${RESULTADO[c.resultado][1]}">${RESULTADO[c.resultado][0]}</span></div>
-      ${c.resultado === 'pendiente' ? `<div class="row"><button type="button" class="btn sm" data-cres="${c.id}" data-val="corrigio">Corrigió</button><button type="button" class="btn sm danger" data-cres="${c.id}" data-val="no_corrigio">No corrigió</button></div>` : ''}
-    </div>`).join('')}</div>` : '<div class="small muted">Sin correcciones hoy.</div>'}</div>` : '';
-  const btns = canCorrect() ? `<div class="row">
-    ${canCorrect() ? '<button type="button" class="btn sm" data-newcorr>+ Corrección operativa</button>' : ''}
-</div>` : '';
-  return metricHtml + corrHtml + btns;
-}
-function wireOps(card, st, redraw) {
-  const id = card.dataset.id; const emp = st.emps.find((x) => x.id === id);
-  const inputs = $$('[data-met]', card);
-  inputs.forEach((inp) => inp.onchange = async () => {
-    const valores = {};
-    for (const i of inputs) {
-      if (i.value === '') continue;
-      const n = Number(i.value);
-      if (!Number.isInteger(n) || n < 0) { toast('Escribe números enteros de 0 o más', true); return; }
-      valores[i.dataset.met] = n;
-    }
-    try {
-      const [saved] = await db('activity_daily').insert([{ employee_id: id, fecha: OP.fecha, valores }], { onConflict: 'employee_id,fecha' });
-      st.act[id] = saved; toast('Actividad guardada'); redraw();
-    } catch (e) { toast(e.message, true); }
-  });
-  $$('[data-cres]', card).forEach((b) => b.onclick = async () => {
-    b.disabled = true;
-    try {
-      const [u] = await mustUpdate(db('corrections').eq('id', b.dataset.cres).update({ resultado: b.dataset.val }), 'la corrección');
-      st.corr[id] = st.corr[id].map((c) => c.id === u.id ? u : c); redraw();
-    } catch (e) { toast(e.message, true); b.disabled = false; }
-  });
-  const nc = $('[data-newcorr]', card);
-  if (nc) nc.onclick = () => {
-    const now = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
-    const f = [
-      { k: 'hora', label: 'Hora', type: 'time', req: true, val: OP.fecha === todayMX() ? now : '' },
-      { k: 'avance', label: 'Avance a esa hora', req: true, hint: 'Ej. 180 mensajes y 90 llamadas' },
-      { k: 'instruccion', label: 'Instrucción que diste', type: 'textarea', req: true, full: true, hint: 'Ej. regularizar la actividad durante el resto de la jornada' }
-    ];
-    modal({ title: 'Corrección operativa · ' + fullName(emp), body: `<div class="notice n-info">Es una corrección del día, no una sanción. Queda como antecedente si la persona reincide.</div>${fieldsHtml(f)}`,
-      actions: [{ label: 'Cancelar' }, { label: 'Guardar', cls: 'primary', run: async ({ el }) => {
-        const v = readFields(el, f);
-        const [c] = await db('corrections').insert([{ employee_id: id, fecha: OP.fecha, ...v }]);
-        (st.corr[id] = st.corr[id] || []).push(c); toast('Corrección registrada'); redraw();
-      } }] });
-  };
-}
-
-// Vista de Supervisión: actividad del día y correcciones operativas (no va en el pase de lista del líder)
-const OP = { group: null, fecha: null };
-async function viewOperacion() {
-  const v = $('#view');
-  const groups = writableGroups().filter((g) => g.tipo !== 'lideres').sort((a, b) => (areaName(a.area_id) + a.name).localeCompare(areaName(b.area_id) + b.name, 'es'));
-  if (!groups.length) { v.innerHTML = '<div class="card empty">No hay grupos en tus áreas.</div>'; return; }
-  if (!OP.group || !groups.some((g) => g.id === OP.group)) OP.group = groups[0].id;
-  if (!OP.fecha) OP.fecha = todayMX();
-  const g = groups.find((x) => x.id === OP.group);
-  const emps = (await db('employees').select('id,nombre,apellido_paterno,apellido_materno,puesto,group_id,area_id,status').eq('group_id', g.id).eq('status', 'activo').get()).sort(sortName);
-  const ids = emps.map((e) => e.id); const metrics = metricsOf(g.area_id);
-  const [acts, corrs] = ids.length ? await Promise.all([
-    metrics.length ? db('activity_daily').in('employee_id', ids).eq('fecha', OP.fecha).get() : Promise.resolve([]),
-    db('corrections').in('employee_id', ids).eq('fecha', OP.fecha).order('hora').get()
-  ]) : [[], []];
-  const act = Object.fromEntries(acts.map((a) => [a.employee_id, a]));
-  const corr = {}; corrs.forEach((c) => { (corr[c.employee_id] = corr[c.employee_id] || []).push(c); });
-  renderOperacion({ emps, metrics, act, corr, g }, groups);
-}
-function renderOperacion(st, groups) {
-  const v = $('#view'); const { emps, metrics, g } = st;
-  const multiArea = new Set(groups.map((x) => x.area_id)).size > 1;
-  v.innerHTML = `
-  <div class="pagehead"><div><h1>Actividad del día</h1><div class="muted small">Supervisión · ${esc(areaName(g.area_id))}${metrics.length ? ' · metas: ' + metrics.map((m) => `${esc(m.label)} ${Number(m.daily_goal)}`).join(', ') : ''}</div></div>
-    <div class="row"><input type="date" class="inp mono" id="op_date" value="${OP.fecha}" max="${todayMX()}" aria-label="Fecha">
-    ${groups.length > 1 ? `<select class="inp" id="op_group" aria-label="Grupo">${groups.map((x) => `<option value="${x.id}"${x.id === g.id ? ' selected' : ''}>${multiArea ? esc(areaName(x.area_id)) + ' · ' : ''}${esc(x.name)}</option>`).join('')}</select>` : `<b>${esc(g.name)}</b>`}</div></div>
-  <div class="list" id="ops">${emps.length ? emps.map((e) => `<div class="card pad" data-id="${e.id}" style="display:flex;flex-direction:column;gap:10px"><div style="font-weight:700">${esc(fullName(e))}<span class="small muted" style="font-weight:400"> · ${esc(e.puesto || '')}</span></div>${opsHtml(e, st)}</div>`).join('') : '<div class="card empty">No hay personal activo en este grupo.</div>'}</div>`;
-  $('#op_date').onchange = (e) => { const val = e.target.value; if (!val || val > todayMX()) { e.target.value = OP.fecha; return; } OP.fecha = val; viewOperacion().catch((x) => toast(x.message, true)); };
-  if ($('#op_group')) $('#op_group').onchange = (e) => { OP.group = e.target.value; viewOperacion().catch((x) => toast(x.message, true)); };
-  $$('#ops [data-id]').forEach((card) => wireOps(card, st, () => renderOperacion(st, groups)));
-}
 
 // ───────────────────────── Buzón: sugerencias y reporte de errores ─────────────────────────
 const FB_TIPO = { error: 'Reportar un error', sugerencia: 'Sugerencia' };
