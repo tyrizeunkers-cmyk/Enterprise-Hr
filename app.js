@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.37.2';
+const APP_VERSION = '0.38.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -2242,7 +2242,7 @@ async function viewAsistencia() {
   <div class="pagehead"><div><h1>Asistencia</h1><div class="muted small">${dayLabel(AS.fecha)}</div></div>
     <div class="row"><input type="date" class="inp mono" id="as_date" value="${AS.fecha}" max="${todayMX()}" aria-label="Fecha">
     ${areas.length > 1 ? `<select class="inp" id="as_area" aria-label="Área"><option value="">Todas las áreas</option>${areas.map((a) => `<option value="${a.id}"${AS.area === a.id ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}</select>` : ''}
-    <button class="btn primary" id="as_rep">Imprimir / Exportar asistencia</button><button class="btn" id="as_exp">Exportar periodo</button></div></div>
+    <button class="btn primary" id="as_rep">Descargar reporte</button></div></div>
   ${asTabs()}
   ${alerts.length ? `<div class="card pad" style="margin-bottom:12px"><div class="eyebrow" style="margin-bottom:8px">Alertas · faltas en los últimos 30 días</div>
     <div class="list">${alerts.map((f) => { const e = empById[f.employee_id]; return `<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:8px"><span><b>${esc(fullName(e))}</b><br><span class="small muted">${esc(areaName(e.area_id))} · ${esc(groupName(e.group_id))}${f.retardos ? ` · ${f.retardos} retardos` : ''}</span></span>${faltasBadge(f.faltas)}</div>`; }).join('')}</div>
@@ -2272,46 +2272,8 @@ async function viewAsistencia() {
     catch (e) { toast(e.message, true); b.disabled = false; }
   });
   $$('[data-goto]').forEach((b) => b.onclick = () => { LS.group = b.dataset.goto; LS.fecha = AS.fecha; location.hash = '#/lista'; });
-  $('#as_exp').onclick = exportPeriod;
   $('#as_rep').onclick = imprimirAsistencia;
   bindAsTabs();
-}
-
-function exportPeriod() {
-  const t = todayMX(); const d = Number(t.slice(8));
-  const from = d <= 15 ? t.slice(0, 8) + '01' : t.slice(0, 8) + '16';
-  const f = [{ k: 'from', label: 'Desde', type: 'date', req: true, val: from, max: t }, { k: 'to', label: 'Hasta', type: 'date', req: true, val: t, max: t }];
-  modal({
-    title: 'Exportar asistencia (CSV para Excel)', body: fieldsHtml(f) + '<div class="small muted">Una fila por persona y una columna por día (mañana/tarde: A = asistió/presente, F = falta/ausente, R = retardo, S = salida anticipada, P = permiso, D = descanso, I = inactividad), con totales. Incluye solo lo que tu rol puede ver.</div>',
-    actions: [{ label: 'Cancelar' }, { label: 'Descargar', cls: 'primary', run: async ({ el }) => {
-      const v = readFields(el, f);
-      if (v.from > v.to) throw new Error('La fecha inicial es posterior a la final.');
-      const days = []; for (let x = v.from; x <= v.to; x = addDays(x, 1)) { days.push(x); if (days.length > 62) throw new Error('Máximo 62 días por exportación.'); }
-      let qa = db('attendance').select('employee_id,fecha,turno,status,aviso,incidencia,incidencias,comentario,area_id').gte('fecha', v.from).lte('fecha', v.to);
-      if (AS.area) qa = qa.eq('area_id', AS.area);
-      const [att, emps] = await Promise.all([qa.order('fecha').order('employee_id').getAll(), db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,area_id,group_id,status').get()]);
-      const empById = Object.fromEntries(emps.map((e) => [e.id, e]));
-      const per = {}, perT = {}; att.forEach((a) => { const m = a.turno === 'tarde' ? perT : per; (m[a.employee_id] = m[a.employee_id] || {})[a.fecha] = a; if (!per[a.employee_id]) per[a.employee_id] = {}; });
-      const ids = Object.keys(per).sort((a, b) => sortName(empById[a] || { apellido_paterno: '', nombre: '' }, empById[b] || { apellido_paterno: '', nombre: '' }));
-      const q = (s) => { let t = String(s ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
-      const lines = [['No.', 'Nombre', 'Área', 'Grupo', ...days.map(fmtDate), 'Asistencias', 'Faltas', 'Retardos', 'Salidas anticipadas', 'Permisos', 'Descansos', 'Inactividad', 'Vacaciones', 'Diferencias mañana/tarde', 'Avisos', 'Comentarios'].map(q).join(',')];
-      for (const id of ids) {
-        const e = empById[id] || { nombre: '(sin acceso)', apellido_paterno: '' }; const r = per[id]; const rt = perT[id] || {}; let dif = 0;
-        const c = attCounts(); const inc = [];
-        const av = [];
-        days.forEach((dd) => { for (const [a, tt] of [[r[dd], ''], [rt[dd], ' tarde']]) { if (!a) continue; countAtt(c, a); if (a.aviso) av.push(fmtDate(dd) + ': ' + AVISO[a.aviso]); if ((a.incidencias || []).length || a.comentario) inc.push(fmtDate(dd) + tt + ': ' + [INC[a.incidencia], ...(a.incidencias || []), a.comentario].filter(Boolean).join('/')); } if (attMismatch(r[dd], rt[dd])) dif++; });
-        lines.push([e.num_empleado, fullName(e), areaName(e.area_id), groupName(e.group_id), ...days.map((dd) => (r[dd] || rt[dd]) ? attShort(r[dd]) + '/' + attShort(rt[dd]) : ''), c.asistio, c.falta, c.retardo, c.salida, c.permiso, c.descanso, c.inactividad, c.vacaciones, dif, av.join(' | '), inc.join(' | ')].map(q).join(','));
-      }
-      if (CFG.demo) {
-        setTimeout(() => modal({ title: 'Vista previa del CSV', wide: true, body: `<div class="notice n-info">En la demo no se descargan archivos. En la app real se descarga este CSV para abrirlo en Excel.</div><textarea class="inp mono" style="min-height:260px;font-size:12px;white-space:pre" readonly>${esc(lines.join('\n'))}</textarea>`, actions: [{ label: 'Cerrar', cls: 'primary' }] }), 0);
-        return;
-      }
-      const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
-      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `asistencia_${v.from}_a_${v.to}.csv`; document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-      toast(`${ids.length} personas exportadas`);
-    } }]
-  });
 }
 
 // ───── Reporte de asistencia en Excel: por día (bloques por equipo, como la hoja que se arma a mano) o por periodo ─────
@@ -2333,8 +2295,6 @@ function repClasif(m, t, vac, jrs) {
   else if (!m && t) {
     if (t.incidencia === 'descanso' && !t.status) k = 'descanso';
     else if (t.codigo) k = 'medio';
-    else if (t.status === 'falta') k = 'falta';
-    else if (t.status) { k = 'asistencia'; det.push('Sin pase de la mañana; presente al cierre'); }
     else k = 'sin';
   } else k = 'sin';
   const f = { permiso: false, salida: false, medio: false };
@@ -2364,7 +2324,7 @@ async function repDatos(from, to) {
   if (AS.area) qj = qj.eq('area_id', AS.area);
   const [att, emps, vacs, jr] = await Promise.all([
     qa.order('fecha').getAll(),
-    db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,puesto,area_id,group_id,status,fecha_ingreso,fecha_baja').in('status', ['activo', 'baja']).getAll(),
+    db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,puesto,area_id,group_id,status,fecha_ingreso,fecha_baja').in('status', ['activo']   /* el personal con baja no se imprime */).getAll(),
     db('vacaciones').select('employee_id,fechas,fecha_inicio').eq('estado', 'aprobada').eq('tipo', 'disfrute').lte('fecha_inicio', to).getAll().catch(() => []),
     qj.getAll().catch(() => []),
     cargarCategorias().catch(() => null)
@@ -2393,34 +2353,6 @@ async function repDatos(from, to) {
   return { grupos, dia, conPase: new Set(Object.keys(rec)), paseArea: new Set(att.map((a) => a.fecha + '|' + a.area_id)) };
 }
 
-function reporteAsistencia() {
-  const t = todayMX(); const d = Number(t.slice(8));
-  const f = [
-    { k: 'tipo', label: 'Reporte', type: 'select', val: 'dia', options: [['dia', 'Por día'], ['periodo', 'Por periodo']] },
-    { k: 'from', label: 'Fecha (o desde)', type: 'date', req: true, val: AS.fecha || t, max: t },
-    { k: 'to', label: 'Hasta (solo por periodo)', type: 'date', val: t, max: t }
-  ];
-  modal({
-    title: 'Reporte de asistencia (Excel)',
-    body: fieldsHtml(f) + `<div class="small muted" style="margin-top:8px"><b>Por día:</b> resumen por área y equipo (debe ser, presentes, retardos, faltas, descansos, vacaciones, permisos, % de asistencia) y la lista de cada equipo con nombre, puesto y motivo.<br><b>Por periodo:</b> resumen por día, totales por persona y la cuadrícula día por día (máximo 62 días).<br>${AS.area ? 'Solo el área elegida en la página.' : 'Todas las áreas que puedes ver.'} Los números los calcula la app con el pase de lista.</div>`,
-    actions: [{ label: 'Cancelar' }, { label: 'Descargar Excel', cls: 'primary', run: async ({ el }) => {
-      const v = readFields(el, f);
-      if (v.tipo === 'dia') v.to = v.from;
-      if (!v.to) throw new Error('Falta: Hasta');
-      if (v.from > v.to) throw new Error('La fecha inicial es posterior a la final.');
-      const days = []; for (let x = v.from; x <= v.to; x = addDays(x, 1)) { days.push(x); if (days.length > 62) throw new Error('Máximo 62 días por reporte.'); }
-      const D = await repDatos(v.from, v.to);
-      const sheets = v.tipo === 'dia' ? repHojasDia(D, v.from) : repHojasPeriodo(D, days);
-      const area = AS.area ? '_' + areaName(AS.area).replace(/[^\wÁÉÍÓÚÑáéíóúñ]+/g, '_') : '';
-      const name = v.tipo === 'dia' ? `Asistencia_${v.from}${area}.xlsx` : `Asistencia_${v.from}_al_${v.to}${area}.xlsx`;
-      bajarArchivo(new File([xlsxBuild(sheets)], name, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
-      toast('Reporte listo');
-    } }]
-  });
-  const sel = $('.modal #f_tipo'), hasta = $('.modal #f_to');
-  const sync = () => { hasta.closest('label').style.display = sel.value === 'dia' ? 'none' : ''; };
-  sel.onchange = sync; sync();
-}
 
 const repGenerado = () => 'Generado ' + fmtDateTime(new Date().toISOString()) + ' por ' + (S.me.full_name || '');
 const repHead = (hs) => hs.map((h) => ({ v: h, s: XS.head }));
@@ -2429,6 +2361,8 @@ const repPctC = (s) => { const p = repPct(s); return p == null ? { v: '—', s: 
 const REP_COLS = ['Debe ser', 'Presentes', 'Asistencia', 'Retardo', 'Faltas', 'Descanso', 'Vacaciones', 'Medio día C4/Ab4', 'Inactividad', 'Sin registro', 'Permisos', 'Salidas anticipadas', '% asistencia'];
 const repFila = (s) => [repNum(s.debe), { v: s.asistencia + s.retardo + s.inactividad, s: XS.int }, repNum(s.asistencia), repNum(s.retardo), repNum(s.falta), repNum(s.descanso), repNum(s.vacaciones), repNum(s.medio), repNum(s.inactividad), repNum(s.sin), repNum(s.permiso), repNum(s.salida), repPctC(s)];
 
+// Títulos combinados a todo lo ancho (al imprimir no se cortan) y pie de página
+const repImprimir = (sh) => ({ ...sh, merges: [...(sh.merges || []), ...[1, 2].filter((r) => sh.rows[r - 1] && sh.rows[r - 1].length === 1).map((r) => `A${r}:${colL(sh.cols.length - 1)}${r}`)], footer: sh.footer || ldPie() });
 function repHojasDia(D, fecha) {
   const lista = D.dia(fecha);
   const gName = (gid) => { const g = S.groups.find((x) => x.id === gid); return g ? groupLabel(g) : 'Sin grupo'; };
@@ -2477,7 +2411,7 @@ function repHojasDia(D, fecha) {
     { name: 'RESUMEN', freeze: [0, 3], cols: [16, 22, 24, 9, 10, 10, 9, 8, 9, 10, 11, 10, 11, 9, 11, 11], rows: res },
     { name: 'POR EQUIPO', cols: [5, 34, 9, 24, 13, 18, 60], rows: det },
     { name: 'NOVEDADES', freeze: [0, 3], cols: [16, 22, 34, 22, 16, 60], rows: nov }
-  ];
+  ].map(repImprimir);
 }
 
 function repHojasPeriodo(D, days) {
@@ -2515,7 +2449,7 @@ function repHojasPeriodo(D, days) {
     pp.push([{ v: areaName(P.aid), s: XS.text }, { v: gName(P.gid), s: XS.text }, { v: fullName(P.e), s: XS.text }, { v: P.e.num_empleado || '', s: XS.text }, { v: P.e.puesto || '', s: XS.text }, ...f.slice(0, 4), P.s.falta >= 3 ? { v: P.s.falta, s: XS.warn } : f[4], ...f.slice(5)]);
   });
 
-  const grid = [[{ v: titulo, s: XS.title }], [{ v: 'Un código por día. A asistencia · R retardo · SA salida anticipada · AC ausente al cierre · P permiso · I inactividad · F falta · D descanso · V vacaciones · C4/Ab4/C8/Ab8 Cobranza · NI nuevo ingreso · BAJA fecha de baja · — no laboraba · vacío: sin registro (no es falta)', s: XS.sub }],
+  const grid = [[{ v: titulo, s: XS.title }], [{ v: 'Un código por día. A asistencia · R retardo · SA salida anticipada · P permiso · I inactividad · F falta · D descanso · V vacaciones · C4/Ab4/C8/Ab8 Cobranza · NI nuevo ingreso · — no laboraba · vacío: sin registro (no es falta)', s: XS.sub }],
     repHead(['Área', 'Equipo', 'Nombre', ...days.map((d) => dayLabel(d))])];
   ps.forEach((P) => grid.push([{ v: areaName(P.aid), s: XS.text }, { v: gName(P.gid), s: XS.text }, { v: fullName(P.e), s: XS.text }, ...days.map((d) => { const fi = P.e.fecha_ingreso, fb = P.e.fecha_baja; const v = P.cod[d] || (fb && d === fb ? 'BAJA' : (fb && d > fb) || (fi && d < fi) ? '—' : fi === d ? 'NI' : ''); return { v, s: ldStyle(v) }; })]));
 
@@ -2523,24 +2457,24 @@ function repHojasPeriodo(D, days) {
     { name: 'RESUMEN POR DÍA', freeze: [0, 3], cols: [12, 14, 16, 9, 10, 10, 9, 8, 9, 10, 11, 10, 11, 9, 11, 11], rows: res },
     { name: 'POR PERSONA', freeze: [3, 3], cols: [16, 20, 34, 9, 22, 7, 10, 10, 9, 8, 9, 10, 11, 10, 11, 9, 11, 11], rows: pp },
     { name: 'DÍA POR DÍA', freeze: [3, 3], cols: [16, 20, 34, ...days.map(() => 11)], rows: grid }
-  ];
+  ].map(repImprimir);
 }
 
 // ───── Imprimir / Exportar asistencia por líder: reporte diario y quincenal en Excel ─────
 // Usa el catálogo vigente del pase de lista (sin catálogo paralelo). Un día sin registro queda en blanco: nunca es falta.
 const LD_CLAVES = [
-  ['A', 'Asistió sin incidencias'], ['R', 'Retardo'], ['SA', 'Salida anticipada'], ['AC', 'Ausente al cierre (asistió en la mañana)'],
+  ['A', 'Asistió sin incidencias'], ['R', 'Retardo'], ['SA', 'Salida anticipada'],
   ['P', 'Permiso (con “A /”: permiso durante la jornada; solo: permiso sin asistencia)'], ['I', 'Inactividad'], ['DC', 'Desconexión (Cobranza)'], ['OI', 'Otra incidencia (Cobranza)'],
   ['F', 'Falta'], ['C8 / Ab8', 'Falta de día completo con / sin justificante (Cobranza)'], ['C4 / Ab4', 'Medio día con / sin justificante (Cobranza)'],
-  ['D', 'Descanso'], ['V', 'Vacaciones aprobadas'], ['REV', 'Revisar: la mañana y el cierre no coinciden o falta el pase de la mañana'],
-  ['NI', 'Nuevo ingreso (su primer día)'], ['BAJA', 'Fecha de baja (ya no labora): no es falta'],
-  ['OE', 'Ese día quedó registrado en otro equipo'], ['—', 'No laboraba (antes de su ingreso o después de su baja)'], ['(vacío)', 'Sin registro: no es falta']
+  ['D', 'Descanso'], ['V', 'Vacaciones aprobadas'], ['REV', 'Revisar: registro incompleto'],
+  ['NI', 'Nuevo ingreso (su primer día)'],
+  ['OE', 'Ese día quedó registrado en otro equipo'], ['—', 'No laboraba (antes de su fecha de ingreso)'], ['(vacío)', 'Sin registro: no es falta']
 ];
 // Nuevo ingreso (fecha de ingreso o aviso del pase) y baja (fecha de baja o aviso) se marcan en el mismo calendario
 function ldMarca(e, d, code, x) {
   const av = (k) => x && ((x.m && x.m.aviso === k) || (x.t && x.t.aviso === k));
-  const ni = e.fecha_ingreso === d || av('nuevo_ingreso'), bj = e.fecha_baja === d || av('baja');
-  return [code, ni && 'NI', bj && 'BAJA'].filter(Boolean).join(' / ');
+  const ni = e.fecha_ingreso === d || av('nuevo_ingreso');
+  return [code, ni && 'NI'].filter(Boolean).join(' / ');   // el personal con baja ya no se imprime
 }
 const ldStyle = (code) => !code || code === '—' || code === 'OE' ? XS.code : /REV/.test(code) ? XS.codeRev : /\b(NI|BAJA)\b/.test(code) ? XS.codeV : /^(F|C8|Ab8)/.test(code) ? XS.codeF
   : /^(D|V)$/.test(code) ? (code === 'V' ? XS.codeV : XS.codeD) : / \/ |^(C4|Ab4|P|I)$/.test(code) ? XS.codeR : XS.code;
@@ -2553,7 +2487,7 @@ function ldCelda(m, t, vac, jrs) {
   let base = '';
   if (vac || (m && m.incidencia === 'vacaciones') || (t && t.incidencia === 'vacaciones')) { base = 'V'; n.vacaciones = 1; }
   else if (m && (m.codigo === 'C8' || m.codigo === 'Ab8')) { base = m.codigo; n.falta = 1; if (m.codigo === 'C8') n.c8 = 1; }
-  else if (m && m.status === 'falta') { base = 'F'; n.falta = 1; if (pres(t)) { suf.push('REV'); n.revisar = 1; obs.push('Falta en la mañana pero presente al cierre: confirmar'); } }
+  else if (m && m.status === 'falta') { base = 'F'; n.falta = 1; }
   else if (m && ['asistio', 'retardo', 'salida'].includes(m.status)) { base = 'A'; n.asist = 1; if (m.status === 'retardo') { suf.push('R'); n.retardo = 1; } if (m.status === 'salida') { suf.push('SA'); n.salida = 1; } }
   else if (m && (m.codigo === 'C4' || m.codigo === 'Ab4')) { base = m.codigo; n.medio = 1; }
   else if (m && m.incidencia === 'descanso') { base = 'D'; n.descanso = 1; }
@@ -2563,11 +2497,10 @@ function ldCelda(m, t, vac, jrs) {
   else if (t) {
     if (t.incidencia === 'descanso' && !t.status) { base = 'D'; n.descanso = 1; }
     else if (t.codigo === 'C4' || t.codigo === 'Ab4') { base = t.codigo; n.medio = 1; obs.push('Sin pase de la mañana'); }
-    else { base = 'REV'; n.revisar = 1; obs.push(t.status === 'falta' ? 'Sin pase de la mañana; ausente al cierre' : 'Sin pase de la mañana; presente al cierre'); }
+    else obs.push('Sin pase de asistencia (solo tiene registro del cierre)');
   }
   if (base === 'A' || base === 'C4' || base === 'Ab4') {
     if (t && t.status === 'salida') { suf.push('SA'); n.salida = 1; }
-    if (t && t.status === 'falta' && base === 'A') { suf.push('AC'); n.revisar = 1; }
     if (t && (t.codigo === 'C4' || t.codigo === 'Ab4') && base === 'A') { suf.push(t.codigo); n.medio = 1; }
     if ([m, t].some((a) => a && a.incidencia === 'permiso') || (jrs || []).some((x) => x.tipo === 'permiso')) { suf.push('P'); n.permiso = 1; }
     if ([m, t].some((a) => a && a.incidencia === 'inactividad')) { suf.push('I'); n.inactividad = 1; }
@@ -2587,7 +2520,7 @@ async function ldDatos(from, to) {
   let qj = db('jornada_registros').gte('fecha', from).lte('fecha', to);
   const [att, emps, vacs, jr, days] = await Promise.all([
     qa.order('fecha').getAll(),
-    db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,puesto,area_id,group_id,status,fecha_ingreso,fecha_baja').in('status', ['activo', 'alta_pendiente', 'baja']).getAll(),
+    db('employees').select('id,num_empleado,nombre,apellido_paterno,apellido_materno,puesto,area_id,group_id,status,fecha_ingreso,fecha_baja').in('status', ['activo', 'alta_pendiente']   /* el personal con baja no se imprime */).getAll(),
     db('vacaciones').select('employee_id,fechas,fecha_inicio').eq('estado', 'aprobada').eq('tipo', 'disfrute').lte('fecha_inicio', to).getAll().catch(() => []),
     qj.getAll().catch(() => []),
     db('attendance_days').gte('fecha', from).lte('fecha', to).getAll().catch(() => []),
@@ -2679,11 +2612,11 @@ function ldHojasDiario(D, grupos, fecha) {
   return { sheets, resumen };
 }
 
-function ldHojasQuincena(D, grupos, days, titulo) {
+function ldHojasQuincena(D, grupos, days, titulo, encabezado = 'REPORTE QUINCENAL DE ASISTENCIA') {
   const hoy = todayMX(), usados = new Set(), sheets = [], resumen = [];
   for (const g of grupos) {
     const gente = ldEquipo(D, g, days); if (!gente.length) continue;
-    const rows = ldCabecera(g, 'REPORTE QUINCENAL DE ASISTENCIA', titulo);
+    const rows = ldCabecera(g, encabezado, titulo);
     const hr = rows.length + 1, nd = days.length;
     rows.push([...['No.', 'Nombre del agente', 'No. empleado'], ...days.map(ldDiaCol), ...LD_TOT.map(([, l]) => l)].map((h) => ({ v: h, s: XS.head })));
     const first = rows.length + 1, tot = ldSum();
@@ -2721,7 +2654,6 @@ const DPD_LEYENDA = [
   ['A', 'Asistió sin incidencias', 'Asistencia'],
   ['A / R', 'Asistió con retardo', 'Asistencia con incidencia'],
   ['A / SA', 'Asistió y tuvo salida anticipada', 'Asistencia con incidencia'],
-  ['A / AC', 'Asistió en la mañana y quedó ausente al cierre', 'Asistencia con incidencia'],
   ['A / P', 'Asistió y tuvo un permiso durante la jornada', 'Asistencia con incidencia'],
   ['A / I', 'Asistió con inactividad', 'Asistencia con incidencia'],
   ['A / DC', 'Asistió y tuvo una desconexión (Cobranza)', 'Asistencia con incidencia'],
@@ -2736,12 +2668,11 @@ const DPD_LEYENDA = [
   ['D', 'Descanso', 'Descanso (no es falta)'],
   ['V', 'Vacaciones aprobadas', 'Vacaciones (no es falta)'],
   ['NI', 'Nuevo ingreso: su primer día (puede ir junto a otro código, p. ej. A / NI)', 'Informativo'],
-  ['BAJA', 'Fecha de baja: ya no labora', 'Informativo (no es falta)'],
-  ['—', 'No laboraba ese día (antes de su ingreso o después de su baja)', 'No se cuenta'],
-  ['REV', 'Revisar: el pase de la mañana y el del cierre no coinciden, o falta el de la mañana', 'Pendiente de revisión'],
+  ['—', 'No laboraba ese día (antes de su fecha de ingreso)', 'No se cuenta'],
+  ['REV', 'Revisar: registro incompleto (p. ej. registros de jornada en un día sin asistencia)', 'Pendiente de revisión'],
   ['(vacío)', 'Sin registro de asistencia ese día', 'No es falta']
 ];
-const DPD_CORTA = 'Claves: A asistió sin incidencias · A / R retardo · A / SA salida anticipada · A / AC ausente al cierre · A / P permiso con asistencia · A / I inactividad · A / DC desconexión · A / OI otra incidencia · P permiso sin asistencia · F falta · C8 / Ab8 falta de día completo con / sin justificante · C4 / Ab4 medio día con / sin justificante · D descanso · V vacaciones · NI nuevo ingreso · BAJA fecha de baja · — no laboraba · REV revisar · vacío: sin registro (no es falta). Detalle completo al final de la hoja.';
+const DPD_CORTA = 'Claves: A asistió sin incidencias · A / R retardo · A / SA salida anticipada · A / P permiso con asistencia · A / I inactividad · A / DC desconexión · A / OI otra incidencia · P permiso sin asistencia · F falta · C8 / Ab8 falta de día completo con / sin justificante · C4 / Ab4 medio día con / sin justificante · D descanso · V vacaciones · NI nuevo ingreso · — no laboraba · REV revisar · vacío: sin registro (no es falta). Detalle completo al final de la hoja.';
 function dpdCodigo(D, e, d, hoy) {
   if (d > hoy) return '';
   const x = (D.rec[e.id] || {})[d]; const a = x && (x.m || x.t);
@@ -2800,7 +2731,7 @@ function dpdHoja(D, grupos, days, periodoTxt) {
   return {
     name: 'DÍA POR DÍA', rows, cols: [15, wB, wC, ...days.map(() => 10.5)],
     merges: [`A1:${last}1`, `A2:${last}2`], heights,
-    freeze: [3, 3], printRows: [3, 3], autoFilter: `A3:${last}${lastRow}`, portrait: days.length < 4, footer: ldPie(),
+    freeze: [3, 3], printRows: [3, 3], autoFilter: `A3:${last}${lastRow}`, portrait: days.length < 4, oficio: days.length > 16, footer: ldPie(),
     vacio: !filas.length
   };
 }
@@ -2809,81 +2740,77 @@ function imprimirAsistencia() {
   if (!grupos.length) return toast('No tienes equipos para consultar', true);
   const q = Number(t.slice(8)) <= 15 ? '1' : '2';
   const f = [
-    { k: 'modo', label: 'Reporte', type: 'select', val: 'dpd_q', options: [['dpd_q', 'Día por día · quincenal (una sola hoja)'], ['dpd_d', 'Día por día · diario (una sola hoja)'], ['quincenal', 'Por líder · quincenal (una hoja por líder)'], ['diario', 'Por líder · diario (una hoja por líder)'], ['resumen', 'Resumen por área (día o periodo)']] },
-    { k: 'grupo', label: 'Líder / equipo', type: 'select', val: '', options: [['', grupos.length > 1 ? 'Todos mis equipos' : groupLabel(grupos[0])], ...(grupos.length > 1 ? grupos.map((g) => [g.id, `${areaName(g.area_id)} · ${groupLabel(g)} — ${ldLider(g)}`]) : [])] },
+    { k: 'periodo', label: 'Periodo', type: 'select', val: 'quincena', options: [['dia', 'Por día'], ['quincena', 'Por quincena'], ['mes', 'Por mes']] },
     { k: 'fecha', label: 'Fecha', type: 'date', val: AS.fecha || t, max: t },
     { k: 'mes', label: 'Mes', type: 'month', val: t.slice(0, 7), max: t.slice(0, 7) },
-    { k: 'quin', label: 'Quincena', type: 'select', val: q, options: [['1', '1ra quincena (del 1 al 15)'], ['2', '2da quincena (del 16 al último día)']] }
+    { k: 'quin', label: 'Quincena', type: 'select', val: q, options: [['1', '1ra quincena (del 1 al 15)'], ['2', '2da quincena (del 16 al último día)']] },
+    { k: 'formato', label: 'Formato', type: 'select', val: 'dpd', options: [['dpd', 'Día por día (una sola hoja con todos)'], ['lider', 'Por líder (una hoja por equipo, con totales)'], ['area', 'Resumen por área (totales y % de asistencia)']] },
+    { k: 'grupo', label: 'Líder / equipo', type: 'select', val: '', options: [['', grupos.length > 1 ? 'Todos mis equipos' : groupLabel(grupos[0])], ...(grupos.length > 1 ? grupos.map((g) => [g.id, `${areaName(g.area_id)} · ${groupLabel(g)} — ${ldLider(g)}`]) : [])] }
   ];
   modal({
-    title: 'Imprimir / Exportar asistencia',
+    title: 'Descargar reporte de asistencia',
     body: fieldsHtml(f) + `<div class="small muted" id="ld_help" style="margin-top:8px"></div>`,
     actions: [{ label: 'Cancelar' }, { label: 'Descargar Excel', cls: 'primary', run: async ({ el }) => {
       const v = readFields(el, f);
-      if (v.modo === 'resumen') { setTimeout(reporteAsistencia, 0); return; }
-      const sel = v.grupo ? grupos.filter((g) => g.id === v.grupo) : grupos;
-      let days, nombre, out;
-      const areaTxt = ldSafe(new Set(sel.map((g) => g.area_id)).size === 1 ? areaName(sel[0].area_id) : 'Todas');
-      const eqTxt = v.grupo ? '_' + ldSafe(groupLabel(sel[0])) : '';
-      if (v.modo === 'dpd_d' || v.modo === 'dpd_q') {
-        if (v.modo === 'dpd_d') {
-          if (!v.fecha || !/^\d{4}-\d{2}-\d{2}$/.test(v.fecha)) throw new Error('Elige una fecha válida.');
-          if (v.fecha > t) throw new Error('No se puede generar un reporte de una fecha futura.');
-          days = [v.fecha];
-        } else {
-          if (!v.mes || !/^\d{4}-\d{2}$/.test(v.mes)) throw new Error('Elige un mes válido.');
-          const [y, mo] = v.mes.split('-').map(Number), fin = new Date(Date.UTC(y, mo, 0)).getUTCDate();
-          days = []; for (let d = v.quin === '1' ? 1 : 16; d <= (v.quin === '1' ? 15 : fin); d++) days.push(`${v.mes}-${String(d).padStart(2, '0')}`);
-          if (days[0] > t) throw new Error('Esa quincena todavía no empieza.');
-        }
-        const D = await ldDatos(days[0], days[days.length - 1]);
-        const [y, mo] = days[0].split('-').map(Number);
-        const per = v.modo === 'dpd_d' ? `${dayLabel(days[0]).toUpperCase()} · ${fmtDate(days[0])}`
-          : `DEL ${fmtDate(days[0])} AL ${fmtDate(days[days.length - 1])} · ${v.quin === '1' ? '1RA' : '2DA'} QUINCENA DE ${MESES[mo - 1].toUpperCase()} ${y}`;
-        const hoja = dpdHoja(D, sel, days, per);
-        if (hoja.vacio) throw new Error(v.grupo ? 'Ese equipo no tiene personal en ese periodo.' : 'Tus equipos no tienen personal en ese periodo.');
-        nombre = days.length === 1 ? `Asistencia_${days[0]}${v.grupo ? eqTxt : areaTxt === 'Todas' ? '' : '_' + areaTxt}.xlsx` : `Asistencia_${days[0]}_al_${days[days.length - 1]}${v.grupo ? eqTxt : areaTxt === 'Todas' ? '' : '_' + areaTxt}.xlsx`;
-        bajarArchivo(new File([xlsxBuild([hoja])], nombre, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
-        toast('Excel listo: ' + nombre);
-        return;
-      }
-      if (v.modo === 'diario') {
+      let days;
+      if (v.periodo === 'dia') {
         if (!v.fecha || !/^\d{4}-\d{2}-\d{2}$/.test(v.fecha)) throw new Error('Elige una fecha válida.');
         if (v.fecha > t) throw new Error('No se puede generar un reporte de una fecha futura.');
         days = [v.fecha];
-        const D = await ldDatos(v.fecha, v.fecha);
-        out = ldHojasDiario(D, sel, v.fecha);
-        if (out.sheets.length > 1) out.sheets.unshift(ldResumenHoja(out.resumen, 'REPORTE DIARIO DE ASISTENCIA · RESUMEN', `${ldDow(v.fecha)} ${fmtDate(v.fecha)}`));
-        nombre = `Asistencia_Diaria_${areaTxt}${eqTxt}_${v.fecha}.xlsx`;
       } else {
         if (!v.mes || !/^\d{4}-\d{2}$/.test(v.mes)) throw new Error('Elige un mes válido.');
         const [y, mo] = v.mes.split('-').map(Number), fin = new Date(Date.UTC(y, mo, 0)).getUTCDate();
-        const ini = v.quin === '1' ? 1 : 16, ult = v.quin === '1' ? 15 : fin;
+        const ini = v.periodo === 'mes' || v.quin === '1' ? 1 : 16, ult = v.periodo === 'quincena' && v.quin === '1' ? 15 : fin;
         days = []; for (let d = ini; d <= ult; d++) days.push(`${v.mes}-${String(d).padStart(2, '0')}`);
-        if (days[0] > t) throw new Error('Esa quincena todavía no empieza.');
-        const per = `${v.quin === '1' ? '1ra' : '2da'} quincena · del ${fmtDate(days[0])} al ${fmtDate(days[days.length - 1])}`;
-        const D = await ldDatos(days[0], days[days.length - 1]);
+        if (days[0] > t) throw new Error(v.periodo === 'mes' ? 'Ese mes todavía no empieza.' : 'Esa quincena todavía no empieza.');
+      }
+      const ini = days[0], fin = days[days.length - 1], [y, mo] = ini.split('-').map(Number);
+      const perLargo = v.periodo === 'dia' ? `${dayLabel(ini).toUpperCase()} · ${fmtDate(ini)}`
+        : v.periodo === 'mes' ? `MES DE ${MESES[mo - 1].toUpperCase()} ${y} · DEL ${fmtDate(ini)} AL ${fmtDate(fin)}`
+        : `DEL ${fmtDate(ini)} AL ${fmtDate(fin)} · ${v.quin === '1' ? '1RA' : '2DA'} QUINCENA DE ${MESES[mo - 1].toUpperCase()} ${y}`;
+      const perArch = v.periodo === 'dia' ? ini : v.periodo === 'mes' ? `${v.mes}_mes` : `${v.mes}_${v.quin === '1' ? '1ra' : '2da'}_quincena`;
+      const xlsx = (sheets, nombre) => { bajarArchivo(new File([xlsxBuild(sheets)], nombre, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })); toast('Excel listo: ' + nombre); };
+      if (v.formato === 'area') {
+        const D = await repDatos(ini, fin);
+        const area = AS.area ? '_' + ldSafe(areaName(AS.area)) : '';
+        return xlsx(v.periodo === 'dia' ? repHojasDia(D, ini) : repHojasPeriodo(D, days), `Asistencia_Resumen_${perArch}${area}.xlsx`);
+      }
+      const sel = v.grupo ? grupos.filter((g) => g.id === v.grupo) : grupos;
+      const areaTxt = ldSafe(new Set(sel.map((g) => g.area_id)).size === 1 ? areaName(sel[0].area_id) : 'Todas');
+      const sufijo = v.grupo ? '_' + ldSafe(groupLabel(sel[0])) : areaTxt === 'Todas' ? '' : '_' + areaTxt;
+      const D = await ldDatos(ini, fin);
+      if (v.formato === 'dpd') {
+        const hoja = dpdHoja(D, sel, days, perLargo);
+        if (hoja.vacio) throw new Error(v.grupo ? 'Ese equipo no tiene personal en ese periodo.' : 'Tus equipos no tienen personal en ese periodo.');
+        return xlsx([hoja], `Asistencia_${perArch}${sufijo}.xlsx`);
+      }
+      let out;
+      if (v.periodo === 'dia') {
+        out = ldHojasDiario(D, sel, ini);
+        if (out.sheets.length > 1) out.sheets.unshift(ldResumenHoja(out.resumen, 'REPORTE DIARIO DE ASISTENCIA · RESUMEN', `${ldDow(ini)} ${fmtDate(ini)}`));
+      } else {
+        const tit = v.periodo === 'mes' ? 'REPORTE MENSUAL DE ASISTENCIA' : 'REPORTE QUINCENAL DE ASISTENCIA';
+        const per = v.periodo === 'mes' ? `mes completo · del ${fmtDate(ini)} al ${fmtDate(fin)}` : `${v.quin === '1' ? '1ra' : '2da'} quincena · del ${fmtDate(ini)} al ${fmtDate(fin)}`;
         out = ldHojasQuincena(D, sel, days, [`Mes y año: ${MESES[mo - 1]} ${y}     ·     Periodo: ${per}`,
-          ...(days[days.length - 1] > t ? [`Quincena en curso: los días posteriores al ${fmtDate(t)} quedan en blanco.`] : [])]);
-        if (out.sheets.length > 1) out.sheets.unshift(ldResumenHoja(out.resumen, 'REPORTE QUINCENAL DE ASISTENCIA · RESUMEN', `${MESES[mo - 1]} ${y} · ${per}`));
-        nombre = `Asistencia_Quincenal_${areaTxt}${eqTxt}_${v.mes}_${v.quin === '1' ? '1ra' : '2da'}.xlsx`;
+          ...(fin > t ? [`Periodo en curso: los días posteriores al ${fmtDate(t)} quedan en blanco.`] : [])], tit);
+        if (out.sheets.length > 1) out.sheets.unshift(ldResumenHoja(out.resumen, tit + ' · RESUMEN', `${MESES[mo - 1]} ${y} · ${per}`));
       }
       if (!out.sheets.length) throw new Error(v.grupo ? 'Ese equipo no tiene agentes asignados en ese periodo.' : 'Tus equipos no tienen agentes asignados en ese periodo.');
-      bajarArchivo(new File([xlsxBuild(out.sheets)], nombre, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
-      toast('Excel listo: ' + nombre);
+      xlsx(out.sheets, `Asistencia_PorLider_${perArch}${sufijo}.xlsx`);
     } }]
   });
   const M = [...document.querySelectorAll('.modal-bg')].pop();
   const show = (k, on) => { $('#f_' + k, M).closest('label').style.display = on ? '' : 'none'; };
   const sync = () => {
-    const m = $('#f_modo', M).value;
-    show('grupo', m !== 'resumen'); show('fecha', m === 'diario' || m === 'dpd_d'); show('mes', m === 'quincenal' || m === 'dpd_q'); show('quin', m === 'quincenal' || m === 'dpd_q');
-    $('#ld_help', M).innerHTML = m.startsWith('dpd') ? 'Formato DÍA POR DÍA: una sola hoja con Área, Equipo · Líder, Nombre y una columna por fecha. Incluye el significado de cada código al final. Quincenal: 1ra del 1 al 15; 2da del 16 al último día del mes.'
-      : m === 'diario' ? 'Una hoja por líder con No., nombre, estado del día (código corto) y observaciones. Encabezado con empresa, departamento, líder, fecha y hora de generación.'
-      : m === 'quincenal' ? 'Una hoja por líder con una columna por día (día y mes) y totales por agente. 1ra quincena: 1 al 15; 2da: 16 al último día del mes.'
-      : 'Abre el reporte por área (resumen por día o por periodo).';
+    const p = $('#f_periodo', M).value, fm = $('#f_formato', M).value;
+    show('fecha', p === 'dia'); show('mes', p !== 'dia'); show('quin', p === 'quincena'); show('grupo', fm !== 'area');
+    $('#ld_help', M).innerHTML = (fm === 'dpd' ? '<b>Día por día:</b> una sola hoja con Área, Equipo · Líder, Nombre y una columna por fecha.'
+      : fm === 'lider' ? '<b>Por líder:</b> una hoja por equipo con No., nombre y ' + (p === 'dia' ? 'el estado del día con observaciones.' : 'una columna por día y totales por agente.')
+      : '<b>Resumen por área:</b> totales por área y equipo (debe ser, presentes, faltas, retardos…) y % de asistencia.')
+      + ' Cada día muestra solo el pase de asistencia; si hubo una incidencia va después de la diagonal (p. ej. A / R, A / DC).'
+      + (p === 'quincena' ? ' 1ra quincena: del 1 al 15; 2da: del 16 al último día del mes.' : p === 'mes' ? ' Mes completo (del 1 al último día).' : '');
   };
-  $('#f_modo', M).onchange = sync; sync();
+  $('#f_periodo', M).onchange = sync; $('#f_formato', M).onchange = sync; sync();
 }
 
 // ───── Respaldo completo (solo Daniel): todas las tablas, usuarios, archivos y la app publicada en un ZIP ─────
@@ -6580,7 +6507,7 @@ function xlsxSheet(sh) {
   const merges = sh.merges && sh.merges.length ? `<mergeCells count="${sh.merges.length}">${sh.merges.map((m) => `<mergeCell ref="${m}"/>`).join('')}</mergeCells>` : '';
   const filtro = sh.autoFilter ? `<autoFilter ref="${sh.autoFilter}"/>` : '';
   const pie = sh.footer ? `<headerFooter><oddFooter>${xmlEsc(sh.footer)}</oddFooter></headerFooter>` : '';
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><sheetViews><sheetView workbookViewId="0"${sh.zoom ? ` zoomScale="${sh.zoom}"` : ''}>${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/>${cols}<sheetData>${rows}</sheetData>${filtro}${merges}<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/><pageSetup orientation="${sh.portrait ? 'portrait' : 'landscape'}" fitToWidth="1" fitToHeight="0"/>${pie}</worksheet>`;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><sheetViews><sheetView workbookViewId="0"${sh.zoom ? ` zoomScale="${sh.zoom}"` : ''}>${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/>${cols}<sheetData>${rows}</sheetData>${filtro}${merges}<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/><pageSetup${sh.oficio ? ' paperSize="5"' : ''} orientation="${sh.portrait ? 'portrait' : 'landscape'}" fitToWidth="1" fitToHeight="0"/>${pie}</worksheet>`;
 }
 // Nombres definidos: filas que se repiten al imprimir y rango del filtro
 function xlsxNames(sheets) {
