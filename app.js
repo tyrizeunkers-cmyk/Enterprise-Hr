@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.38.0';
+const APP_VERSION = '0.39.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -1455,6 +1455,7 @@ async function viewPersonal() {
   ${cambios.length ? `<div class="card pad" style="margin-bottom:12px;border-color:var(--accent)"><div class="eyebrow" style="margin-bottom:6px;color:var(--accent)">Cambios de equipo solicitados (${cambios.length})${is('developer', 'rh_general', 'rh_area') ? ' · acepta o rechaza' : ' · esperando a RH'}</div><div class="list">${cambios.map((x) => { const e = emps.find((y) => y.id === x.employee_id); const de = S.groups.find((g) => g.id === x.de_group), a = S.groups.find((g) => g.id === x.a_group);
     return `<div class="item" style="gap:8px;flex-wrap:wrap"><span class="grow" style="min-width:0"><span class="nm">${esc(e ? fullName(e) : 'Persona')}</span><br><span class="small muted">${esc(de ? groupLabel(de) : 'sin equipo')} → <b>${esc(a ? groupLabel(a) : 'otro equipo')}</b> · pidió ${esc(profName(x.solicitado_by))} · ${fmtDateTime(x.solicitado_at)}</span><br><span class="small">“${esc(x.motivo)}”</span></span>
       ${is('developer', 'rh_general', 'rh_area') ? `<button type="button" class="btn sm" data-cer="${x.id}">Rechazar</button><button type="button" class="btn sm primary" data-cea="${x.id}">Aceptar</button>` : '<span class="badge b-warn">Pendiente</span>'}</div>`; }).join('')}</div></div>` : ''}
+  ${(() => { const sg = emps.filter((e) => ['activo', 'alta_pendiente'].includes(e.status) && !e.group_id); return sg.length ? `<div class="notice n-warn" style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="grow"><b>${sg.length} ${sg.length === 1 ? 'persona sin grupo' : 'personas sin grupo'}</b> (no aparecen en ningún pase de lista): ${sg.slice(0, 12).map((e) => `<a href="#" data-sgp="${e.id}">${esc(fullName(e))}</a>`).join(' · ')}${sg.length > 12 ? ' …' : ''}</span><button type="button" class="btn sm" id="p_sg">Ver solo sin grupo</button></div>` : ''; })()}
   <div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
     <input class="inp" id="pq" type="search" placeholder="Buscar por nombre, número o puesto" value="${esc(PS.q)}" aria-label="Buscar">
     <div class="row">
@@ -1482,6 +1483,8 @@ async function viewPersonal() {
   $$('[data-st]').forEach((b) => b.onclick = () => { PS.status = b.dataset.st; viewPersonal(); });
   if ($('#pa')) $('#pa').onchange = (e) => { PS.area = e.target.value; PS.group = ''; viewPersonal(); };
   $('#pg').onchange = (e) => { PS.group = e.target.value; draw(); };
+  if ($('#p_sg')) $('#p_sg').onclick = () => { PS.group = 'none'; PS.status = ''; PS.area = ''; viewPersonal(); };
+  $$('[data-sgp]').forEach((a) => a.onclick = (ev) => { ev.preventDefault(); openEmployee(a.dataset.sgp, fx); });
   if ($('#newEmp')) $('#newEmp').onclick = () => altaForm();
   if ($('#repAB')) $('#repAB').onclick = () => reporteAltasBajas();
   $$('[data-cea]').forEach((b) => b.onclick = async () => { b.disabled = true; try { await rpc('cambio_equipo_resolver', { p_id: b.dataset.cea, p_aprobar: true, p_nota: null }); toast('Cambio aceptado'); await loadCatalogs(); viewPersonal(); } catch (e) { toast(e.message, true); b.disabled = false; } });
@@ -1877,7 +1880,8 @@ const EXP_TABS = {
       return out;
     };
     const items = hs.map((h) => ({ h, d: desc(h) })).filter((x) => x.d.length);
-    body.innerHTML = card(`Historial de movimientos (${items.length})`, items.length ? `<div class="ex-tl">${items.map(({ h, d }) => `<div class="ex-ev"><div class="small muted">${fmtDateTime(h.at)} · ${esc(h.user_name || 'Sistema')}${h.user_role ? ' (' + esc(ROLES[h.user_role] || h.user_role) + ')' : ''}</div>${d.map((x) => `<div>${esc(x)}</div>`).join('')}</div>`).join('')}</div>` : '<span class="small muted">Sin movimientos registrados.</span>');
+    body.innerHTML = (myViews().some(([k]) => k === 'bitacora') ? `<div class="row" style="justify-content:flex-end;margin-bottom:8px"><button class="btn sm" id="ex_bit">Ver todo en la Bitácora</button></div>` : '') + card(`Historial de movimientos (${items.length})`, items.length ? `<div class="ex-tl">${items.map(({ h, d }) => `<div class="ex-ev"><div class="small muted">${fmtDateTime(h.at)} · ${esc(h.user_name || 'Sistema')}${h.user_role ? ' (' + esc(ROLES[h.user_role] || h.user_role) + ')' : ''}</div>${d.map((x) => `<div>${esc(x)}</div>`).join('')}</div>`).join('')}</div>` : '<span class="small muted">Sin movimientos registrados.</span>');
+    if ($('#ex_bit', body)) $('#ex_bit', body).onclick = () => bitacoraDe(e.id);
   }
 };
 
@@ -2262,7 +2266,7 @@ async function viewAsistencia() {
           return `<tr${dif ? ' class="dif"' : ''}><td>${esc(fullName(e))}${e.status === 'alta_pendiente' ? ' <span class="badge b-warn">alta pendiente</span>' : ''}${dif ? `<br><span class="small" style="color:var(--warn);font-weight:600">${esc(dif)}</span>` : ''}</td><td>${cell(a)}</td><td>${cell(t)}</td></tr>`; }).join('')}</tbody></table>` : '<span class="muted">Sin personal</span>'}
         ${canWriteAttendance() && writableGroups().some((x) => x.id === r.g.id) ? `<button class="btn sm ghost" data-goto="${r.g.id}" style="margin-top:8px">Abrir pase de lista</button>` : ''}</td></tr>` : ''}`).join('') || '<tr><td colspan="8" class="empty">Sin grupos</td></tr>'}
   </tbody></table></div>
-  ${noGroup ? `<div class="small muted" style="margin-top:8px">${noGroup} personas activas sin grupo asignado (no aparecen en ningún pase de lista).</div>` : ''}`;
+  ${noGroup ? `<div class="notice n-warn" style="margin-top:10px"><b>${noGroup} ${noGroup === 1 ? 'persona activa sin grupo' : 'personas activas sin grupo'}</b> (no aparecen en ningún pase de lista): ${emps.filter((e) => !e.group_id).sort(sortName).map((e) => `<a href="#/expediente/${e.id}">${esc(fullName(e))}</a>`).join(' · ')}</div>` : ''}`;
   $('#as_date').onchange = (e) => { if (e.target.value && e.target.value <= todayMX()) { AS.fecha = e.target.value; viewAsistencia(); } };
   if ($('#as_area')) $('#as_area').onchange = (e) => { AS.area = e.target.value; viewAsistencia(); };
   $$('tr[data-g]').forEach((tr) => tr.onclick = (ev) => { if (ev.target.closest('button')) return; AS.open = AS.open === tr.dataset.g ? null : tr.dataset.g; viewAsistencia(); });
@@ -2478,7 +2482,7 @@ function ldMarca(e, d, code, x) {
 }
 const ldStyle = (code) => !code || code === '—' || code === 'OE' ? XS.code : /REV/.test(code) ? XS.codeRev : /\b(NI|BAJA)\b/.test(code) ? XS.codeV : /^(F|C8|Ab8)/.test(code) ? XS.codeF
   : /^(D|V)$/.test(code) ? (code === 'V' ? XS.codeV : XS.codeD) : / \/ |^(C4|Ab4|P|I)$/.test(code) ? XS.codeR : XS.code;
-const ldSum = () => ({ asist: 0, retardo: 0, salida: 0, falta: 0, c8: 0, descanso: 0, vacaciones: 0, permiso: 0, medio: 0, inactividad: 0, sin: 0, revisar: 0 });
+const ldSum = () => ({ trab: 0, asist: 0, retardo: 0, salida: 0, falta: 0, c8: 0, descanso: 0, vacaciones: 0, permiso: 0, medio: 0, inactividad: 0, sin: 0, revisar: 0 });
 // Código de un día: mañana (manda), cierre, vacaciones aprobadas y registros de jornada no anulados
 function ldCelda(m, t, vac, jrs) {
   const obs = [], suf = [], n = ldSum();
@@ -2509,6 +2513,7 @@ function ldCelda(m, t, vac, jrs) {
     if ((jrs || []).some((x) => x.tipo === 'otra')) suf.push('OI');
   } else if ((jrs || []).length && base !== 'V') { n.revisar = 1; if (!suf.includes('REV')) suf.push('REV'); obs.push('Tiene registros de jornada en un día sin asistencia: confirmar'); }
   if (!base) n.sin = 1;
+  n.trab = base === 'A' ? 1 : base === 'C4' || base === 'Ab4' ? 0.5 : 0;
   if (m) nota(m, 'Mañana'); if (t) nota(t, 'Cierre');
   if (m && m.aviso) obs.push('Aviso: ' + AVISO[m.aviso]);
   (jrs || []).forEach((x) => obs.push(jrResumen(x) + (x.estado === 'pendiente_regreso' ? ' · pendiente de regreso' : x.estado === 'abierta' ? ' · abierta' : '')));
@@ -2570,7 +2575,8 @@ function ldHojaNombre(g, usados) {
 }
 const ldDow = (d) => ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'][new Date(d + 'T12:00:00Z').getUTCDay()];
 const ldDiaCol = (d) => `${ldDow(d)} ${d.slice(8)}/${d.slice(5, 7)}`;
-const LD_TOT = [['asist', 'Asistencias'], ['retardo', 'Retardos'], ['salida', 'Salidas antic.'], ['falta', 'Faltas'], ['c8', 'De ellas C8 (justif.)'], ['descanso', 'Descansos'], ['vacaciones', 'Vacaciones'], ['permiso', 'Permisos'], ['medio', 'Medio día C4/Ab4'], ['inactividad', 'Inactividad'], ['sin', 'Sin registro'], ['revisar', 'Revisar']];
+const LD_TOT = [['asist', 'Asistencias'], ['retardo', 'Retardos'], ['salida', 'Salidas antic.'], ['falta', 'Faltas'], ['c8', 'De ellas C8 (justif.)'], ['descanso', 'Descansos'], ['vacaciones', 'Vacaciones'], ['permiso', 'Permisos'], ['medio', 'Medio día C4/Ab4'], ['inactividad', 'Inactividad'], ['sin', 'Sin registro'], ['revisar', 'Revisar'], ['trab', 'Días trabajados']];
+const ldNum = (v) => (Number.isInteger(v) ? XS.int : XS.dec);   // medio día deja .5
 const ldAdd = (s, n) => Object.keys(s).forEach((k) => { s[k] += n[k] || 0; });
 const ldLeyenda = (rows) => { rows.push([], [{ v: 'CLAVES', s: XS.bold }]); LD_CLAVES.forEach(([k, v]) => rows.push([null, { v: k, s: XS.code }, { v, s: XS.base }])); };
 const ldPie = () => '&L' + ldEmpresa().replace(/&/g, '&&') + ' · Asistencia&RPágina &P de &N';
@@ -2604,7 +2610,7 @@ function ldHojasDiario(D, grupos, fecha) {
     });
     const last = rows.length;
     rows.push([], [{ v: 'TOTALES DEL EQUIPO', s: XS.bold }]);
-    LD_TOT.forEach(([k, l]) => rows.push([null, { v: l, s: XS.text }, { v: tot[k], s: XS.int }]));
+    LD_TOT.forEach(([k, l]) => rows.push([null, { v: l, s: XS.text }, { v: tot[k], s: ldNum(tot[k]) }]));
     ldLeyenda(rows);
     sheets.push({ name: ldHojaNombre(g, usados), cols: [6, 36, 12, 24, 14, 70], rows, merges: ldMerge(6), freeze: [0, hr], printRows: [hr, hr], autoFilter: `A${hr}:F${last}`, footer: ldPie() });
     resumen.push({ g, n: gente.length, tot });
@@ -2624,10 +2630,10 @@ function ldHojasQuincena(D, grupos, days, titulo, encabezado = 'REPORTE QUINCENA
     gente.forEach((e, i) => {
       const s = ldSum(); const cells = days.map((d) => { const c = ldDia(D, e, g, d, hoy); ldAdd(s, c.n); if (c.obs && !['OE', '—'].includes(c.code)) obsAll.push([fullName(e), d, c.code, c.obs]); return { v: c.code, s: ldStyle(c.code) }; });
       ldAdd(tot, s);
-      rows.push([{ v: i + 1, s: XS.int }, { v: fullName(e), s: XS.text }, { v: e.num_empleado || '', s: XS.text }, ...cells, ...LD_TOT.map(([k]) => ({ v: s[k], s: XS.int }))]);
+      rows.push([{ v: i + 1, s: XS.int }, { v: fullName(e), s: XS.text }, { v: e.num_empleado || '', s: XS.text }, ...cells, ...LD_TOT.map(([k]) => ({ v: s[k], s: ldNum(s[k]) }))]);
     });
     const last = rows.length;
-    rows.push([null, { v: 'TOTAL DEL EQUIPO', s: XS.bold }, null, ...days.map(() => null), ...LD_TOT.map(([k], j) => { const c = colL(3 + nd + j); return { f: `SUM(${c}${first}:${c}${last})`, v: tot[k], s: XS.intB }; })]);
+    rows.push([null, { v: 'TOTAL DEL EQUIPO', s: XS.bold }, null, ...days.map(() => null), ...LD_TOT.map(([k], j) => { const c = colL(3 + nd + j); return { f: `SUM(${c}${first}:${c}${last})`, v: tot[k], s: Number.isInteger(tot[k]) ? XS.intB : XS.dec }; })]);
     if (obsAll.length) {
       rows.push([], [{ v: 'OBSERVACIONES DEL PERIODO', s: XS.bold }]);
       const h = []; ['Agente', 'Fecha', 'Código', 'Detalle'].forEach((x, j) => { h[j + 1] = { v: x, s: XS.head }; }); rows.push(h); obsMerge.push(rows.length);
@@ -2642,7 +2648,7 @@ function ldHojasQuincena(D, grupos, days, titulo, encabezado = 'REPORTE QUINCENA
 function ldResumenHoja(resumen, titulo, sub) {
   const rows = [[{ v: ldEmpresa(), s: XS.title }], [{ v: titulo, s: XS.title }], [{ v: sub, s: XS.bold }], []];
   rows.push(['Departamento', 'Equipo', 'Líder', 'Agentes', ...LD_TOT.map(([, l]) => l)].map((h) => ({ v: h, s: XS.head })));
-  resumen.forEach((x) => rows.push([{ v: areaName(x.g.area_id), s: XS.text }, { v: groupLabel(x.g), s: XS.text }, { v: ldLider(x.g), s: XS.text }, { v: x.n, s: XS.int }, ...LD_TOT.map(([k]) => ({ v: x.tot[k], s: XS.int }))]));
+  resumen.forEach((x) => rows.push([{ v: areaName(x.g.area_id), s: XS.text }, { v: groupLabel(x.g), s: XS.text }, { v: ldLider(x.g), s: XS.text }, { v: x.n, s: XS.int }, ...LD_TOT.map(([k]) => ({ v: x.tot[k], s: ldNum(x.tot[k]) }))]));
   rows.push([], [{ v: 'Cada día de cada persona se cuenta una sola vez, en el equipo donde quedó registrado. “Sin registro” solo se cuenta en días en que el equipo sí pasó lista y nunca se cuenta como falta. Faltas = Falta, C8 y Ab8 de la mañana (misma regla que la pre-nómina).', s: XS.sub }]);
   return { name: 'RESUMEN', cols: [16, 22, 26, 9, ...LD_TOT.map(() => 11)], rows, merges: ldMerge(4 + LD_TOT.length), freeze: [0, 5], printRows: [5, 5], autoFilter: `A5:${colL(3 + LD_TOT.length)}${4 + resumen.length + 1}`, footer: ldPie() };
 }
@@ -2699,14 +2705,16 @@ function dpdHoja(D, grupos, days, periodoTxt) {
   }
   const ordG = (g) => `${areaName(g.area_id)}|${g.tipo === 'lideres' ? '0' : '1'}${groupLabel(g)}`;
   filas.sort((a, b) => ordG(a.g).localeCompare(ordG(b.g), 'es') || sortName(a.e, b.e));
-  const nCol = 3 + days.length, last = colL(nCol - 1);
+  const nCol = 4 + days.length, last = colL(nCol - 1);
+  // Días trabajados: A (con o sin incidencia) = 1; medio día C4/Ab4 = 0.5
+  const trab = (cods) => cods.reduce((t, c) => t + (/^A( |$)/.test(c) ? 1 : /^(C4|Ab4)( |$)/.test(c) ? 0.5 : 0), 0);
   const eqTxt = (g) => `${groupLabel(g)} · Líder: ${ldLider(g)}`;
   const rows = [
     [{ v: `${ldEmpresa()} · REPORTE DE ASISTENCIA · ${periodoTxt}`, s: XS.titleW }],
     [{ v: DPD_CORTA, s: XS.wrap }],
-    [{ v: 'Área', s: XS.head }, { v: 'Equipo · Líder', s: XS.head }, { v: 'Nombre del empleado', s: XS.head }, ...days.map((d) => ({ v: dayLabel(d), s: XS.head }))]
+    [{ v: 'Área', s: XS.head }, { v: 'Equipo · Líder', s: XS.head }, { v: 'Nombre del empleado', s: XS.head }, ...days.map((d) => ({ v: dayLabel(d), s: XS.head })), { v: 'Días trabajados', s: XS.head }]
   ];
-  filas.forEach((f) => rows.push([{ v: areaName(f.g.area_id), s: XS.text }, { v: eqTxt(f.g), s: XS.text }, { v: fullName(f.e), s: XS.text }, ...f.cods.map((c) => ({ v: c, s: ldStyle(c) }))]));
+  filas.forEach((f) => rows.push([{ v: areaName(f.g.area_id), s: XS.text }, { v: eqTxt(f.g), s: XS.text }, { v: fullName(f.e), s: XS.text }, ...f.cods.map((c) => ({ v: c, s: ldStyle(c) })), (() => { const n = trab(f.cods); return { v: n, s: ldNum(n) }; })()]));
   const lastRow = rows.length;
   rows.push([], [{ v: 'SIGNIFICADO DE LOS CÓDIGOS', s: XS.bold }], [{ v: 'Código', s: XS.head }, { v: 'Qué significa', s: XS.head }, { v: 'Cómo se cuenta', s: XS.head }]);
   const leyIni = rows.length + 1;
@@ -2716,6 +2724,7 @@ function dpdHoja(D, grupos, days, periodoTxt) {
     'Cada fila es una persona; la columna "Equipo · Líder" indica el equipo al que pertenece y quién lo dirige.',
     'Los códigos salen de los pases de lista, permisos, descansos, vacaciones aprobadas, altas y bajas registrados en la app. Un día sin registro queda vacío y no se cuenta como falta.',
     'Lo que va después de la diagonal (A / R, A / SA, A / P…) es la incidencia del día, no el pase de la tarde.',
+    'Días trabajados: cada día con asistencia (A, con o sin incidencia) cuenta 1 y cada medio día (C4 / Ab4) cuenta 0.5. Faltas, descansos, vacaciones, permisos sin asistencia y días sin registro no cuentan.',
     ...(days[days.length - 1] > hoy ? [`Periodo en curso: los días posteriores al ${fmtDate(hoy)} todavía no ocurren y quedan vacíos.`] : []),
     ...(cambios.length ? ['Cambios de equipo en el periodo (el código de esos días sí aparece en su fila): ' + cambios.join(' · ')] : []),
     `Generado el ${fmtDateTime(new Date().toISOString())} por ${S.me.full_name || ''}.`
@@ -2724,12 +2733,12 @@ function dpdHoja(D, grupos, days, periodoTxt) {
   // Anchos según el contenido para que ningún nombre, equipo o líder se corte
   const wB = Math.max(16, Math.min(48, ...filas.map((f) => eqTxt(f.g).length + 2)));
   const wC = Math.max(22, Math.min(44, ...filas.map((f) => fullName(f.e).length + 2)));
-  const anchoTot = 15 + wB + wC + days.length * 10.5;
+  const anchoTot = 15 + wB + wC + days.length * 10.5 + 11;
   const lin = (txt, ancho) => Math.max(1, Math.ceil(txt.length / ancho));
   const heights = Object.assign([], { 0: 20 * lin(rows[0][0].v, anchoTot / 1.45) + 6, 1: 13 * lin(DPD_CORTA, anchoTot) + 6, 2: 30 });
   DPD_LEYENDA.forEach(([, s1], i) => { const n = lin(s1, wB); if (n > 1) heights[leyIni - 1 + i] = 12.5 * n + 1; });
   return {
-    name: 'DÍA POR DÍA', rows, cols: [15, wB, wC, ...days.map(() => 10.5)],
+    name: 'DÍA POR DÍA', rows, cols: [15, wB, wC, ...days.map(() => 10.5), 11],
     merges: [`A1:${last}1`, `A2:${last}2`], heights,
     freeze: [3, 3], printRows: [3, 3], autoFilter: `A3:${last}${lastRow}`, portrait: days.length < 4, oficio: days.length > 16, footer: ldPie(),
     vacio: !filas.length
@@ -3109,22 +3118,96 @@ function simpleForm(title, fields, save, note) {
 }
 
 // ───────────────────────── Bitácora ─────────────────────────
-const BS = { fecha: null, user: '' };
+const BS = { periodo: 'dia', fecha: null, desde: null, hasta: null, modulo: 'importantes', emp: '', user: '', off: 0 };
+const BIT_MOD = { importantes: 'Movimientos importantes (sin pase de lista)', personal: 'Personal: altas, bajas y cambios de equipo', asistencia: 'Asistencia y jornada', cierre: 'Cierre y actividad', documentos: 'Documentos', reclutamiento: 'Reclutamiento', nomina: 'Nómina', usuarios: 'Usuarios y permisos', grupos: 'Áreas y grupos', todos: 'Todo' };
+const BIT_ENT = { employees: 'Personal', employee_private: 'Personal', retiros_lista: 'Personal', cambios_equipo: 'Personal', attendance: 'Asistencia', attendance_days: 'Asistencia', jornada_registros: 'Asistencia', vacaciones: 'Asistencia', activity_daily: 'Cierre', corrections: 'Cierre', area_metrics: 'Cierre', documents: 'Documentos', doc_templates: 'Documentos', expediente_archivos: 'Documentos', candidatos: 'Reclutamiento', vacantes: 'Reclutamiento', nomina_lineas: 'Nómina', nomina_periodos: 'Nómina', nomina_finiquitos: 'Nómina', nomina_pagos: 'Nómina', profiles: 'Usuarios', user_areas: 'Usuarios', groups: 'Grupos', areas: 'Grupos', chat_mensajes: 'Mensajes' };
+const BIT_PAGE = 300;
+// Empleado al que se refiere un movimiento (para el filtro y el enlace "ver su historial")
+const logEmp = (l) => { const a = l.after || {}, b = l.before || {};
+  if (['employees', 'employee_private'].includes(l.entity)) return l.record_id;
+  return a.employee_id || b.employee_id || a._employee_id || (/^[0-9a-f-]{36}\|/.test(l.record_id || '') ? l.record_id.slice(0, 36) : null); };
+// Rango de fechas del filtro (hora de México)
+function bitRango() {
+  const t = todayMX(), f = BS.fecha || t;
+  if (BS.periodo === 'todo') return ['2020-01-01', addDays(t, 1), 'Todo el historial'];
+  if (BS.periodo === 'semana') { const dow = (new Date(f + 'T12:00:00Z').getUTCDay() + 6) % 7, ini = addDays(f, -dow); return [ini, addDays(ini, 7), `Semana del ${fmtDate(ini)} al ${fmtDate(addDays(ini, 6))}`]; }
+  if (BS.periodo === 'mes') { const ini = f.slice(0, 8) + '01', [y, m] = f.split('-').map(Number), fin = new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10); return [ini, fin, `${MESES[m - 1]} ${y}`]; }
+  if (BS.periodo === 'rango') { const d = BS.desde || f, h = BS.hasta || f; return [d, addDays(h, 1), `Del ${fmtDate(d)} al ${fmtDate(h)}`]; }
+  return [f, addDays(f, 1), dayLabel(f)];
+}
+const bitQuery = (off, lim) => { const [d, h] = bitRango(); return rpc('bitacora_buscar', { p_desde: `${d}T00:00:00-06:00`, p_hasta: `${h}T00:00:00-06:00`, p_modulo: BS.modulo, p_emp: BS.emp || null, p_user: BS.user || null, p_limit: lim, p_offset: off }); };
 async function viewBitacora() {
   const v = $('#view');
   if (!BS.fecha) BS.fecha = todayMX();
-  const start = `${BS.fecha}T00:00:00-06:00`, end = `${addDays(BS.fecha, 1)}T00:00:00-06:00`;
-  let qq = db('audit_log').gte('at', start).lt('at', end).order('at', false).limit(1000);
-  if (BS.user) qq = qq.eq('user_id', BS.user);
-  const [logs, emps] = await Promise.all([qq.get(), EMP_CACHE.length ? Promise.resolve(EMP_CACHE) : db('employees').select('id,nombre,apellido_paterno,apellido_materno').get()]);
+  if (BS.periodo === 'todo' && !BS.emp) BS.periodo = 'mes';
+  BS.off = 0;
+  const [logs, emps] = await Promise.all([bitQuery(0, BIT_PAGE), db('employees').select('id,nombre,apellido_paterno,apellido_materno,status,area_id,group_id').getAll()]);
   const empName = Object.fromEntries(emps.map((e) => [e.id, fullName(e)]));
-  v.innerHTML = `<div class="pagehead"><div><h1>Bitácora</h1><div class="muted small">${logs.length} movimientos · ${dayLabel(BS.fecha)}</div></div>
-    <div class="row"><input type="date" class="inp mono" id="bl_d" value="${BS.fecha}" max="${todayMX()}" aria-label="Fecha">
-    <select class="inp" id="bl_u" aria-label="Usuario"><option value="">Todos los usuarios</option>${S.profiles.map((p) => `<option value="${p.id}"${BS.user === p.id ? ' selected' : ''}>${esc(p.full_name)}</option>`).join('')}</select></div></div>
-  <div class="card pad">${logs.length ? logs.map((l) => `<div class="log"><span class="tm">${fmtTime(l.at)}</span><span class="grow"><b>${esc(l.user_name || 'Sistema')}</b>${l.user_role ? ` <span class="small muted">${esc(ROLES[l.user_role])}</span>` : ''}<br>${describeLog(l, empName)}</span></div>`).join('') : '<div class="empty">Sin movimientos este día</div>'}</div>`;
-  $('#bl_d').onchange = (e) => { if (e.target.value) { BS.fecha = e.target.value; viewBitacora(); } };
+  const sinGrupo = emps.filter((e) => ['activo', 'alta_pendiente'].includes(e.status) && !e.group_id).sort(sortName);
+  const [, , perTxt] = bitRango();
+  const empSel = BS.emp ? emps.find((e) => e.id === BS.emp) : null;
+  const t = todayMX();
+  v.innerHTML = `<div class="pagehead"><div><h1>Bitácora</h1><div class="muted small" id="bl_cnt"></div></div>
+    <div class="row"><button class="btn" id="bl_x">Descargar Excel</button></div></div>
+  ${sinGrupo.length ? `<div class="notice n-warn" style="margin-bottom:12px"><b>${sinGrupo.length} ${sinGrupo.length === 1 ? 'persona activa sin grupo' : 'personas activas sin grupo'}</b> (no aparecen en ningún pase de lista): ${sinGrupo.map((e) => `<a href="#" data-sg="${e.id}">${esc(fullName(e))}</a> (${esc(areaName(e.area_id))})`).join(' · ')}</div>` : ''}
+  <div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <select class="inp" id="bl_m" aria-label="Módulo" style="flex:1 1 220px">${Object.entries(BIT_MOD).map(([k, l]) => `<option value="${k}"${BS.modulo === k ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>
+      <select class="inp" id="bl_p" aria-label="Periodo" style="flex:0 1 150px">${[['dia', 'Por día'], ['semana', 'Por semana'], ['mes', 'Por mes'], ['rango', 'Rango de fechas'], ...(BS.emp ? [['todo', 'Todo el historial']] : [])].map(([k, l]) => `<option value="${k}"${BS.periodo === k ? ' selected' : ''}>${l}</option>`).join('')}</select>
+      ${BS.periodo === 'rango' ? `<input type="date" class="inp mono" id="bl_d1" value="${BS.desde || BS.fecha}" max="${t}" aria-label="Desde"><input type="date" class="inp mono" id="bl_d2" value="${BS.hasta || BS.fecha}" max="${t}" aria-label="Hasta">`
+        : BS.periodo === 'mes' ? `<input type="month" class="inp mono" id="bl_mes" value="${BS.fecha.slice(0, 7)}" max="${t.slice(0, 7)}" aria-label="Mes">`
+        : BS.periodo === 'todo' ? '' : `<input type="date" class="inp mono" id="bl_d" value="${BS.fecha}" max="${t}" aria-label="Fecha">`}
+    </div>
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <input class="inp" id="bl_e" list="bl_el" placeholder="Persona (escribe su nombre)" value="${empSel ? esc(fullName(empSel)) : ''}" aria-label="Persona" style="flex:1 1 220px">
+      <datalist id="bl_el">${emps.slice().sort(sortName).map((e) => `<option value="${esc(fullName(e))}">${e.status === 'baja' ? 'Baja' : ''}</option>`).join('')}</datalist>
+      ${BS.emp ? '<button class="btn sm ghost" id="bl_ex">Quitar persona</button>' : ''}
+      <select class="inp" id="bl_u" aria-label="Quién lo hizo" style="flex:0 1 220px"><option value="">Lo hizo: cualquier usuario</option>${S.profiles.map((p) => `<option value="${p.id}"${BS.user === p.id ? ' selected' : ''}>${esc(p.full_name)}</option>`).join('')}</select>
+    </div>
+  </div>
+  <div class="card pad" id="bl_list"></div>
+  <div class="row" style="justify-content:center;margin-top:10px"><button class="btn" id="bl_more" style="display:none">Cargar más</button></div>`;
+  const all = logs.slice();
+  const draw = (hayMas) => {
+    $('#bl_cnt').textContent = `${all.length}${hayMas ? '+' : ''} movimientos · ${perTxt}${empSel ? ' · ' + fullName(empSel) : ''} · ${BIT_MOD[BS.modulo]}`;
+    let dia = '';
+    $('#bl_list').innerHTML = all.length ? all.map((l) => { const d = new Date(l.at).toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
+      const head = d !== dia ? `<div class="eyebrow" style="margin:${dia ? '14px' : '0'} 0 6px">${esc(dayLabel(d))} · ${fmtDate(d)}</div>` : ''; dia = d;
+      const em = logEmp(l);
+      return `${head}<div class="log"><span class="tm">${fmtTime(l.at)}</span><span class="grow"><b>${esc(l.user_name || 'Sistema')}</b>${l.user_role ? ` <span class="small muted">${esc(ROLES[l.user_role] || l.user_role)}</span>` : ''} <span class="badge b-mut">${esc(BIT_ENT[l.entity] || l.entity)}</span><br>${describeLog(l, empName)}${em && !BS.emp && empName[em] ? ` <a href="#" class="small" data-bp="${em}">ver su historial</a>` : ''}</span></div>`; }).join('')
+      : `<div class="empty">Sin movimientos con estos filtros.${BS.modulo === 'importantes' ? ' El pase de lista diario está en el módulo "Asistencia y jornada".' : ''}</div>`;
+    $('#bl_more').style.display = hayMas ? '' : 'none';
+    $$('#bl_list [data-bp]').forEach((a) => a.onclick = (ev) => { ev.preventDefault(); BS.emp = a.dataset.bp; BS.periodo = 'todo'; viewBitacora(); });
+  };
+  draw(logs.length === BIT_PAGE);
+  $('#bl_more').onclick = async (ev) => { ev.target.disabled = true; try { BS.off += BIT_PAGE; const more = await bitQuery(BS.off, BIT_PAGE); all.push(...more); draw(more.length === BIT_PAGE); } catch (e) { toast(e.message, true); } ev.target.disabled = false; };
+  $('#bl_m').onchange = (e) => { BS.modulo = e.target.value; viewBitacora(); };
+  $('#bl_p').onchange = (e) => { BS.periodo = e.target.value; if (BS.periodo === 'rango') { BS.desde = BS.desde || BS.fecha; BS.hasta = BS.hasta || BS.fecha; } viewBitacora(); };
+  if ($('#bl_d')) $('#bl_d').onchange = (e) => { if (e.target.value && e.target.value <= t) { BS.fecha = e.target.value; viewBitacora(); } };
+  if ($('#bl_mes')) $('#bl_mes').onchange = (e) => { if (/^\d{4}-\d{2}$/.test(e.target.value)) { BS.fecha = e.target.value + '-01'; viewBitacora(); } };
+  const rango = () => { const a = $('#bl_d1').value, b = $('#bl_d2').value; if (!a || !b) return; if (a > b) return toast('La fecha inicial es posterior a la final.', true); if (!BS.emp && (new Date(b) - new Date(a)) / 864e5 > 92) return toast('Máximo 3 meses por consulta (o elige una persona).', true); BS.desde = a; BS.hasta = b; viewBitacora(); };
+  if ($('#bl_d1')) { $('#bl_d1').onchange = rango; $('#bl_d2').onchange = rango; }
+  $('#bl_e').onchange = (e) => { const n = norm(e.target.value); if (!n) { BS.emp = ''; return viewBitacora(); } const hit = emps.filter((x) => norm(fullName(x)) === n); if (hit.length === 1) { BS.emp = hit[0].id; BS.periodo = 'todo'; viewBitacora(); } else toast(hit.length ? 'Hay varias personas con ese nombre; elige una de la lista.' : 'Elige a la persona de la lista.', true); };
+  if ($('#bl_ex')) $('#bl_ex').onclick = () => { BS.emp = ''; if (BS.periodo === 'todo') BS.periodo = 'mes'; viewBitacora(); };
   $('#bl_u').onchange = (e) => { BS.user = e.target.value; viewBitacora(); };
+  $$('[data-sg]').forEach((a) => a.onclick = (ev) => { ev.preventDefault(); location.hash = '#/expediente/' + a.dataset.sg; });
+  $('#bl_x').onclick = async (ev) => {
+    const b = ev.target; b.disabled = true;
+    try {
+      const rows = all.slice(); for (let off = all.length; rows.length === off && off < 5000; off += 1000) { const m = await bitQuery(off, 1000); rows.push(...m); if (m.length < 1000) break; }
+      const txt = (h) => { const d = document.createElement('div'); d.innerHTML = h; return d.textContent; };
+      const out = [[{ v: `${ldEmpresa()} · BITÁCORA · ${perTxt.toUpperCase()}`, s: XS.title }], [{ v: `${BIT_MOD[BS.modulo]}${empSel ? ' · Persona: ' + fullName(empSel) : ''}${BS.user ? ' · Usuario: ' + profName(BS.user) : ''} · Generado ${fmtDateTime(new Date().toISOString())} por ${S.me.full_name || ''}`, s: XS.sub }],
+        ['Fecha', 'Hora', 'Usuario', 'Rol', 'Módulo', 'Persona', 'Movimiento'].map((h) => ({ v: h, s: XS.head }))];
+      rows.forEach((l) => { const em = logEmp(l); out.push([{ v: fmtDate(new Date(l.at).toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' })), s: XS.text }, { v: fmtTime(l.at), s: XS.text }, { v: l.user_name || 'Sistema', s: XS.text }, { v: ROLES[l.user_role] || l.user_role || '', s: XS.text }, { v: BIT_ENT[l.entity] || l.entity, s: XS.text }, { v: (em && empName[em]) || '', s: XS.text }, { v: txt(describeLog(l, empName)), s: XS.wrap }]); });
+      const nombre = `Bitacora_${bitRango()[0]}${empSel ? '_' + ldSafe(fullName(empSel)) : ''}.xlsx`;
+      bajarArchivo(new File([xlsxBuild([{ name: 'BITÁCORA', cols: [11, 7, 24, 16, 13, 30, 90], rows: out, merges: ['A1:G1', 'A2:G2'], freeze: [0, 3], printRows: [3, 3], autoFilter: `A3:G${out.length}`, footer: ldPie().replace('Asistencia', 'Bitácora') }])], nombre, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      toast(`Excel listo: ${rows.length} movimientos`);
+    } catch (e) { toast(e.message, true); }
+    b.disabled = false;
+  };
 }
+// Abre la bitácora con todo lo de una persona (desde su perfil)
+function bitacoraDe(empId) { Object.assign(BS, { emp: empId, periodo: 'todo', modulo: 'importantes', user: '' }); location.hash = '#/bitacora'; if (S.view === 'bitacora') viewBitacora(); }
 const FIELD_LABEL = { status: 'Estatus', area_id: 'Área', group_id: 'Grupo', nombre: 'Nombre', apellido_paterno: 'Apellido paterno', apellido_materno: 'Apellido materno', puesto: 'Puesto', fecha_ingreso: 'Ingreso', fecha_baja: 'Baja', num_empleado: 'No. empleado', incidencias: 'Incidencias', comentario: 'Comentario', aviso: 'Aviso', incidencia: 'Incidencia', role: 'Rol', active: 'Activo', full_name: 'Nombre', tl_id: 'TL', name: 'Nombre', reviewed_at: 'Revisión', sent_at: 'Envío', turno: 'Turno', hora_cierre: 'Hora de cierre', tipo: 'Tipo' };
 function fmtVal(k, v) {
   if (v == null || v === '') return '—';
@@ -3141,38 +3224,76 @@ function fmtVal(k, v) {
   if (typeof v === 'boolean') return v ? 'Sí' : 'No';
   return String(v);
 }
+// Equipo con su líder, o SIN GRUPO resaltado
+const gConLider = (gid) => { if (!gid) return '<b style="color:var(--warn)">SIN GRUPO</b>'; const g = S.groups.find((x) => x.id === gid); if (!g) return 'equipo eliminado';
+  const l = g.tl_id ? profName(g.tl_id) : ''; return `${esc(areaName(g.area_id))} · ${esc(groupLabel(g))}${l && l !== '—' ? ' (Líder: ' + esc(l) + ')' : ''}`; };
 function describeLog(l, empName) {
   const a = l.after || {}, b = l.before || {}, act = l.action;
-  const changes = () => Object.keys(a).filter((k) => !['approved_by', 'approved_at', 'reviewed_by', 'sent_by', 'updated_by', 'created_by'].includes(k))
+  const changes = () => Object.keys(a).filter((k) => !k.startsWith('_') && !['approved_by', 'approved_at', 'reviewed_by', 'sent_by', 'updated_by', 'created_by'].includes(k))
     .map((k) => `${esc(FIELD_LABEL[k] || k)}: ${esc(fmtVal(k, b[k]))} → <b>${esc(fmtVal(k, a[k]))}</b>`).join(' · ');
-  const who = (id) => esc(empName[id] || 'empleado ' + String(id).slice(0, 8));
+  const who = (id) => `<b>${esc(empName[id] || 'empleado ' + String(id).slice(0, 8))}</b>`;
+  const emp = a.employee_id || b.employee_id || a._employee_id;
+  const ks = (o) => Object.keys(o).filter((k) => !k.startsWith('_'));
   switch (l.entity) {
     case 'attendance': {
-      const emp = a.employee_id || b.employee_id;
-      if (act === 'insert') return `Pase de lista${a.turno === 'tarde' ? ' (tarde)' : ''} · ${who(emp)} · ${fmtDate(a.fecha)} → <b>${esc(attLabel(a))}</b>${a.incidencias && a.incidencias.length ? ' · ' + esc(a.incidencias.join(', ')) : ''}`;
+      if (act === 'insert') return `Pase de lista${a.turno === 'tarde' ? ' (cierre)' : ''} · ${who(emp)} · ${fmtDate(a.fecha)} → <b>${esc(attLabel(a))}</b>${a.incidencias && a.incidencias.length ? ' · ' + esc(a.incidencias.join(', ')) : ''}`;
       if (act === 'update') { const [id, f] = (l.record_id || '').split('|'); return `${'status' in a ? '<span class="badge b-warn">Corrección</span> ' : 'Actualizó '}asistencia · ${who(emp || id)} · ${fmtDate(f)} · ${changes()}`; }
       return `Borró asistencia de ${who(emp)} del ${fmtDate(b.fecha)}`;
     }
     case 'attendance_days': {
       const [g, f] = (l.record_id || '').split('|');
-      if (a.sent_pm_at && !('reviewed_at' in a)) return `Envió cierre (tarde) · ${esc(groupName(g))} · ${fmtDate(f)}`;
-      if (a.sent_at && (act === 'insert' || !('reviewed_at' in a))) return `Envió entrada (mañana) · ${esc(groupName(g))} · ${fmtDate(f)}`;
+      if (a.sent_pm_at && !('reviewed_at' in a)) return `Envió el cierre · ${esc(groupName(g))} · ${fmtDate(f)}`;
+      if (a.sent_at && (act === 'insert' || !('reviewed_at' in a))) return `Envió la asistencia (mañana) · ${esc(groupName(g))} · ${fmtDate(f)}`;
       if ('reviewed_at' in a) return a.reviewed_at ? `Marcó revisado ${esc(groupName(g))} · ${fmtDate(f)}` : `Quitó revisión de ${esc(groupName(g))} · ${fmtDate(f)}`;
       return `Reporte del día · ${esc(groupName(g))} · ${fmtDate(f)}`;
     }
-    case 'employees':
-      if (act === 'insert') return `${a.status === 'activo' ? 'Dio de alta' : 'Solicitó alta de'} <b>${esc(fullName(a))}</b> · ${esc(areaName(a.area_id))}`;
-      if (act === 'delete') return `<span class="badge b-bad">Eliminó</span> a <b>${esc(fullName(b))}</b>`;
-      return `${who(l.record_id)} · ${changes()}`;
+    case 'employees': {
+      if (act === 'insert') return `${a.status === 'activo' ? 'Dio de alta a' : 'Solicitó el alta de'} <b>${esc(fullName(a))}</b>${a.puesto ? ' · ' + esc(a.puesto) : ''} · ${esc(areaName(a.area_id))} · Equipo: ${gConLider(a.group_id)}`;
+      if (act === 'delete') return `<span class="badge b-bad">Eliminó</span> el registro de <b>${esc(fullName(b))}</b>`;
+      const out = [];
+      if ('group_id' in a) out.push(`<span class="badge b-acc">Cambio de equipo</span> ${gConLider(b.group_id)} → <b>${gConLider(a.group_id)}</b>`);
+      if ('area_id' in a) out.push(`Cambio de área: ${esc(areaName(b.area_id))} → <b>${esc(areaName(a.area_id))}</b>`);
+      if ('status' in a) out.push(a.status === 'activo' && b.status === 'alta_pendiente' ? '<span class="badge b-ok">Alta aceptada</span>' : a.status === 'baja' ? `<span class="badge b-bad">Baja</span>${a.fecha_baja ? ' con fecha ' + fmtDate(a.fecha_baja) : ''}` : a.status === 'activo' && b.status === 'baja' ? '<span class="badge b-ok">Reingreso</span>' : a.status === 'rechazado' ? '<span class="badge b-bad">Alta rechazada</span>' : `Estatus: ${esc(fmtVal('status', b.status))} → <b>${esc(fmtVal('status', a.status))}</b>`);
+      const resto = Object.keys(a).filter((k) => !['group_id', 'area_id', 'status', 'fecha_baja', 'approved_by', 'approved_at', 'updated_by', 'requested_by', 'requested_at'].includes(k) || (k === 'fecha_baja' && !('status' in a)));
+      if (resto.length) out.push(resto.map((k) => `${esc(FIELD_LABEL[k] || k)}: ${esc(fmtVal(k, b[k]))} → <b>${esc(fmtVal(k, a[k]))}</b>`).join(' · '));
+      return `${who(l.record_id)} · ${out.join(' · ') || 'sin cambios visibles'}`;
+    }
     case 'employee_private':
-      return `${act === 'insert' ? 'Capturó' : 'Actualizó'} datos sensibles de ${who(l.record_id)} (${esc(Object.keys(act === 'update' ? a : a || {}).filter((k) => !['employee_id', 'updated_at'].includes(k) && (act === 'update' || a[k] != null)).map((k) => k.replace(/_/g, ' ')).join(', '))})`;
+      return `${act === 'insert' ? 'Capturó' : act === 'delete' ? 'Borró' : 'Actualizó'} datos personales de ${who(l.record_id)}${act === 'update' ? ' (' + esc(Object.keys(a).filter((k) => !['employee_id', 'updated_at'].includes(k)).map((k) => FIELD_LABEL[k] || k.replace(/_/g, ' ')).join(', ')) + ')' : ''}`;
+    case 'cambios_equipo':
+      if (act === 'insert') return `Solicitó cambio de equipo de ${who(emp)}: ${gConLider(a.de_group)} → <b>${gConLider(a.a_group)}</b>${a.motivo ? ' · Motivo: ' + esc(a.motivo) : ''}`;
+      if ('estado' in a) return `${a.estado === 'aprobado' ? '<span class="badge b-ok">Aprobó</span>' : a.estado === 'rechazado' ? '<span class="badge b-bad">Rechazó</span>' : esc(a.estado)} el cambio de equipo de ${who(emp)}${a.nota ? ' · ' + esc(a.nota) : ''}`;
+      return `Cambio de equipo de ${who(emp)} · ${changes()}`;
+    case 'retiros_lista':
+      if (act === 'insert') return `Solicitó retirar de la lista a ${who(emp)} · último día ${fmtDate(a.ultimo_dia)} · ${esc(a.motivo || '')}${a.comentario ? ' · ' + esc(a.comentario) : ''}`;
+      if ('estado' in a) return `${a.estado === 'aplicada' ? '<span class="badge b-bad">Aplicó la baja</span> por retiro de lista de' : a.estado === 'rechazada' ? '<span class="badge b-ok">Rechazó el retiro</span> de' : 'Retiro de lista · ' + esc(a.estado) + ' ·'} ${who(emp)}${a.nota ? ' · ' + esc(a.nota) : ''}`;
+      return `Retiro de lista de ${who(emp)} · ${changes()}`;
     case 'profiles': return `Usuario ${esc(b.full_name || a.full_name || profName(l.record_id))} · ${changes()}`;
     case 'user_areas': return `${act === 'insert' ? 'Dio acceso' : 'Quitó acceso'} a ${esc(areaName((a.area_id || b.area_id)))} para ${esc(profName(a.user_id || b.user_id))}`;
-    case 'groups': return act === 'insert' ? `Creó grupo ${esc(a.name)} en ${esc(areaName(a.area_id))}` : act === 'delete' ? `Eliminó grupo ${esc(b.name)}` : `Grupo ${esc(groupName(l.record_id))} · ${changes()}`;
-    case 'areas': return act === 'insert' ? `Creó área ${esc(a.name)}` : `Área · ${changes()}`;
-    case 'activity_daily': { const e = a.employee_id || b.employee_id || (l.record_id || '').split('|')[0]; const vv = a.valores || {}; return act === 'insert' ? `Actividad · ${who(e)} · ${fmtDate(a.fecha)} · ${esc(Object.entries(vv).map(([k, x]) => k + ' ' + x).join(', '))}` : `<span class="badge b-warn">Corrección</span> actividad · ${who(e)} · ${esc(JSON.stringify(b.valores || {}))} → <b>${esc(JSON.stringify(a.valores || {}))}</b>`; }
-    case 'corrections': { const e = a.employee_id || b.employee_id || (l.record_id || '').split('|')[0]; return act === 'insert' ? `Corrección operativa · ${who(e)} · ${esc(String(a.hora).slice(0, 5))} · ${esc(a.avance)}` : `Corrección operativa · ${who(e)} · resultado: <b>${esc((RESULTADO[a.resultado] || [a.resultado])[0])}</b>`; }
-    case 'area_metrics': return `Métrica ${esc((a || b).label || '')} · ${changes() || esc(act)}`;
+    case 'groups': return act === 'insert' ? `Creó el grupo ${esc(a.name)} en ${esc(areaName(a.area_id))}` : act === 'delete' ? `Eliminó el grupo ${esc(b.name)}` : `Grupo ${esc(groupName(l.record_id))} · ${changes()}`;
+    case 'areas': return act === 'insert' ? `Creó el área ${esc(a.name)}` : `Área ${esc(b.name || a.name || areaName(l.record_id))} · ${changes()}`;
+    case 'activity_daily': { const e = emp || (l.record_id || '').split('|')[0]; const vv = a.valores || {}; return act === 'insert' ? `Actividad · ${who(e)} · ${fmtDate(a.fecha)} · ${esc(Object.entries(vv).map(([k, x]) => k + ' ' + x).join(', ') || 'sin datos')}` : `<span class="badge b-warn">Corrección</span> actividad · ${who(e)} · ${esc(JSON.stringify(b.valores || {}))} → <b>${esc(JSON.stringify(a.valores || {}))}</b>`; }
+    case 'corrections': { const e = emp || (l.record_id || '').split('|')[0]; return act === 'insert' ? `Corrección operativa · ${who(e)} · ${esc(String(a.hora).slice(0, 5))} · ${esc(a.avance)}` : `Corrección operativa · ${who(e)} · ${changes()}`; }
+    case 'area_metrics': return act === 'insert' ? `Agregó el indicador ${esc(a.label || '')} en ${esc(areaName(a.area_id))} (meta ${esc(String(a.daily_goal ?? 0))})` : `Indicador ${esc((a.label || b.label) || '')} · ${changes() || esc(act)}`;
+    case 'documents': { const tp = (DOC_TIPOS[a.tipo || b.tipo] || {}).label || a.tipo || b.tipo || 'documento';
+      if (act === 'insert') return `Generó ${esc(tp)}${a.folio ? ' folio ' + esc(a.folio) : ''} de ${who(emp)}`;
+      if (act === 'delete') return `<span class="badge b-bad">Eliminó</span> ${esc(tp)} de ${who(emp)}`;
+      if ('estado' in a) return `${esc(tp)} de ${who(emp)} · ${esc(b.estado || '—')} → <b>${esc(a.estado)}</b>${a.anulado_motivo ? ' · ' + esc(a.anulado_motivo) : ''}`;
+      return `${esc(tp)} de ${who(emp)} · ${esc(ks(a).map((k) => k.replace(/_/g, ' ')).join(', '))}`; }
+    case 'doc_templates': return `Guardó la versión ${esc(String(a.version || ''))} de la plantilla ${esc((DOC_TIPOS[a.tipo] || {}).label || a.tipo || '')}`;
+    case 'expediente_archivos': return `${act === 'delete' ? 'Borró' : 'Subió'} al expediente de ${who(emp)} · ${esc((a.nombre || b.nombre || a.tipo || b.tipo || 'archivo'))}`;
+    case 'candidatos': { const n = [a.nombre || b.nombre, a.apellido_paterno || b.apellido_paterno].filter(Boolean).join(' ') || 'candidato';
+      if (act === 'insert') return `Registró al candidato <b>${esc(n)}</b>${a.fuente ? ' · ' + esc(a.fuente) : ''}`;
+      if ('employee_id' in a && a.employee_id) return `Contrató al candidato <b>${esc(n)}</b> → ${who(a.employee_id)}`;
+      return `Candidato <b>${esc(n)}</b> · ${esc(ks(a).filter((k) => !/_por$|_at$/.test(k)).map((k) => k.replace(/_/g, ' ')).join(', '))}${'etapa' in a ? ' · etapa: <b>' + esc(a.etapa) + '</b>' : ''}`; }
+    case 'vacantes': return act === 'insert' ? `Solicitó vacante de <b>${esc(a.puesto)}</b> (${esc(String(a.cantidad || 1))}) en ${esc(areaName(a.area_id))}` : `Vacante ${esc(b.puesto || a.puesto || '')} · ${'estado' in a ? 'estado: <b>' + esc(a.estado) + '</b>' : esc(ks(a).join(', '))}`;
+    case 'vacaciones': return act === 'insert' ? `Vacaciones de ${who(emp)} · ${esc((a.fechas || []).map(fmtDate).join(', ') || fmtDate(a.fecha_inicio))} · ${esc(a.estado || '')}` : `Vacaciones de ${who(emp)} · ${'estado' in a ? esc(b.estado || '—') + ' → <b>' + esc(a.estado) + '</b>' : esc(ks(a).join(', '))}${a.cancelado_motivo ? ' · ' + esc(a.cancelado_motivo) : ''}`;
+    case 'jornada_registros': return `${act === 'insert' ? 'Registro de jornada' : 'Actualizó registro de jornada'} · ${who(emp)} · ${esc(a.tipo || b.tipo || '')} · ${fmtDate(a.fecha || b.fecha)}${a.minutos ? ' · ' + a.minutos + ' min' : ''}${'estado' in a && act !== 'insert' ? ' · ' + esc(a.estado) : ''}`;
+    case 'nomina_periodos': return act === 'insert' ? `Abrió el periodo de pre-nómina ${fmtDate(a.fecha_inicio)} al ${fmtDate(a.fecha_fin)}` : `Pre-nómina ${'estado' in a ? '· estado: <b>' + esc(a.estado) + '</b>' : '· ' + esc(ks(a).join(', '))}`;
+    case 'nomina_lineas': return `Pre-nómina · ${who(emp)} · ${act === 'insert' ? 'línea generada' : act === 'delete' ? 'línea quitada' : 'ajustó ' + esc(ks(a).filter((k) => !['ajustados', 'updated_by'].includes(k)).map((k) => k.replace(/_/g, ' ')).join(', '))}`;
+    case 'nomina_finiquitos': return `Finiquito en pre-nómina · ${who(emp)} · ${act === 'insert' ? 'agregado' : act === 'delete' ? 'quitado' : 'ajustó ' + esc(ks(a).map((k) => k.replace(/_/g, ' ')).join(', '))}`;
+    case 'nomina_pagos': return `Pago extra · ${who(emp)} · ${esc(a.concepto || b.concepto || '')}${a.monto != null ? ' · ' + money(a.monto) : ''}`;
+    case 'chat_mensajes': return 'Mensaje en el chat';
     default: return `${esc(l.entity)} · ${esc(act)}`;
   }
 }
