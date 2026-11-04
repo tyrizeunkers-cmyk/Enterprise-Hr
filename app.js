@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.39.0';
+const APP_VERSION = '0.39.1';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -2900,24 +2900,56 @@ async function respaldoCompleto(btn) {
   btn.disabled = false; btn.textContent = label;
 }
 // ───────────────────────── Usuarios (solo Daniel) ─────────────────────────
+const US = { ver: 'activos' };
 async function viewUsuarios() {
   const v = $('#view');
-  const [profiles, ua] = await Promise.all([rpc('usuarios_admin').catch(() => db('profiles').order('full_name').get()), db('user_areas').get()]);
-  S.profiles = profiles;
+  const [todos, ua] = await Promise.all([rpc('usuarios_admin').catch(() => db('profiles').order('full_name').get()), db('user_areas').get()]);
+  S.profiles = todos;
+  const nBaja = todos.filter((p) => !p.active).length;
+  const profiles = todos.filter((p) => US.ver === 'baja' ? !p.active : p.active);
   const areasOf = (id) => ua.filter((x) => x.user_id === id).map((x) => x.area_id);
-  v.innerHTML = `<div class="pagehead"><div><h1>Usuarios</h1><div class="muted small">${profiles.length} usuarios</div></div><div class="row" style="gap:6px"><button class="btn" id="respaldo" title="Descarga un ZIP con todos los datos, usuarios y archivos">Respaldo completo</button><button class="btn primary" id="nu">+ Nuevo usuario</button></div></div>
+  v.innerHTML = `<div class="pagehead"><div><h1>Usuarios</h1><div class="muted small">${todos.length - nBaja} activos${nBaja ? ` · ${nBaja} dados de baja` : ''}</div></div><div class="row" style="gap:6px"><button class="btn" id="respaldo" title="Descarga un ZIP con todos los datos, usuarios y archivos">Respaldo completo</button><button class="btn primary" id="nu">+ Nuevo usuario</button></div></div>
   <div class="notice n-info" style="margin-bottom:12px">Dirección, Nómina y Administrador ven todas las áreas. RH, Supervisores necesitan sus áreas marcadas. A los Team Leaders se les asigna su grupo en “Áreas y grupos”.</div>
-  <div class="card scrollx"><table class="tbl"><thead><tr><th>Usuario</th><th>Rol</th><th>Áreas</th><th>Estado</th><th></th></tr></thead><tbody>
+  <div class="seg" role="group" aria-label="Ver" style="margin-bottom:12px"><button type="button" data-usv="activos" class="${US.ver === 'activos' ? 'on' : ''}">Activos</button><button type="button" data-usv="baja" class="${US.ver === 'baja' ? 'on' : ''}">Dados de baja${nBaja ? ` (${nBaja})` : ''}</button></div>
+  <div class="card scrollx"><table class="tbl"><thead><tr><th>Usuario</th><th>Rol</th><th>Áreas</th><th>Estado</th><th></th></tr></thead><tbody>${profiles.length ? '' : `<tr><td colspan="5" class="empty">${US.ver === 'baja' ? 'No hay usuarios dados de baja.' : 'Sin usuarios activos.'}</td></tr>`}
   ${profiles.map((p) => `<tr><td><b>${esc(p.full_name)}</b><br><span class="small muted">${esc(p.email || '')}</span></td>
     <td>${p.role ? esc(ROLES[p.role]) : '<span class="badge b-warn">Sin rol</span>'}</td>
     <td class="small">${['developer', 'director', 'nomina'].includes(p.role) ? '<span class="muted">Todas</span>' : p.role === 'tl' ? esc(S.groups.filter((g) => g.tl_id === p.id).map((g) => areaName(g.area_id) + ' · ' + g.name).join(', ') || 'Sin grupo') : esc(areasOf(p.id).map(areaName).join(', ') || '—')}</td>
-    <td>${p.active ? '<span class="badge b-ok">Activo</span>' : '<span class="badge b-mut">Inactivo</span>'}</td>
-    <td style="white-space:nowrap">${p.id === S.me.id ? '<span class="small muted">Tú</span>' : `<button class="btn sm" data-ed="${p.id}">Editar</button> <button class="btn sm" data-pm="${p.id}">Permisos${Object.keys(p.permisos || {}).length ? ' <span class="badge b-warn">' + Object.keys(p.permisos).length + '</span>' : ''}</button>`}</td></tr>`).join('')}
+    <td>${p.active ? '<span class="badge b-ok">Activo</span>' : '<span class="badge b-mut">Dado de baja</span>'}</td>
+    <td style="white-space:nowrap">${p.id === S.me.id ? '<span class="small muted">Tú</span>' : !p.active ? `<button class="btn sm primary" data-react="${p.id}">Reactivar</button>` : `<button class="btn sm" data-ed="${p.id}">Editar</button> <button class="btn sm" data-pm="${p.id}">Permisos${Object.keys(p.permisos || {}).length ? ' <span class="badge b-warn">' + Object.keys(p.permisos).length + '</span>' : ''}</button>`}</td></tr>`).join('')}
   </tbody></table></div>`;
   $('#nu').onclick = () => userForm(null, [], () => viewUsuarios());
   $('#respaldo').onclick = (ev) => respaldoCompleto(ev.currentTarget);
   $$('[data-ed]').forEach((b) => b.onclick = () => { const p = profiles.find((x) => x.id === b.dataset.ed); userForm(p, areasOf(p.id), () => viewUsuarios()); });
   $$('[data-pm]').forEach((b) => b.onclick = () => permisosForm(profiles.find((x) => x.id === b.dataset.pm), () => viewUsuarios()));
+  $$('[data-usv]').forEach((b) => b.onclick = () => { US.ver = b.dataset.usv; viewUsuarios(); });
+  $$('[data-react]').forEach((b) => b.onclick = () => reactivarUsuario(profiles.find((x) => x.id === b.dataset.react)));
+}
+const adminUsers = (body) => http('/functions/v1/admin-users', { method: 'POST', body });
+// Dar de baja: bloquea su acceso, le quita áreas y equipos; su nombre se conserva en el historial
+function bajaUsuario(p, done) {
+  modal({ title: 'Dar de baja · ' + p.full_name, body: `<div class="notice n-warn">Al darlo de baja:<ul style="margin:6px 0 0 18px;padding:0"><li>ya no puede entrar a la app (su sesión deja de funcionar);</li><li>se le quitan sus áreas${S.groups.some((g) => g.tl_id === p.id) ? ' y deja de ser líder de: <b>' + esc(S.groups.filter((g) => g.tl_id === p.id).map((g) => g.name).join(', ')) + '</b>' : ''};</li><li>sale de la lista de usuarios (queda en “Dados de baja”).</li></ul></div>
+    <div class="small muted" style="margin-top:8px">Todo lo que registró se conserva con su nombre. Si fue un error, puedes reactivarlo.</div>`,
+    actions: [{ label: 'Cancelar' }, { label: 'Dar de baja', cls: 'danger solid', run: async () => {
+      await rpc('usuario_dar_baja', { p_id: p.id });
+      await db('user_areas').eq('user_id', p.id).remove();
+      try { await adminUsers({ action: 'ban', user_id: p.id }); } catch (e) { toast('Quedó dado de baja, pero no se pudo bloquear su inicio de sesión: ' + e.message + '. Aun así ya no tiene acceso a nada.', true); done(); return; }
+      toast(p.full_name + ' quedó dado de baja'); done();
+    } }] });
+}
+async function reactivarUsuario(p) {
+  try {
+    await adminUsers({ action: 'unban', user_id: p.id });
+    await db('profiles').eq('id', p.id).updateMin({ active: true });
+    toast('Reactivado. Revisa su rol y sus áreas.');
+    await viewUsuarios();
+    const [ua] = await Promise.all([db('user_areas').eq('user_id', p.id).get()]);
+    userForm({ ...p, active: true }, ua.map((x) => x.area_id), () => viewUsuarios());
+  } catch (e) { toast(e.message, true); }
+}
+function borrarUsuario(p, done) {
+  modal({ title: 'Borrar definitivamente · ' + p.full_name, body: '<div class="notice n-bad">Este usuario nunca registró nada en el sistema, así que se puede borrar por completo. <b>No se puede deshacer.</b></div>',
+    actions: [{ label: 'Cancelar' }, { label: 'Borrar', cls: 'danger solid', run: async () => { await adminUsers({ action: 'delete', user_id: p.id }); toast('Usuario borrado'); done(); } }] });
 }
 // Módulos que ve y acciones que puede hacer un usuario: lo que da su rol, con lo que Daniel le quite o le dé
 function permisosForm(p, done) {
@@ -2949,13 +2981,13 @@ function userForm(p, areas, done) {
   const isNew = !p;
   const f = [
     { k: 'full_name', label: 'Nombre completo', req: true, val: p ? p.full_name : '' },
-    ...(isNew ? [{ k: 'email', label: 'Correo', type: 'email', req: true }, { k: 'password', label: 'Contraseña temporal', req: true, val: genPass(), hint: 'Compártela por un medio seguro; la persona la cambia al entrar.' }] : []),
+    { k: 'email', label: 'Correo (con el que entra)', type: 'email', req: true, val: p ? p.email || '' : '', hint: isNew ? '' : 'Si lo cambias, desde ese momento entra con el correo nuevo y su misma contraseña.' },
+    ...(isNew ? [{ k: 'password', label: 'Contraseña temporal', req: true, val: genPass(), hint: 'Compártela por un medio seguro; la persona la cambia al entrar.' }] : []),
     { k: 'role', label: 'Rol', type: 'select', req: true, val: p ? p.role || '' : '', options: [['', 'Elegir…'], ...Object.entries(ROLES)] },
-    ...(!isNew ? [{ k: 'active', label: 'Estado', type: 'select', val: p.active ? '1' : '0', options: [['1', 'Activo'], ['0', 'Inactivo (no puede entrar a nada)']] }] : [])
   ];
   const areaBox = `<div><div class="eyebrow" style="margin-bottom:6px">Áreas (RH y Supervisores)</div><div class="chips">${S.areas.map((a) => `<label class="chip" style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" value="${a.id}"${areas.includes(a.id) ? ' checked' : ''}>${esc(a.name)}</label>`).join('')}</div></div>`;
-  modal({
-    title: isNew ? 'Nuevo usuario' : 'Editar · ' + p.full_name, body: fieldsHtml(f) + areaBox + (!isNew ? '<button type="button" class="btn sm" id="rp" style="align-self:flex-start">Asignar contraseña nueva…</button>' : ''),
+  const um = modal({
+    title: isNew ? 'Nuevo usuario' : 'Editar · ' + p.full_name, body: fieldsHtml(f) + areaBox + (!isNew ? `<div class="row" style="gap:6px;flex-wrap:wrap"><button type="button" class="btn sm" id="rp">Asignar contraseña nueva…</button>${p.id !== S.me.id ? '<button type="button" class="btn sm danger" id="ub">Dar de baja…</button><button type="button" class="btn sm danger" id="ud" style="display:none">Borrar definitivamente…</button>' : ''}</div><div class="small muted" id="uref"></div>` : ''),
     actions: [{ label: 'Cancelar' }, { label: 'Guardar', cls: 'primary', run: async ({ el }) => {
       const v = readFields(el, f);
       const sel = $$('.chips input:checked', el).map((i) => i.value);
@@ -2965,19 +2997,31 @@ function userForm(p, areas, done) {
         const r = await http('/functions/v1/admin-users', { method: 'POST', body: { action: 'create', email: v.email, password: v.password, full_name: v.full_name } });
         id = r.id;
       }
-      await db('profiles').eq('id', id).updateMin({ full_name: v.full_name, role: v.role, ...(isNew ? {} : { active: v.active === '1' }) });
+      const email = String(v.email || '').trim().toLowerCase();
+      if (!isNew && email !== String(p.email || '').toLowerCase()) {
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error('Escribe un correo válido.');
+        await adminUsers({ action: 'update_email', user_id: id, email });
+      }
+      await db('profiles').eq('id', id).updateMin({ full_name: v.full_name, role: v.role, email });
       const toDel = areas.filter((a) => !sel.includes(a)); const toAdd = sel.filter((a) => !areas.includes(a));
       for (const a of toDel) await db('user_areas').eq('user_id', id).eq('area_id', a).remove();
       if (toAdd.length) await db('user_areas').insert(toAdd.map((a) => ({ user_id: id, area_id: a })));
       toast(isNew ? 'Usuario creado' : 'Usuario actualizado'); done();
     } }]
   });
+  const ub = document.getElementById('ub'), ud = document.getElementById('ud');
+  const cerrar = () => um.close();
+  if (ub) ub.onclick = () => bajaUsuario(p, () => { cerrar(); done(); });
+  if (ud) rpc('usuario_referencias', { p_id: p.id }).then((refs) => {
+    if (!refs.length && p.role !== 'developer') { ud.style.display = ''; ud.onclick = () => borrarUsuario(p, () => { cerrar(); done(); }); $('#uref').textContent = 'Nunca ha registrado nada: se puede borrar por completo.'; }
+    else if (refs.length) $('#uref').textContent = `Tiene ${refs.reduce((t, r) => t + Number(r.registros), 0)} registros en el sistema: se da de baja (no se borra) para conservar su historial.`;
+  }).catch(() => {});
   const rp = document.getElementById('rp');
   if (rp) rp.onclick = () => {
     const pf = [{ k: 'password', label: 'Contraseña nueva', req: true, val: genPass(), full: true, hint: 'Compártela por un medio seguro.' }];
     modal({ title: 'Contraseña nueva · ' + p.full_name, body: fieldsHtml(pf), actions: [{ label: 'Cancelar' }, { label: 'Asignar', cls: 'primary', run: async ({ el }) => {
       const v = readFields(el, pf); if (v.password.length < 10) throw new Error('Mínimo 10 caracteres.');
-      await http('/functions/v1/admin-users', { method: 'POST', body: { action: 'set_password', user_id: p.id, password: v.password } });
+      await adminUsers({ action: 'set_password', user_id: p.id, password: v.password });
       toast('Contraseña asignada');
     } }] });
   };
