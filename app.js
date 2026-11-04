@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.39.1';
+const APP_VERSION = '0.39.2';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -79,7 +79,8 @@ const visibleAreas = () => S.areas.filter((a) => a.active && (seesAllAreas() || 
 const myGroups = () => S.groups.filter((g) => g.tl_id === S.me.id && g.active);
 const canWriteAttendance = () => is('developer', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl');
 const supGroups = () => S.groups.filter((g) => g.active && g.tl_id !== S.me.id && (S.suplencias || []).some((x) => x.group_id === g.id));
-const writableGroups = () => is('tl') ? [...myGroups(), ...supGroups()] : (is('developer', 'nomina') ? S.groups.filter((g) => g.active) : S.groups.filter((g) => g.active && S.myAreas.includes(g.area_id)));
+const writableGroups = () => (is('tl') ? [...myGroups(), ...supGroups()] : (is('developer', 'nomina') ? S.groups.filter((g) => g.active) : S.groups.filter((g) => g.active && S.myAreas.includes(g.area_id))))
+  .filter((g) => !sinLista(g.area_id) || is('developer', 'nomina', 'rh_general', 'rh_area'));
 const canSeePrivate = (emp) => is('developer', 'director', 'rh_general', 'rh_area') || (is('nomina') && emp.status === 'activo');
 
 // ───────────────────────── red / sesión ─────────────────────────
@@ -744,12 +745,13 @@ function renderLista(st, groups) {
   ${!tarde && d.sent_at && !d.sent_pm_at && pmOpen(g.area_id, LS.fecha) ? '<div class="notice n-warn" style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="grow">Falta enviar el <b>cierre del día</b> con la actividad de cada persona.</span><button type="button" class="btn sm primary" id="lf_cierre">Ir al cierre</button></div>' : ''}
   ${tarde && !open ? `<div class="notice n-info" style="margin-bottom:10px">El cierre se envía a partir de las <b>${areaCierre(g.area_id)}</b>. Puedes ir capturando la actividad antes.</div>` : ''}
   ${tarde && open && diffs ? `<div class="notice n-warn" style="margin-bottom:10px"><b>${diffs}</b> ${diffs === 1 ? 'persona no coincide' : 'personas no coinciden'} con el pase de la mañana. Revísalas antes de enviar el cierre.</div>` : ''}
-  ${total && !locked && !tarde ? `<div class="row" style="margin-bottom:10px"><button class="btn ghost grow" id="allok"${done === total ? ' disabled' : ''}>${st.cob ? 'Marcar pendientes como “Presente”' : 'Marcar pendientes como “Asistencia”'}</button></div>` : ''}
+  ${sinLista(g.area_id) ? '<div class="notice n-info" style="margin-bottom:10px"><b>Esta área no requiere pase de lista.</b> Se les paga completo; registra aquí solo las faltas, permisos o incidencias cuando ocurran. No hace falta enviar.</div>' : ''}
+  ${total && !locked && !tarde && !sinLista(g.area_id) ? `<div class="row" style="margin-bottom:10px"><button class="btn ghost grow" id="allok"${done === total ? ' disabled' : ''}>${st.cob ? 'Marcar pendientes como “Presente”' : 'Marcar pendientes como “Asistencia”'}</button></div>` : ''}
   ${tarde ? `<div class="notice n-info" style="margin-bottom:10px">${st.metrics.length ? `Al final del día captura la actividad de cada persona que trabajó (${st.metrics.map((m) => esc(m.label.toLowerCase())).join(', ')}). La asistencia ya quedó en el pase de la mañana; aquí solo marca <b>Salida anticipada</b> si alguien se fue antes.` : 'Esta área no tiene indicadores de actividad: revisa si alguien tuvo salida anticipada y envía el cierre.'}</div>` : ''}
   <div class="list" id="people">${emps.length ? emps.map((e) => tarde ? cierreCard(e, st, locked) : st.cob ? personCardCob(e, st) : personCard(e, rec[e.id], fx[e.id], locked, null, st.vac && st.vac.has(e.id), (st.rets || []).find((x) => x.employee_id === e.id), st.recT[e.id])).join('') : `<div class="card empty">${lider ? 'Aún no hay líderes en este grupo. Asígnalos desde Personal (grupo “Líderes”).' : 'No hay personal activo en este grupo.'}</div>`}</div>
   ${(st.retirados || []).length ? `<div class="card pad small" style="margin-top:10px"><b>Retiro solicitado (${st.retirados.length})</b> · ya no aparecen en la lista:<br>${st.retirados.map((x) => `${esc(fullName(x.e))} · último día ${fmtDate(x.ultimo_dia)} (${esc(x.motivo)})`).join('<br>')}<div class="muted" style="margin-top:4px">Nómina les paga hasta su último día. Daniel aplica la baja o RH la rechaza.</div></div>` : ''}
   ${canAddToList(g) && !lockedDay && !tarde ? '<button type="button" class="btn ghost add-person" id="addPerson">+ Agregar persona que no aparece en la lista</button>' : ''}
-  ${total || (tarde && emps.length) ? `<div class="stickybar">
+  ${!sinLista(g.area_id) && (total || (tarde && emps.length)) ? `<div class="stickybar">
     <button class="btn primary" id="send" ${(done < total && !tarde) || locked || !open ? 'disabled' : ''} style="${sentAt && done === total ? 'background:var(--ok);border-color:var(--ok)' : ''}">${done < total && !tarde ? `Faltan ${total - done} por registrar` : tarde && done < total ? `${sentAt ? 'Reenviar' : 'Enviar'} cierre · ${total - done} sin actividad completa` : sentAt ? `${tarde ? 'Cierre enviado' : 'Asistencia enviada'} ✓ · reenviar` : tarde ? 'Enviar cierre del día' : 'Enviar asistencia (mañana)'}</button>
     <span class="small muted" style="text-align:center">${sentAt ? `Enviado por ${esc(profName(sentBy))} a las ${fmtTime(sentAt)}. ` : ''}La asistencia se pasa una vez, en la mañana. Al final del día se envía el cierre con la actividad.</span>
   </div>` : ''}`;
@@ -1001,6 +1003,8 @@ function wirePerson(card, st, groups) {
 // Misma lista y tarjetas; cambian los botones de asistencia (Presente/Ausente/Salida + C4/Ab4/C8/Ab8) y la sección
 // "Permisos e incidencias" (permiso con autorización inmediata, retardo, desconexión, otra incidencia).
 // Las reglas (duraciones, cruces, un retardo por día, C8/Ab8 una sola vez) se validan en la base de datos.
+// Áreas de oficina presencial: no se pasa lista; se paga completo y RH registra solo faltas o permisos
+const sinLista = (areaId) => (((S.areas || []).find((a) => a.id === areaId) || {}).requiere_lista === false);
 const esCobranza = (areaId) => (((S.areas || []).find((a) => a.id === areaId) || {}).modo_asistencia === 'cobranza');
 const JR_TIPO = { permiso: 'Permiso', retardo: 'Retardo', desconexion: 'Desconexión', otra: 'Otra incidencia' };
 const JR_CLAS = { justificada: 'Justificada', sin_justificar: 'Sin justificar' };
@@ -2254,9 +2258,9 @@ async function viewAsistencia() {
   <div class="card scrollx"><table class="tbl"><thead><tr><th>Grupo</th><th>Asistencia</th><th>F</th><th>R</th><th>Cierre</th><th>S</th><th>Dif.</th><th>Revisión</th></tr></thead><tbody>
     ${rows.map((r) => `<tr data-g="${r.g.id}" style="cursor:pointer">
       <td><b>${esc(groupLabel(r.g))}</b><br><span class="small muted">${esc(areaName(r.g.area_id))}${r.g.tl_id ? ' · ' + esc(profName(r.g.tl_id)) : r.g.tipo === 'lideres' ? ' · pasa lista Supervisión' : ' · sin TL'}</span></td>
-      <td class="mono small">${r.n}/${r.people.length}<br>${r.d.sent_at ? `<span class="badge b-ok">✓ ${fmtTime(r.d.sent_at)}</span>` : '<span class="badge b-mut">sin enviar</span>'}</td>
+      <td class="mono small">${r.n}/${r.people.length}<br>${r.d.sent_at ? `<span class="badge b-ok">✓ ${fmtTime(r.d.sent_at)}</span>` : sinLista(r.g.area_id) ? '<span class="badge b-acc">No requiere lista</span>' : '<span class="badge b-mut">sin enviar</span>'}</td>
       <td class="mono" style="color:var(--bad)">${r.c.falta || ''}</td><td class="mono" style="color:var(--warn)">${r.c.retardo || ''}</td>
-      <td class="mono small">${r.d.sent_pm_at ? `<span class="badge b-ok">✓ ${fmtTime(r.d.sent_pm_at)}</span>` : '<span class="badge b-mut">sin enviar</span>'}</td>
+      <td class="mono small">${r.d.sent_pm_at ? `<span class="badge b-ok">✓ ${fmtTime(r.d.sent_pm_at)}</span>` : sinLista(r.g.area_id) ? '<span class="small muted">—</span>' : '<span class="badge b-mut">sin enviar</span>'}</td>
       <td class="mono" style="color:var(--warn)">${r.c.salida || ''}</td>
       <td>${r.dif ? `<span class="badge b-warn">${r.dif}</span>` : r.nT ? '<span class="small muted">0</span>' : ''}</td>
       <td>${r.d.reviewed_at ? `<span class="badge b-ok">Revisado ${fmtTime(r.d.reviewed_at)}</span>` : '<span class="badge b-mut">Pendiente</span>'}
@@ -2333,7 +2337,7 @@ async function repDatos(from, to) {
     qj.getAll().catch(() => []),
     cargarCategorias().catch(() => null)
   ]);
-  const grupos = S.groups.filter((g) => (seesAllAreas() || S.myAreas.includes(g.area_id)) && (!AS.area || g.area_id === AS.area));
+  const grupos = S.groups.filter((g) => !sinLista(g.area_id) && (seesAllAreas() || S.myAreas.includes(g.area_id)) && (!AS.area || g.area_id === AS.area));
   const gIds = new Set(grupos.map((g) => g.id));
   const rec = {}; att.forEach((a) => { ((rec[a.fecha] = rec[a.fecha] || {})[a.employee_id] = rec[a.fecha][a.employee_id] || {})[a.turno === 'tarde' ? 't' : 'm'] = a; });
   const vac = {}; vacs.forEach((x) => (x.fechas || []).forEach((d) => { if (d >= from && d <= to) (vac[d] = vac[d] || new Set()).add(x.employee_id); }));
@@ -2348,6 +2352,7 @@ async function repDatos(from, to) {
       const a = (r && (r.m || r.t)) || null;
       const gid = (a && a.group_id) || e.group_id, aid = (a && a.area_id) || e.area_id;
       if (AS.area && aid !== AS.area) continue;
+      if (sinLista(aid)) continue;   // oficina presencial: no se pasa lista
       if (gid ? !gIds.has(gid) : !(seesAllAreas() || S.myAreas.includes(aid))) continue;
       const c = repClasif(r && r.m, r && r.t, vac[d] && vac[d].has(e.id), (jrs[d] || {})[e.id]); c.code = ldMarca(e, d, c.code, r);
       out.push({ e, gid, aid, c });
@@ -2539,7 +2544,7 @@ async function ldDatos(from, to) {
   return { emps, rec, vac, jrs, pase, dia };
 }
 // Equipos que el usuario puede consultar (mismas reglas que la página de Asistencia)
-const ldGrupos = () => S.groups.filter((g) => g.active && (seesAllAreas() || S.myAreas.includes(g.area_id)) && (!AS.area || g.area_id === AS.area))
+const ldGrupos = () => S.groups.filter((g) => g.active && !sinLista(g.area_id) && (seesAllAreas() || S.myAreas.includes(g.area_id)) && (!AS.area || g.area_id === AS.area))
   .sort((a, b) => (areaName(a.area_id) + groupLabel(a)).localeCompare(areaName(b.area_id) + groupLabel(b), 'es'));
 const ldLider = (g) => { if (g.tl_id) { const n = profName(g.tl_id); if (n && n !== '—') return n; } return g.tipo === 'lideres' ? 'Supervisión' : 'Sin líder asignado'; };
 const ldLabora = (e, d) => (!e.fecha_ingreso || e.fecha_ingreso <= d) && (!e.fecha_baja || e.fecha_baja > d);
@@ -2724,6 +2729,7 @@ function dpdHoja(D, grupos, days, periodoTxt) {
     'Cada fila es una persona; la columna "Equipo · Líder" indica el equipo al que pertenece y quién lo dirige.',
     'Los códigos salen de los pases de lista, permisos, descansos, vacaciones aprobadas, altas y bajas registrados en la app. Un día sin registro queda vacío y no se cuenta como falta.',
     'Lo que va después de la diagonal (A / R, A / SA, A / P…) es la incidencia del día, no el pase de la tarde.',
+    ...((S.areas || []).some((a) => a.requiere_lista === false) ? ['No incluye áreas que no requieren pase de lista (oficina presencial): ' + S.areas.filter((a) => a.requiere_lista === false).map((a) => a.name).join(', ') + '.'] : []),
     'Días trabajados: cada día con asistencia (A, con o sin incidencia) cuenta 1 y cada medio día (C4 / Ab4) cuenta 0.5. Faltas, descansos, vacaciones, permisos sin asistencia y días sin registro no cuentan.',
     ...(days[days.length - 1] > hoy ? [`Periodo en curso: los días posteriores al ${fmtDate(hoy)} todavía no ocurren y quedan vacíos.`] : []),
     ...(cambios.length ? ['Cambios de equipo en el periodo (el código de esos días sí aparece en su fila): ' + cambios.join(' · ')] : []),
@@ -3099,7 +3105,7 @@ async function viewCatalogos() {
     try { await mustUpdate(db('employees').eq('id', e.id).update({ group_id: g.id }), 'la persona'); toast('Movido a ' + groupLabel(g)); viewCatalogos(); } catch (er) { toast(er.message, true); sel.value = ''; }
   });
   const na = $('#na'); if (na) na.onclick = () => simpleForm('Nueva área', [{ k: 'name', label: 'Nombre', req: true, full: true }], (x) => db('areas').insert([x]));
-  $$('[data-ea]').forEach((b) => b.onclick = () => { const a = S.areas.find((x) => x.id === b.dataset.ea); simpleForm('Editar área', [{ k: 'name', label: 'Nombre', req: true, val: a.name }, { k: 'hora_cierre', label: 'Pase de la tarde desde', type: 'time', req: true, val: String(a.hora_cierre || '16:00').slice(0, 5) }, { k: 'min_por_grupo', label: 'Mínimo de personas por grupo', type: 'number', req: true, val: a.min_por_grupo ?? 15 }, { k: 'active', label: 'Estado', type: 'select', val: a.active ? '1' : '0', options: [['1', 'Activa'], ['0', 'Inactiva']] }], (x) => { if (!Number.isInteger(x.min_por_grupo) || x.min_por_grupo < 0) throw new Error('Mínimo: un número entero.'); return mustUpdate(db('areas').eq('id', a.id).update({ name: x.name, hora_cierre: x.hora_cierre, min_por_grupo: x.min_por_grupo, active: x.active === '1' })); }, 'Hora de Ciudad de México para el pase de la tarde. Los grupos de agentes con menos personas que el mínimo aparecen como "por llenar".'); });
+  $$('[data-ea]').forEach((b) => b.onclick = () => { const a = S.areas.find((x) => x.id === b.dataset.ea); simpleForm('Editar área', [{ k: 'name', label: 'Nombre', req: true, val: a.name }, { k: 'hora_cierre', label: 'Pase de la tarde desde', type: 'time', req: true, val: String(a.hora_cierre || '16:00').slice(0, 5) }, { k: 'min_por_grupo', label: 'Mínimo de personas por grupo', type: 'number', req: true, val: a.min_por_grupo ?? 15 }, { k: 'requiere_lista', label: 'Pase de lista', type: 'select', val: a.requiere_lista === false ? '0' : '1', options: [['1', 'Sí: se pasa lista todos los días'], ['0', 'No: oficina presencial (se paga completo; RH registra solo faltas o permisos)']] }, { k: 'active', label: 'Estado', type: 'select', val: a.active ? '1' : '0', options: [['1', 'Activa'], ['0', 'Inactiva']] }], (x) => { if (!Number.isInteger(x.min_por_grupo) || x.min_por_grupo < 0) throw new Error('Mínimo: un número entero.'); return mustUpdate(db('areas').eq('id', a.id).update({ name: x.name, hora_cierre: x.hora_cierre, min_por_grupo: x.min_por_grupo, requiere_lista: x.requiere_lista !== '0', active: x.active === '1' })); }, 'Hora de Ciudad de México para el pase de la tarde. Los grupos de agentes con menos personas que el mínimo aparecen como "por llenar".'); });
   const gFields = (g) => [
     { k: 'area_id', label: 'Área', type: 'select', req: true, options: areaOpts, val: g ? g.area_id : (areaOpts[0] || [''])[0] },
     { k: 'name', label: 'Nombre del grupo', req: true, val: g ? g.name : '' },
