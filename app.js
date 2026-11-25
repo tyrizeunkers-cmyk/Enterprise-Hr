@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.39.2';
+const APP_VERSION = '0.39.3';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -3658,30 +3658,51 @@ function caseForm({ employee, fecha, existing, onDone }) {
   return m;
 }
 
-const CS = { tab: 'pend', q: '' };
+const CS = { tab: 'pend', q: '', cases: null, empById: null };
+// Carga los datos del módulo UNA sola vez (al entrar o tras una acción que cambie datos).
+// Buscar y cambiar de pestaña ya no vuelven a consultar: solo re-filtran en memoria y re-pintan la lista.
 async function viewCasos() {
   if (S.view === 'expediente' && EXP.id) return viewExpediente(EXP.id);
-  const v = $('#view');
-  const [cases, emps] = await Promise.all([db('cases').order('created_at', false).limit(500).get(), db('employees').select('id,nombre,apellido_paterno,apellido_materno,area_id,group_id,status').get()]);
-  const empById = Object.fromEntries(emps.map((e) => [e.id, e]));
-  const pend = cases.filter(pendingForMe);
-  const open = cases.filter((c) => c.status !== 'cerrado');
-  const list = CS.tab === 'pend' ? pend : CS.tab === 'open' ? open : cases;
-  const q = norm(CS.q);
-  const rows = list.filter((c) => !q || norm(fullName(empById[c.employee_id]) + ' ' + c.folio + ' ' + c.hechos).includes(q));
+  // Opt 4: solo las columnas que usan el listado, la búsqueda, los filtros y pendingForMe (no las 31 de la tabla).
+  const [cases, emps] = await Promise.all([
+    db('cases').select('id,folio,employee_id,area_id,status,kind,created_by,created_at,fecha_hechos,fecha_fin,hechos,solicitud_lider,riesgo_tipo').order('created_at', false).limit(500).get(),
+    db('employees').select('id,nombre,apellido_paterno,apellido_materno,num_empleado,area_id,group_id,status,puesto,fecha_ingreso').get()
+  ]);
+  CS.cases = cases; CS.empById = Object.fromEntries(emps.map((e) => [e.id, e]));
+  renderCasos();
+}
+// Opt 1 y 2: arma la pantalla desde memoria (CS.cases / CS.empById). No consulta al servidor.
+function renderCasos() {
+  const v = $('#view'); if (!v) return;
+  const pend = (CS.cases || []).filter(pendingForMe);
+  const open = (CS.cases || []).filter((c) => c.status !== 'cerrado');
   v.innerHTML = `<div class="pagehead"><div><h1>Casos</h1><div class="muted small">${pend.length} pendientes para ti · ${open.length} abiertos</div></div></div>
     <div class="card pad" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
       <div class="seg" role="group" aria-label="Filtro"><button type="button" data-ct="pend" class="${CS.tab === 'pend' ? 'on' : ''}">Pendientes para mí (${pend.length})</button><button type="button" data-ct="open" class="${CS.tab === 'open' ? 'on' : ''}">Abiertos</button><button type="button" data-ct="all" class="${CS.tab === 'all' ? 'on' : ''}">Todos</button></div>
       <input class="inp" id="cq" type="search" placeholder="Buscar por nombre, folio o hechos" value="${esc(CS.q)}" aria-label="Buscar casos">
     </div>
-    <div class="list" id="clist">${rows.length ? rows.map((c) => { const e = empById[c.employee_id]; return `<button type="button" class="item" data-case="${c.id}">
+    <div class="list" id="clist"></div>`;
+  $$('[data-ct]').forEach((b) => b.onclick = () => { CS.tab = b.dataset.ct; $$('[data-ct]').forEach((x) => x.classList.toggle('on', x === b)); paintCasos(); });
+  // Opt 1: filtra en memoria por cada carácter; re-pinta solo la lista, así el cuadro de búsqueda conserva foco y cursor.
+  $('#cq').oninput = (e) => { CS.q = e.target.value; paintCasos(); };
+  paintCasos();
+  updateCaseBadge(pend.length);
+}
+// Re-pinta solo la lista (#clist) aplicando la pestaña y la búsqueda sobre los datos ya cargados. Cero consultas.
+function paintCasos() {
+  const cl = $('#clist'); if (!cl) return;
+  const empById = CS.empById || {};
+  const pend = (CS.cases || []).filter(pendingForMe);
+  const open = (CS.cases || []).filter((c) => c.status !== 'cerrado');
+  const list = CS.tab === 'pend' ? pend : CS.tab === 'open' ? open : (CS.cases || []);
+  const q = norm(CS.q);
+  const rows = list.filter((c) => !q || norm(fullName(empById[c.employee_id]) + ' ' + c.folio + ' ' + c.hechos).includes(q));
+  cl.innerHTML = rows.length ? rows.map((c) => { const e = empById[c.employee_id]; return `<button type="button" class="item" data-case="${c.id}">
       <span class="mono small muted" style="width:44px">#${c.folio}</span>
       <span class="grow"><span class="nm">${esc(fullName(e))}</span> <span class="badge ${c.kind === 'grave' ? 'b-bad' : 'b-acc'}">${esc(caseType(c))}</span><br><span class="small muted">${esc(areaName(c.area_id))} · ${caseDates(c)} · ${esc(c.hechos.slice(0, 80))}</span></span>
-      ${caseBadge(c.status)}</button>`; }).join('') : `<div class="card empty">${CS.tab === 'pend' ? 'No tienes casos pendientes.' : 'Sin casos.'}</div>`}</div>`;
-  $$('[data-ct]').forEach((b) => b.onclick = () => { CS.tab = b.dataset.ct; viewCasos(); });
-  $('#cq').oninput = (e) => { CS.q = e.target.value; clearTimeout(viewCasos._t); viewCasos._t = setTimeout(() => viewCasos().then(() => { const i = $('#cq'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }), 300); };
-  $$('[data-case]').forEach((b) => b.onclick = () => openCase(b.dataset.case));
-  updateCaseBadge(pend.length);
+      ${caseBadge(c.status)}</button>`; }).join('') : `<div class="card empty">${CS.tab === 'pend' ? 'No tienes casos pendientes.' : 'Sin casos.'}</div>`;
+  // Opt 3: pasa el caso ya cargado del listado para evitar una tanda de red al abrirlo.
+  $$('[data-case]', cl).forEach((b) => b.onclick = () => openCase(b.dataset.case, (CS.cases || []).find((x) => x.id === b.dataset.case)));
 }
 function updateCaseBadge(n) {
   $$('[data-v="casos"]').forEach((a) => {
@@ -3720,19 +3741,28 @@ function deleteCaseForm(c, emp, files, docs, done) {
     } }] });
 }
 
-async function openCase(id) {
-  const [c] = await db('cases').eq('id', id).get();
-  if (!c) return toast('Caso no encontrado o sin permiso', true);
-  const since = addDays(c.fecha_hechos, -29);
-  const [events, [emp], att, corr, prev, files, cdocs] = await Promise.all([
+async function openCase(id, base) {
+  // Opt 3: si el caso viene del listado (base), se ahorra una tanda de red: el caso COMPLETO se pide dentro
+  // del MISMO lote en paralelo (no en una consulta previa) y el empleado se reutiliza de memoria si ya está cargado.
+  // Sin base (llamadas desde Documentos o al recargar evidencias) se comporta como antes.
+  const ref = base || (await db('cases').eq('id', id).get())[0];
+  if (!ref) return toast('Caso no encontrado o sin permiso', true);
+  const reuseEmp = base && CS.empById ? CS.empById[ref.employee_id] : null;
+  const since = addDays(ref.fecha_hechos, -29);
+  const [full, events, empRes, att, corr, prev, files, cdocs] = await Promise.all([
+    base ? db('cases').eq('id', id).get() : Promise.resolve([ref]),
     db('case_events').eq('case_id', id).order('at').get(),
-    db('employees').select('id,nombre,apellido_paterno,apellido_materno,num_empleado,area_id,group_id,status,puesto,fecha_ingreso').eq('id', c.employee_id).get(),
-    db('attendance').select('fecha,status,turno').eq('employee_id', c.employee_id).eq('turno', 'manana').gte('fecha', since).lte('fecha', c.fecha_hechos).get(),
-    is('nomina') ? Promise.resolve([]) : db('corrections').select('fecha,resultado').eq('employee_id', c.employee_id).gte('fecha', since).lte('fecha', c.fecha_hechos).get().catch(() => []),
-    db('cases').select('id,folio,status,fecha_hechos,decision,kind').eq('employee_id', c.employee_id).neq('id', id).get(),
+    reuseEmp ? Promise.resolve([reuseEmp]) : db('employees').select('id,nombre,apellido_paterno,apellido_materno,num_empleado,area_id,group_id,status,puesto,fecha_ingreso').eq('id', ref.employee_id).get(),
+    db('attendance').select('fecha,status,turno').eq('employee_id', ref.employee_id).eq('turno', 'manana').gte('fecha', since).lte('fecha', ref.fecha_hechos).get(),
+    is('nomina') ? Promise.resolve([]) : db('corrections').select('fecha,resultado').eq('employee_id', ref.employee_id).gte('fecha', since).lte('fecha', ref.fecha_hechos).get().catch(() => []),
+    db('cases').select('id,folio,status,fecha_hechos,decision,kind').eq('employee_id', ref.employee_id).neq('id', id).get(),
     db('case_files').eq('case_id', id).order('created_at').get().catch(() => []),
     db('documents').select('id,folio,tipo,fecha,estado').eq('case_id', id).order('created_at').get().catch(() => [])
   ]);
+  // El caso COMPLETO recién leído manda y revalida el acceso del servidor: si ya no es visible, no se abre.
+  const c = full && full[0];
+  if (!c) return toast('Caso no encontrado o sin permiso', true);
+  const emp = empRes && empRes[0];
   const faltas = att.filter((a) => a.status === 'falta').length, retardos = att.filter((a) => a.status === 'retardo').length;
   const noCorr = corr.filter((x) => x.resultado === 'no_corrigio').length;
   const kv = (rows) => `<div class="kv">${rows.filter((r) => r[1] != null && r[1] !== '').map(([k, val]) => `<span>${esc(k)}</span><span>${esc(val)}</span>`).join('')}</div>`;
