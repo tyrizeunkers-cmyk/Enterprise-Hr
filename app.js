@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.39.3';
+const APP_VERSION = '0.40.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -1972,13 +1972,40 @@ async function altaForm() {
     }
     const row = { ...b, group_id: b.group_id || null };
     if (direct) row.status = 'activo';
-    const [emp] = await db('employees').insert([row]);
-    const hasPriv = Object.values(pv).some((x) => x != null);
-    if (hasPriv) {
-      try { await db('employee_private').insert([{ employee_id: emp.id, ...pv }]); }
-      catch (err) { toast('Se guardó el alta, pero no los datos sensibles: ' + err.message, true); viewPersonal(); return; }
+    const doInsert = async () => {
+      const [emp] = await db('employees').insert([row]);
+      const hasPriv = Object.values(pv).some((x) => x != null);
+      if (hasPriv) {
+        try { await db('employee_private').insert([{ employee_id: emp.id, ...pv }]); }
+        catch (err) { toast('Se guardó el alta, pero no los datos sensibles: ' + err.message, true); viewPersonal(); return; }
+      }
+      toast(direct ? 'Alta registrada' : 'Solicitud enviada'); PS.status = direct ? 'activo' : 'alta_pendiente'; viewPersonal();
+    };
+    try {
+      await doInsert();
+    } catch (err) {
+      // El nombre completo ya existe (activo o baja). Si es otra persona distinta, RH/Daniel autoriza el homónimo (queda en bitácora).
+      if (/ese nombre/i.test(err.message) && (is('developer') || is('rh_general') || is('rh_area'))) {
+        $('#rehire', el).innerHTML = `<div class="notice n-warn"><b>Ya existe una persona con ese nombre.</b>
+          <div class="small" style="margin-top:4px">${esc(err.message)}</div>
+          <div style="margin-top:8px">Si es <b>otra persona distinta</b>, escribe el motivo y autoriza el homónimo:</div>
+          <input id="homo_motivo" class="inp" placeholder="Motivo (ej. verificado con INE, son dos personas)" style="margin-top:6px;width:100%">
+          <button type="button" class="btn sm primary" id="homo_ok" style="margin-top:8px">Autorizar homónimo y continuar</button></div>`;
+        $('#rehire', el).scrollIntoView({ block: 'nearest' });
+        $('#homo_ok', el).onclick = async () => {
+          const mot = ($('#homo_motivo', el).value || '').trim();
+          if (!mot) return toast('Escribe el motivo del homónimo', true);
+          const okb = $('#homo_ok', el); okb.disabled = true;
+          try {
+            await rpc('autorizar_homonimo', { p_nombre: b.nombre, p_paterno: b.apellido_paterno, p_materno: b.apellido_materno || '', p_motivo: mot });
+            await doInsert();
+            m.close();
+          } catch (e2) { toast(e2.message, true); okb.disabled = false; }
+        };
+        return false;
+      }
+      throw err;   // CURP o número duplicado, u otro error: mensaje normal
     }
-    toast(direct ? 'Alta registrada' : 'Solicitud enviada'); PS.status = direct ? 'activo' : 'alta_pendiente'; viewPersonal();
   }
 }
 
@@ -6592,6 +6619,7 @@ async function lineaForm(p, l) {
 
 // ───────────────────────── Informes: movimientos de personal por periodo ─────────────────────────
 const IF = { preset: 'mes', ini: null, fin: null };
+const CB = { filtro: 'pend' };   // Control de bajas: pend | todas | concluidas
 function infRango(preset) {
   const t = todayMX(), [y, m, d] = t.split('-').map(Number), mm = (x) => String(x).padStart(2, '0');
   const ld = (yy, mo) => new Date(Date.UTC(yy, mo, 0)).getUTCDate();
@@ -6648,7 +6676,8 @@ async function viewInformes() {
       <label class="field" style="min-width:180px">Periodo<select id="if_p">${[['semana', 'Últimos 7 días'], ['quincena', 'Esta quincena'], ['quincena_ant', 'Quincena anterior'], ['mes', 'Este mes'], ['mes_ant', 'Mes anterior'], ['anio', 'Este año'], ['libre', 'Fechas…']].map(([k, l]) => `<option value="${k}"${IF.preset === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
       <label class="field">Del<input type="date" id="if_ini" value="${IF.ini}" max="${todayMX()}"></label><label class="field">Al<input type="date" id="if_fin" value="${IF.fin}" max="${todayMX()}"></label>
       <button class="btn" id="if_go">Actualizar</button></div>
-    <div id="if_body"><div class="empty">Cargando…</div></div>`;
+    <div id="if_body"><div class="empty">Cargando…</div></div>
+    <div id="if_bajas"></div>`;
   $('#if_p').onchange = (e) => { IF.preset = e.target.value; if (IF.preset !== 'libre') [IF.ini, IF.fin] = infRango(IF.preset); viewInformes(); };
   $('#if_go').onclick = () => { IF.ini = $('#if_ini').value; IF.fin = $('#if_fin').value; IF.preset = 'libre'; viewInformes(); };
   let x;
@@ -6660,6 +6689,39 @@ async function viewInformes() {
       <div class="fc-k"><span>Total</span><b>${tot.fin}</b><span class="small muted">+${tot.altas} · −${tot.bajas} · rotación ${rotacion(tot)} %</span></div>
       <div class="fc-k"><span>Grupos por llenar</span><b style="color:${bajo.length ? 'var(--warn)' : 'var(--ok)'}">${bajo.length}</b><span class="small muted">${bajo.reduce((s, g) => s + g.minimo - g.personas, 0)} lugares vacíos</span></div></div>
     <div class="card pad">${informeHtml(x)}</div>`;
+  // ── Control de Bajas (reutiliza el periodo de arriba; los pendientes históricos se muestran aunque cambie la quincena) ──
+  let cbRows = [];
+  const CB_MOT = { renuncia: 'Renuncia', 'Renuncia': 'Renuncia', despido: 'Despido', 'Despido': 'Despido', abandono: 'Abandono', 'Abandono de empleo': 'Abandono de empleo' };
+  const cbEstado = { pendiente: 'b-warn', generado: 'b-mut', firmado: 'b-ok', calculado: 'b-mut', autorizado: 'b-ok', sin_registro: 'b-mut' };
+  const cbBadge = (t) => `<span class="badge ${cbEstado[t] || 'b-mut'}">${esc(t === 'sin_registro' ? 'sin registro' : t)}</span>`;
+  function renderCB() {
+    const box = $('#if_bajas'); if (!box) return;
+    let rows = cbRows.slice();
+    if (CB.filtro === 'pend') rows = rows.filter((r) => !r.concluida);
+    else if (CB.filtro === 'concluidas') rows = rows.filter((r) => r.concluida);
+    const nPend = cbRows.filter((r) => !r.concluida).length;
+    const trs = rows.map((r) => `<tr>
+        <td><b>${esc(r.empleado)}</b>${r.num_empleado ? ` · ${esc(r.num_empleado)}` : ''}</td>
+        <td>${esc(r.area || '')}</td><td>${esc(r.lider || '—')}</td><td>${esc(r.motivo || '—')}</td>
+        <td>${r.fecha_solicitud ? fmtDate(r.fecha_solicitud) : '—'}</td>
+        <td>${r.fecha_aprobacion ? fmtDate(r.fecha_aprobacion) + (r.aprobado_por ? '<br><span class="small muted">' + esc(r.aprobado_por) + '</span>' : '') : '—'}</td>
+        <td>${r.baja_efectiva ? fmtDate(r.baja_efectiva) : '—'}</td>
+        <td>${cbBadge(r.doc_estado)}</td><td>${cbBadge(r.finiquito_estado)}</td>
+        <td>${cbBadge(r.pago_estado)}${r.fecha_pago ? '<br>' + fmtDate(r.fecha_pago) : ''}</td>
+        <td>${r.clabe ? esc(r.clabe) : '<span class="small muted">—</span>'}</td>
+        <td>${(r.pendientes || []).length ? (r.pendientes || []).map((p) => `<span class="badge b-warn" style="margin:1px">${esc(p)}</span>`).join('') : '<span class="badge b-ok">Sin pendientes</span>'}</td>
+        <td>${r.concluida ? '<span class="badge b-ok">Concluida</span>' : '<span class="badge b-warn">En proceso</span>'}</td></tr>`).join('');
+    box.innerHTML = `<div class="card pad" style="margin-top:14px">
+      <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+        <div><h2 style="margin:0">Control de bajas</h2><div class="small muted">Se incorpora automáticamente cada baja aprobada. Los pendientes históricos siguen visibles aunque cambies el periodo. CLABE enmascarada.</div></div>
+        <div class="seg" role="tablist">${[['pend', `Con pendientes${nPend ? ' (' + nPend + ')' : ''}`], ['todas', 'Todas'], ['concluidas', 'Concluidas']].map(([k, l]) => `<button type="button" class="${CB.filtro === k ? 'on' : ''}" data-cbf="${k}">${l}</button>`).join('')}</div>
+      </div>
+      <div class="notice n-info small" style="margin-bottom:8px">El sistema aún no registra el <b>pago</b> del finiquito (fecha ni confirmación); por eso esa columna aparece como “sin registro”.</div>
+      ${rows.length ? `<div class="scrollx"><table class="tbl"><thead><tr><th>Empleado</th><th>Área</th><th>Líder</th><th>Motivo</th><th>Solicitud</th><th>Aprobación</th><th>Baja efectiva</th><th>Documento</th><th>Finiquito</th><th>Pago</th><th>CLABE</th><th>Pendientes</th><th>Estado</th></tr></thead><tbody>${trs}</tbody></table></div>` : '<div class="empty">Sin bajas para este filtro.</div>'}</div>`;
+    $$('[data-cbf]', box).forEach((b) => b.onclick = () => { CB.filtro = b.dataset.cbf; renderCB(); });
+  }
+  try { cbRows = await rpc('control_bajas', { p_desde: IF.ini, p_hasta: IF.fin }); renderCB(); }
+  catch (e) { $('#if_bajas').innerHTML = ''; }
   const titulo = `Informe de movimientos ${fmtDate(x.ini)} al ${fmtDate(x.fin)}`;
   $('#if_pdf').onclick = () => {
     const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(titulo)}</title><style>@page{size:letter landscape;margin:12mm}body{font-family:Arial,Helvetica,sans-serif;font-size:10pt;color:#111}h1{font-size:15pt;margin:0}.small{font-size:8.5pt}.muted{color:#555}</style></head><body>
@@ -6679,7 +6741,10 @@ async function viewInformes() {
       sh('BAJAS', 'BAJAS', ['Fecha de baja', 'Nombre', 'No.', 'Área', 'Puesto', 'Ingreso', 'Motivo', 'Recontratable'], x.bajas.map((b) => [D(b.fecha), T(b.nombre), T(b.num || ''), T(b.area), T(b.puesto || ''), D(b.ingreso), { v: b.motivo || '', s: XS.wrap }, T(b.recontratable == null ? '' : b.recontratable ? 'Sí' : 'No')]), [13, 34, 10, 18, 24, 12, 50, 13]),
       sh('MOVIMIENTOS', 'CAMBIOS Y MOVIMIENTOS', ['Fecha', 'Persona', 'Área', 'Cambio', 'Hecho por'], x.movimientos.map((m) => [T(fmtDateTime(m.fecha)), T(m.nombre), T(m.area), { v: infCambio(m), s: XS.wrap }, T(m.usuario || '')]), [18, 34, 18, 60, 26]),
       sh('ASISTENCIA', 'ASISTENCIA DEL PERIODO', ['Área', 'Faltas', 'Retardos', 'Permisos', 'Días de vacaciones'], x.asistencia.map((a) => [T(a.area), T(num(a.faltas)), T(num(a.retardos)), T(num(a.permisos)), T(num(a.vacaciones))]), [24, 10, 10, 10, 16]),
-      sh('VACACIONES', 'VACACIONES', ['Persona', 'Área', 'Tipo', 'Desde', 'Hasta', 'Días'], x.vacaciones.map((v2) => [T(v2.nombre), T(v2.area), T(v2.tipo === 'ajuste' ? 'Ajuste' : 'Disfrute'), D(v2.desde), D(v2.hasta), T(num(v2.dias))]), [34, 18, 10, 12, 12, 8])
+      sh('VACACIONES', 'VACACIONES', ['Persona', 'Área', 'Tipo', 'Desde', 'Hasta', 'Días'], x.vacaciones.map((v2) => [T(v2.nombre), T(v2.area), T(v2.tipo === 'ajuste' ? 'Ajuste' : 'Disfrute'), D(v2.desde), D(v2.hasta), T(num(v2.dias))]), [34, 18, 10, 12, 12, 8]),
+      sh('CONTROL BAJAS', 'CONTROL DE BAJAS', ['Empleado', 'No.', 'Área', 'Líder', 'Motivo', 'Solicitud', 'Aprobación', 'Responsable', 'Baja efectiva', 'Documento', 'Finiquito', 'Pago', 'CLABE', 'Pendientes', 'Estado'],
+        cbRows.map((r) => [T(r.empleado), T(r.num_empleado || ''), T(r.area || ''), T(r.lider || ''), T(r.motivo || ''), D(r.fecha_solicitud), D(r.fecha_aprobacion), T(r.aprobado_por || ''), D(r.baja_efectiva), T(r.doc_estado), T(r.finiquito_estado), T(r.pago_estado === 'sin_registro' ? 'sin registro' : r.pago_estado), T(r.clabe || ''), { v: (r.pendientes || []).join(', '), s: XS.wrap }, T(r.concluida ? 'Concluida' : 'En proceso')]),
+        [30, 9, 16, 24, 16, 12, 12, 22, 12, 12, 12, 12, 12, 40, 12])
     ];
     const blob = xlsxBuild(sheets);
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `Informe_movimientos_${x.ini}_al_${x.fin}.xlsx`;
