@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.40.0';
+const APP_VERSION = '0.41.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -396,6 +396,7 @@ const VIEWS = {
   asistencia: { label: 'Asistencia', ic: '▦', grupo: 'Operación', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor'], render: () => viewAsistencia() },
   chat: { label: 'Mensajes', short: 'Chat', ic: '💬', grupo: 'Comunicación', roles: ['developer', 'director', 'nomina', 'rh_general', 'rh_area', 'supervisor', 'tl'], render: () => viewChat() },
   prenomina: { label: 'Pre-nómina', short: 'Nómina', ic: '$', grupo: 'Nómina', roles: ['developer', 'director', 'nomina'], render: () => viewPrenomina() },
+  aguinaldos: { label: 'Aguinaldos', ic: '$', grupo: 'Nómina', roles: ['developer', 'director', 'nomina'], render: () => viewAguinaldos() },
   usuarios: { label: 'Usuarios', ic: '🔑', grupo: 'Administración', roles: ['developer'], render: () => viewUsuarios() },
   catalogos: { label: 'Áreas y grupos', short: 'Grupos', ic: '⌂', grupo: 'Personal', roles: ['developer', 'rh_general', 'rh_area'], render: () => viewCatalogos() },
   informes: { label: 'Informes', ic: '▤', grupo: 'Personal', roles: ['developer', 'director', 'rh_general', 'rh_area'], render: () => viewInformes() },
@@ -6752,6 +6753,78 @@ async function viewInformes() {
   };
 }
 
+// ───── Aguinaldos: cálculo proporcional del personal vigente (solo monto bruto) ─────
+const AG = { corte: null, dias: 15, area: {}, rows: null, abrirAjustes: false };
+async function viewAguinaldos() {
+  const v = $('#view');
+  if (!AG.corte) AG.corte = `${todayMX().slice(0, 4)}-12-31`;   // por defecto, cierre del año
+  const areas = S.areas.filter((a) => a.active);
+  v.innerHTML = `<div class="pagehead"><div><h1>Aguinaldos</h1><div class="muted small">Cálculo proporcional del personal vigente (activos y altas pendientes). Solo monto bruto; la retención de ISR se aplica en nómina.</div></div>
+      <div class="row" style="gap:8px"><button class="btn primary" id="ag_xls">Descargar Excel</button></div></div>
+    <div class="card pad row" style="gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+      <label class="field" style="min-width:160px">Fecha de corte<input type="date" id="ag_corte" value="${AG.corte}"></label>
+      <label class="field" style="min-width:120px">Días (mínimo legal 15)<input type="number" id="ag_dias" value="${AG.dias}" min="1" step="1"></label>
+      <button class="btn" id="ag_toggle" type="button">Ajuste por área ▾</button>
+      <button class="btn primary" id="ag_calc" type="button">Calcular</button>
+    </div>
+    <div id="ag_areas" class="card pad" style="margin-bottom:12px;${AG.abrirAjustes ? '' : 'display:none'}">
+      <div class="small muted" style="margin-bottom:8px">Deja en blanco para usar los días globales. Útil si un área tiene prestación superior.</div>
+      <div class="grid2">${areas.map((a) => `<label class="field">${esc(a.name)}<input type="number" class="ag_area_in" data-area="${a.id}" value="${AG.area[a.id] ?? ''}" min="1" step="1" placeholder="global"></label>`).join('')}</div>
+    </div>
+    <div id="ag_body"><div class="empty">Ajusta los parámetros y presiona <b>Calcular</b>.</div></div>`;
+  $('#ag_toggle').onclick = () => { AG.abrirAjustes = !AG.abrirAjustes; $('#ag_areas').style.display = AG.abrirAjustes ? '' : 'none'; };
+  const leerParams = () => {
+    AG.corte = $('#ag_corte').value; AG.dias = Math.max(1, num($('#ag_dias').value) || 15); AG.area = {};
+    $$('.ag_area_in').forEach((i) => { const d = i.value.trim(); if (d) AG.area[i.dataset.area] = num(d); });
+  };
+  $('#ag_calc').onclick = async () => {
+    leerParams();
+    $('#ag_body').innerHTML = '<div class="empty">Calculando…</div>';
+    try { AG.rows = await rpc('aguinaldos', { p_corte: AG.corte, p_dias: AG.dias, p_dias_area: AG.area }); renderAguinaldos(); }
+    catch (e) { $('#ag_body').innerHTML = `<div class="notice n-bad">${esc(e.message)}</div>`; }
+  };
+  $('#ag_xls').onclick = () => {
+    if (!AG.rows || !AG.rows.length) return toast('Primero calcula los aguinaldos', true);
+    const T = (x) => ({ v: x == null ? '' : x, s: XS.text }), M = (x) => ({ v: num(x), s: XS.money }), I = (x) => ({ v: num(x), s: XS.int }), Dc = (x) => ({ v: num(x), s: XS.dec }), D = (iso) => iso ? { v: xlDate(String(iso).slice(0, 10)), s: XS.date } : T('');
+    const total = AG.rows.reduce((s, r) => s + num(r.monto_bruto), 0);
+    const rows = AG.rows.map((r) => [T(r.empleado), T(r.num_empleado || ''), T(r.area || ''), D(r.fecha_ingreso), M(r.salario_diario), I(r.dias_trabajados), Dc(r.dias_aguinaldo), M(r.monto_bruto)]);
+    rows.push([{ v: 'TOTAL', s: XS.bold }, T(''), T(''), T(''), T(''), T(''), T(''), M(total)]);
+    const sh = { name: 'AGUINALDOS', freeze: [0, 3], cols: [30, 10, 18, 13, 13, 11, 13, 14],
+      rows: [[{ v: `AGUINALDOS AL ${fmtDate(AG.corte)} · ${AG.dias} días base`, s: XS.title }], [{ v: `Generado ${fmtDateTime(new Date().toISOString())}`, s: XS.sub }],
+        ['Empleado', 'No.', 'Área', 'Ingreso', 'Salario diario', 'Días trab.', 'Días aguinaldo', 'Monto bruto'].map((h) => ({ v: h, s: XS.head })), ...rows] };
+    const blob = xlsxBuild([sh]);
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `Aguinaldos_${AG.corte}.xlsx`;
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000); toast('Excel listo');
+  };
+  if (AG.rows) renderAguinaldos();
+}
+function renderAguinaldos() {
+  const box = $('#ag_body'); if (!box) return;
+  const rows = AG.rows || [];
+  if (!rows.length) { box.innerHTML = '<div class="empty">No hay personal vigente con fecha de ingreso y salario para calcular.</div>'; return; }
+  const total = rows.reduce((s, r) => s + num(r.monto_bruto), 0);
+  const nSal0 = rows.filter((r) => !num(r.salario_diario)).length;
+  const porArea = {};
+  rows.forEach((r) => { const k = r.area || 'Sin área'; (porArea[k] = porArea[k] || []).push(r); });
+  const secciones = Object.keys(porArea).sort().map((area) => {
+    const rs = porArea[area]; const sub = rs.reduce((s, r) => s + num(r.monto_bruto), 0);
+    return `<tr class="ag-head"><td colspan="5"><b>${esc(area)}</b> · ${rs.length} persona(s)</td><td style="text-align:right"><b>${money(sub)}</b></td></tr>
+      ${rs.map((r) => `<tr>
+        <td>${esc(r.empleado)}${r.num_empleado ? ` · ${esc(r.num_empleado)}` : ''}</td>
+        <td>${r.fecha_ingreso ? fmtDate(r.fecha_ingreso) : '—'}</td>
+        <td style="text-align:right">${money(r.salario_diario)}</td>
+        <td style="text-align:right">${num(r.dias_trabajados)}</td>
+        <td style="text-align:right">${Number(r.dias_aguinaldo).toFixed(2)}</td>
+        <td style="text-align:right"><b>${money(r.monto_bruto)}</b></td></tr>`).join('')}`;
+  }).join('');
+  box.innerHTML = `<div class="fc-tot" style="margin-bottom:12px">
+      <div class="fc-k"><span>Personal</span><b>${rows.length}</b><span class="small muted">vigentes con cálculo</span></div>
+      <div class="fc-k"><span>Días base</span><b>${AG.dias}</b><span class="small muted">al ${fmtDate(AG.corte)}</span></div>
+      <div class="fc-k"><span>Total bruto</span><b>${money(total)}</b><span class="small muted">suma de aguinaldos</span></div></div>
+    ${nSal0 ? `<div class="notice n-warn small" style="margin-bottom:8px">${nSal0} persona(s) sin salario registrado aparecen en $0.00; captura su salario diario para incluirlas.</div>` : ''}
+    <div class="card pad"><div class="scrollx"><table class="tbl"><thead><tr><th>Empleado</th><th>Ingreso</th><th style="text-align:right">Salario diario</th><th style="text-align:right">Días trab.</th><th style="text-align:right">Días aguinaldo</th><th style="text-align:right">Monto bruto</th></tr></thead>
+      <tbody>${secciones}<tr class="ag-total"><td colspan="5" style="text-align:right"><b>TOTAL</b></td><td style="text-align:right"><b>${money(total)}</b></td></tr></tbody></table></div></div>`;
+}
 // ───── Excel (.xlsx) en el formato de pre-nómina de la empresa ─────
 // Escritor mínimo de SpreadsheetML: celdas con valor, fórmula (con su resultado ya calculado) y estilos fijos.
 const XS = { base: 0, head: 1, money: 2, text: 3, date: 4, int: 5, title: 6, total: 7, time: 8, bold: 9, adj: 10, wrap: 11, sub: 12, warn: 13, dec: 14,
