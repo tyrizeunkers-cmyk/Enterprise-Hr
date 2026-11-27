@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.42.0';
+const APP_VERSION = '0.43.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -267,6 +267,8 @@ async function boot() {
   if (!CFG.url || !CFG.key) { $('#app').innerHTML = `<div class="login"><div class="card"><b>Falta configurar</b><span class="muted">Edita config.js con la URL y la clave pública del proyecto.</span></div></div>`; return; }
   const rg = location.hash.match(/^#\/registro\/([a-f0-9]{64})$/);
   if (rg) return renderRegistro(rg[1]);
+  const fg = location.hash.match(/^#\/firma\/([a-f0-9]{64})$/);
+  if (fg) return renderFirma(fg[1]);
   S.session = store.get('hr.session');
   if (!S.session) return renderLogin();
   try {
@@ -1831,12 +1833,14 @@ const EXP_TABS = {
     }).join(''), `<span class="badge ${EXP_DOCS.every(([t]) => ult(t).length) ? 'b-ok' : 'b-warn'}" style="margin-left:auto">${EXP_DOCS.filter(([t]) => ult(t).length).length}/${EXP_DOCS.length}</span>`)
       + card('Contratación', contr.map(([t, d]) => `<div class="ex-file"><span class="ex-ic${d && d.estado === 'firmado' ? ' ok' : ''}">${d && d.estado === 'firmado' ? '✓' : '○'}</span><span class="grow"><b>${esc(DOC_TIPOS[t].label)}</b><br><span class="small muted">${d ? esc(docFolio(d)) + ' · ' + fmtDate(d.fecha) : 'No generado'}</span></span>
           ${d ? docBadge(d.estado) : ''}${d && d.firmado_path ? `<button type="button" class="btn sm" data-verdoc="${esc(d.firmado_path)}">Ver firmado</button>` : ''}${d ? `<button type="button" class="btn sm ghost" data-opendoc="${d.id}">Abrir</button>` : ''}</div>`).join(''))
+      + (contr.some(([, d]) => d) ? card('Firma de contrato', '<div class="small muted">Genera un enlace para que la persona firme su contrato, reglamento y acuerdo de confidencialidad desde su teléfono, y valida su identidad.</div>', `<button type="button" class="btn sm primary" data-firmapanel="${e.id}" style="margin-left:auto">Enlace de firma…</button>`) : '')
       + card(`Otros archivos (${otros.length})`, (otros.length ? otros.map((a) => fila(a, a.nombre)).join('') : '<span class="small muted">Constancias, incapacidades, recetas, cartas, etc.</span>'),
         edit ? '<button type="button" class="btn sm primary" id="ex_otro" style="margin-left:auto">+ Agregar archivo</button>' : '')
       + (edit ? '<div class="small muted">Fotos o PDF de hasta 10 MB. Solo RH de su área, Dirección y Daniel ven este expediente.</div>' : '');
     $$('[data-ver]', body).forEach((b) => b.onclick = (ev) => { ev.preventDefault(); const a = archivos.find((x) => x.id === b.dataset.ver); if (a) verArchivo(a.path); });
     $$('[data-verdoc]', body).forEach((b) => b.onclick = () => verArchivo(b.dataset.verdoc, 'documentos'));
     $$('[data-opendoc]', body).forEach((b) => b.onclick = () => openDocument(b.dataset.opendoc));
+    $$('[data-firmapanel]', body).forEach((b) => b.onclick = () => firmaPanel(e));
     $$('[data-quitar]', body).forEach((b) => b.onclick = () => quitarArchivo(archivos.find((x) => x.id === b.dataset.quitar), e));
     $$('[data-subir]', body).forEach((b) => b.onclick = () => pickFile('image/*,application/pdf', (f) => subirArchivo(e, b.dataset.subir, f)));
     const o = $('#ex_otro', body); if (o) o.onclick = () => {
@@ -7465,6 +7469,131 @@ async function renderRegistro(tok) {
       msgBox(`¡Listo, ${esc(info.nombre)}!`, 'Tus datos quedaron registrados. Ya puedes cerrar esta página.');
     } catch (e) { err.innerHTML = `<div class="notice n-bad" style="margin-top:10px">${esc(e.message)}</div>`; b.disabled = false; b.textContent = 'Enviar mis datos'; err.scrollIntoView({ block: 'nearest' }); }
   };
+}
+
+// ───────── Panel de RH: enlace de firma, estados e identidad ─────────
+async function firmaPanel(e) {
+  let st;
+  try { st = await rpc('firma_estado', { p_emp: e.id }); } catch (err) { return toast(err.message, true); }
+  const L = st.link, I = st.identidad || {}, DS = st.documentos || [];
+  const vigente = !!(L && !L.revocado && !L.terminado && L.vence && new Date(L.vence) > Date.now());
+  const estLink = !L ? 'Sin enlace generado' : L.terminado ? 'Firmado y terminado' : L.revocado ? 'Revocado'
+    : (new Date(L.vence) <= Date.now() ? 'Vencido' : (L.enviado ? 'Enviado · vigente' : 'Generado · vigente')) + (L.abierto ? ' · abierto por la persona' : '');
+  const docsHtml = DS.length ? DS.map((d) => `<div class="row small" style="gap:8px"><span class="grow">${esc((DOC_TIPOS[d.tipo] || {}).label || d.tipo)}</span>${d.estado === 'firmado' ? '<span class="badge b-ok">Firmado</span>' : '<span class="badge b-warn">Pendiente</span>'}</div>`).join('') : '<span class="small muted">No hay documentos de contratación generados.</span>';
+  const idBadge = { validada: 'b-ok', aclaracion: 'b-warn', pendiente: 'b-mut' }[I.estado] || 'b-mut';
+  const body = `<div class="fbox"><header>Estado</header><div class="fbody">
+      <div class="row small"><span class="grow">Enlace</span><b>${esc(estLink)}</b></div>
+      ${L && L.vence && vigente ? `<div class="small muted">Vence ${fmtDateTime(L.vence)}</div>` : ''}
+      <div style="margin-top:8px">${docsHtml}</div>
+      <div class="row small" style="margin-top:10px"><span class="grow">Identidad (INE por WhatsApp)</span><span class="badge ${idBadge}">${esc(I.estado || 'pendiente')}</span></div>
+      <div class="small muted" style="margin-top:4px">La INE no se guarda en el sistema; se revisa por WhatsApp y aquí solo se marca el resultado.</div>
+    </div></div>
+    <div id="fp_link"></div>`;
+  const m = modal({ title: 'Enlace de firma · ' + fullName(e), wide: true, body, actions: [{ label: 'Cerrar' }] });
+  const area = $('#fp_link', m.el);
+  const showLink = (url) => {
+    area.innerHTML = `<div class="notice n-info" style="margin-top:10px"><b>Enlace generado</b> — mándalo a la persona (vence en 7 días):
+      <div class="row" style="gap:8px;margin-top:6px"><input class="inp grow" id="fp_url" readonly value="${esc(url)}" style="width:100%"><button type="button" class="btn sm" id="fp_copy">Copiar</button></div>
+      <button type="button" class="btn sm ghost" id="fp_sent" style="margin-top:6px">Marcar como enviado</button></div>`;
+    $('#fp_copy', area).onclick = () => { try { $('#fp_url', area).select(); document.execCommand('copy'); toast('Copiado'); } catch { try { navigator.clipboard.writeText(url); toast('Copiado'); } catch { /* */ } } };
+    $('#fp_sent', area).onclick = async () => { try { await rpc('firma_link_enviado', { p_emp: e.id }); toast('Marcado como enviado'); } catch (err) { toast(err.message, true); } };
+  };
+  const acts = document.createElement('div'); acts.className = 'row'; acts.style.cssText = 'gap:8px;flex-wrap:wrap;margin-top:12px';
+  acts.innerHTML = `<button type="button" class="btn sm primary" id="fp_gen">${vigente ? 'Regenerar enlace' : 'Generar enlace'}</button>${vigente ? '<button type="button" class="btn sm ghost" id="fp_rev">Revocar</button>' : ''}<span class="grow"></span><button type="button" class="btn sm" id="fp_idok">Identidad validada</button><button type="button" class="btn sm ghost" id="fp_idac">Pedir aclaración</button>`;
+  area.after(acts);
+  $('#fp_gen', m.el).onclick = async () => { try { const r = await rpc('firma_link_crear', { p_emp: e.id }); const x = Array.isArray(r) ? r[0] : r; showLink(firmaUrl(x.token)); } catch (err) { toast(err.message, true); } };
+  const rev = $('#fp_rev', m.el); if (rev) rev.onclick = async () => { try { await rpc('firma_link_revocar', { p_emp: e.id }); toast('Enlace revocado'); m.close(); } catch (err) { toast(err.message, true); } };
+  $('#fp_idok', m.el).onclick = async () => { try { await rpc('firma_identidad_set', { p_emp: e.id, p_estado: 'validada', p_nota: 'INE revisada por WhatsApp' }); toast('Identidad validada'); m.close(); } catch (err) { toast(err.message, true); } };
+  $('#fp_idac', m.el).onclick = async () => { try { await rpc('firma_identidad_set', { p_emp: e.id, p_estado: 'aclaracion', p_nota: null }); toast('Marcado para aclaración'); m.close(); } catch (err) { toast(err.message, true); } };
+}
+
+// ───────── Portal público de firma de contratos (#/firma/<token>) ─────────
+const firmaUrl = (tok) => `${location.origin}${location.pathname}#/firma/${tok}`;
+async function sha256Hex(s) {
+  try { const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, '0')).join(''); }
+  catch { let h = 0; for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) >>> 0; } return 'f' + h.toString(16); }
+}
+function signaturePad(canvas) {
+  const ctx = canvas.getContext('2d'); let drawing = false, dirty = false, last = null;
+  const resize = () => { const r = canvas.getBoundingClientRect(); const dpr = window.devicePixelRatio || 1; canvas.width = r.width * dpr; canvas.height = r.height * dpr; ctx.scale(dpr, dpr); ctx.lineWidth = 2.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111'; };
+  resize();
+  const pos = (e) => { const r = canvas.getBoundingClientRect(); const p = e.touches ? e.touches[0] : e; return { x: p.clientX - r.left, y: p.clientY - r.top }; };
+  const start = (e) => { e.preventDefault(); drawing = true; last = pos(e); };
+  const move = (e) => { if (!drawing) return; e.preventDefault(); const p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; dirty = true; };
+  const end = () => { drawing = false; };
+  canvas.addEventListener('pointerdown', start); canvas.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', end);
+  return { isEmpty: () => !dirty, clear: () => { ctx.clearRect(0, 0, canvas.width, canvas.height); dirty = false; }, png: () => dirty ? canvas.toDataURL('image/png') : '' };
+}
+async function renderFirma(tok) {
+  const app = $('#app');
+  const shell = (inner) => `<div class="reg"><div class="card pad reg-card" style="max-width:760px"><div class="row" style="gap:10px;align-items:center;margin-bottom:12px"><div class="logo" style="width:40px;height:40px;font-size:15px">HR</div><div><b>${esc(EMPRESA)}</b><div class="small muted">Firma de documentos de contratación</div></div></div>${inner}</div></div>`;
+  const msgBox = (t, s) => { app.innerHTML = shell(`<h1 style="font-size:20px;margin:6px 0">${t}</h1><p class="muted" style="margin:0">${s}</p>`); };
+  app.innerHTML = shell('<div class="empty">Cargando…</div>');
+  let info;
+  try { info = await http('/rest/v1/rpc/firma_info', { method: 'POST', body: { p_token: tok }, auth: false }); }
+  catch (e) { return msgBox('No se pudo abrir', esc(e.message)); }
+  if (info.estado === 'vencido') return msgBox('El enlace venció', 'Pide a Recursos Humanos que te envíe uno nuevo.');
+  if (info.estado === 'invalido') return msgBox('Enlace no válido', 'Revisa que hayas abierto el enlace completo o pide uno nuevo a RH.');
+  const docs = info.documentos || [];
+  const whats = () => `<div class="notice n-info" style="margin-top:14px"><b>Último paso: identifícate.</b><br>Envía una foto de tu identificación oficial (INE) al WhatsApp de Recursos Humanos que te indicaron. No subas tu INE aquí; RH la revisa y valida tu identidad.</div>`;
+  if (info.estado === 'terminado') return msgBox(`¡Listo, ${esc(info.nombre)}!`, 'Ya firmaste tus documentos. Si aún no has enviado tu INE por WhatsApp a RH, hazlo para completar tu identificación.');
+  const docCard = (d, i) => `<section class="fbox" data-doc="${d.document_id}" style="margin-bottom:14px">
+      <header class="row" style="justify-content:space-between;align-items:center"><span>${esc((DOC_TIPOS[d.tipo] || {}).label || d.tipo)}</span><span class="fw-st">${d.firmado ? '<span class="badge b-ok">Firmado</span>' : '<span class="badge b-warn">Pendiente</span>'}</span></header>
+      <div class="fbody">
+        <button type="button" class="btn sm" data-ver="${i}">Ver documento completo</button>
+        <div class="fw-doc" id="fwdoc${i}" hidden style="max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:8px;background:#fff"></div>
+        ${d.firmado ? '' : `<div class="fw-sign" style="margin-top:10px">
+          <div class="small muted" style="margin-bottom:4px">Dibuja tu firma dentro del recuadro (con el dedo o el mouse):</div>
+          <canvas class="fw-pad" id="fwpad${i}" style="width:100%;height:150px;border:1px dashed var(--line);border-radius:8px;background:#fff;touch-action:none"></canvas>
+          <div class="row" style="gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap"><button type="button" class="btn sm ghost" data-clear="${i}">Borrar</button>
+            <label class="row small" style="gap:6px;align-items:center"><input type="checkbox" class="fw-ok" id="fwok${i}"> Acepto y firmo de conformidad</label>
+            <span class="grow"></span><button type="button" class="btn sm primary" data-firmar="${i}">Firmar este documento</button></div>
+          <div class="fw-err small" id="fwerr${i}"></div></div>`}
+      </div></section>`;
+  app.innerHTML = shell(`
+    <h1 style="font-size:22px;margin:4px 0">Hola, ${esc(info.nombre)}</h1>
+    <p class="muted small" style="margin:8px 0 12px">Revisa cada documento completo y fírmalo. Tu firma queda ligada a ese documento. Cada documento se firma por separado.</p>
+    <div id="fw_docs">${docs.map(docCard).join('')}</div>
+    <div id="fw_fin"></div>`);
+  const rendered = {};
+  const buildDoc = (d) => ({ tipo: d.tipo, folio: d.folio, fecha: d.fecha, snapshot: d.snapshot || {}, datos: d.datos || {}, plantilla: d.plantilla || {} });
+  const pads = {};
+  docs.forEach((d, i) => { if (!d.firmado) { const c = $('#fwpad' + i); if (c) pads[i] = signaturePad(c); } });
+  const showDoc = (i) => {
+    const box = $('#fwdoc' + i); if (!box) return;
+    if (!box.innerHTML) { try { const html = docHtml(buildDoc(docs[i])); rendered[i] = html; box.innerHTML = html; } catch (e) { box.innerHTML = '<div class="notice n-bad">No se pudo mostrar el documento.</div>'; } }
+    box.hidden = !box.hidden;
+  };
+  const refreshFin = () => {
+    const pend = docs.filter((d) => !d.firmado).length;
+    $('#fw_fin').innerHTML = pend === 0
+      ? `<button class="btn primary" id="fw_final" style="width:100%;min-height:46px">Terminar y enviar</button>`
+      : `<div class="small muted" style="text-align:center">Te faltan ${pend} documento(s) por firmar.</div>`;
+    const fb = $('#fw_final'); if (fb) fb.onclick = async () => {
+      fb.disabled = true;
+      try { await http('/rest/v1/rpc/firma_finalizar', { method: 'POST', auth: false, body: { p_token: tok } }); app.innerHTML = shell(`<h1 style="font-size:20px;margin:6px 0">¡Gracias, ${esc(info.nombre)}!</h1><p class="muted">Tus documentos quedaron firmados.</p>${whats()}`); }
+      catch (e) { fb.disabled = false; toast(e.message, true); }
+    };
+  };
+  refreshFin();
+  app.querySelectorAll('[data-ver]').forEach((b) => b.onclick = () => showDoc(+b.dataset.ver));
+  app.querySelectorAll('[data-clear]').forEach((b) => b.onclick = () => { const p = pads[+b.dataset.clear]; if (p) p.clear(); });
+  app.querySelectorAll('[data-firmar]').forEach((b) => b.onclick = async () => {
+    const i = +b.dataset.firmar; const err = $('#fwerr' + i); err.innerHTML = '';
+    const pad = pads[i];
+    if (!$('#fwok' + i).checked) { err.innerHTML = '<div class="notice n-bad small" style="margin-top:6px">Marca la casilla de aceptación.</div>'; return; }
+    if (!pad || pad.isEmpty()) { err.innerHTML = '<div class="notice n-bad small" style="margin-top:6px">Dibuja tu firma antes de continuar.</div>'; return; }
+    b.disabled = true; b.textContent = 'Firmando…';
+    try {
+      const html = rendered[i] || docHtml(buildDoc(docs[i])); const hash = await sha256Hex(html);
+      await http('/rest/v1/rpc/firma_firmar', { method: 'POST', auth: false, body: { p_token: tok, p_document: docs[i].document_id, p_firma_png: pad.png(), p_hash: hash, p_consent: 'Acepto y firmo de conformidad el documento mostrado', p_ua: navigator.userAgent.slice(0, 180) } });
+      docs[i].firmado = true;
+      const sec = app.querySelector(`[data-doc="${docs[i].document_id}"]`);
+      if (sec) { $('.fw-st', sec).innerHTML = '<span class="badge b-ok">Firmado</span>'; const fw = $('.fw-sign', sec); if (fw) fw.remove(); }
+      refreshFin();
+    } catch (e) { b.disabled = false; b.textContent = 'Firmar este documento'; err.innerHTML = `<div class="notice n-bad small" style="margin-top:6px">${esc(e.message)}</div>`; }
+  });
 }
 
 boot();
