@@ -2,7 +2,7 @@
    Los permisos reales están en la base de datos (RLS). Aquí solo se decide qué botones mostrar. */
 'use strict';
 const CFG = window.HR_CONFIG || {};
-const APP_VERSION = '0.43.0';
+const APP_VERSION = '0.44.0';
 const TZ = 'America/Mexico_City';
 
 // ───────────────────────── utilidades ─────────────────────────
@@ -1833,14 +1833,18 @@ const EXP_TABS = {
     }).join(''), `<span class="badge ${EXP_DOCS.every(([t]) => ult(t).length) ? 'b-ok' : 'b-warn'}" style="margin-left:auto">${EXP_DOCS.filter(([t]) => ult(t).length).length}/${EXP_DOCS.length}</span>`)
       + card('Contratación', contr.map(([t, d]) => `<div class="ex-file"><span class="ex-ic${d && d.estado === 'firmado' ? ' ok' : ''}">${d && d.estado === 'firmado' ? '✓' : '○'}</span><span class="grow"><b>${esc(DOC_TIPOS[t].label)}</b><br><span class="small muted">${d ? esc(docFolio(d)) + ' · ' + fmtDate(d.fecha) : 'No generado'}</span></span>
           ${d ? docBadge(d.estado) : ''}${d && d.firmado_path ? `<button type="button" class="btn sm" data-verdoc="${esc(d.firmado_path)}">Ver firmado</button>` : ''}${d ? `<button type="button" class="btn sm ghost" data-opendoc="${d.id}">Abrir</button>` : ''}</div>`).join(''))
-      + (contr.some(([, d]) => d) ? card('Firma de contrato', '<div class="small muted">Genera un enlace para que la persona firme su contrato, reglamento y acuerdo de confidencialidad desde su teléfono, y valida su identidad.</div>', `<button type="button" class="btn sm primary" data-firmapanel="${e.id}" style="margin-left:auto">Enlace de firma…</button>`) : '')
+      + (['activo', 'alta_pendiente'].includes(e.status) ? card('Firma de contrato',
+          `<div class="small muted">${contr.some(([, d]) => d)
+            ? 'Genera el enlace para que la persona firme desde su teléfono y valida su identidad.'
+            : 'Genera el contrato, el reglamento y el acuerdo de confidencialidad, y crea el enlace de firma en un solo paso.'}</div>`,
+          `<button type="button" class="btn sm primary" data-firmacontrato="${e.id}" style="margin-left:auto">${contr.some(([, d]) => d) ? 'Enlace de firma…' : 'Generar contrato y enviar a firma'}</button>`) : '')
       + card(`Otros archivos (${otros.length})`, (otros.length ? otros.map((a) => fila(a, a.nombre)).join('') : '<span class="small muted">Constancias, incapacidades, recetas, cartas, etc.</span>'),
         edit ? '<button type="button" class="btn sm primary" id="ex_otro" style="margin-left:auto">+ Agregar archivo</button>' : '')
       + (edit ? '<div class="small muted">Fotos o PDF de hasta 10 MB. Solo RH de su área, Dirección y Daniel ven este expediente.</div>' : '');
     $$('[data-ver]', body).forEach((b) => b.onclick = (ev) => { ev.preventDefault(); const a = archivos.find((x) => x.id === b.dataset.ver); if (a) verArchivo(a.path); });
     $$('[data-verdoc]', body).forEach((b) => b.onclick = () => verArchivo(b.dataset.verdoc, 'documentos'));
     $$('[data-opendoc]', body).forEach((b) => b.onclick = () => openDocument(b.dataset.opendoc));
-    $$('[data-firmapanel]', body).forEach((b) => b.onclick = () => firmaPanel(e));
+    $$('[data-firmacontrato]', body).forEach((b) => b.onclick = () => firmaContrato(e));
     $$('[data-quitar]', body).forEach((b) => b.onclick = () => quitarArchivo(archivos.find((x) => x.id === b.dataset.quitar), e));
     $$('[data-subir]', body).forEach((b) => b.onclick = () => pickFile('image/*,application/pdf', (f) => subirArchivo(e, b.dataset.subir, f)));
     const o = $('#ex_otro', body); if (o) o.onclick = () => {
@@ -4647,10 +4651,11 @@ async function pickEmployee({ tipo, emps, employee, caseRow }) {
 }
 
 // Formulario del documento (nuevo o edición mientras no esté firmado)
-async function docForm({ tipo, employee, caseRow, existing }) {
+async function docForm({ tipo, employee, caseRow, existing, bundle }) {
   if (DOC_FIN.includes(tipo)) return finDocForm({ tipo, employee, existing });
   const e = employee;
   let d0 = existing ? { ...existing.datos } : {};
+  if (tipo === 'contrato' && !existing && e.fecha_ingreso && !d0.fecha_ingreso) d0.fecha_ingreso = e.fecha_ingreso;
   if (!existing && caseRow) {   // sugerencias desde el caso
     d0 = { fecha_hechos: caseRow.fecha_hechos, hechos: caseRow.hechos, evidencia: caseRow.evidencia, fechas_hechos: fmtDate(caseRow.fecha_hechos) + (caseRow.fecha_fin ? ' al ' + fmtDate(caseRow.fecha_fin) : '') };
   }
@@ -4705,7 +4710,7 @@ async function docForm({ tipo, employee, caseRow, existing }) {
   const m = modal({ title: (existing ? 'Editar · ' : '') + DOC_TIPOS[tipo].label, wide: true,
     body: intro + avisoConst + fieldsHtml([fechaF]) + fieldsHtml(fields) + extraHtml,
     actions: [{ label: 'Cancelar' }, { label: 'Vista previa', run: async ({ el }) => { const doc = build(el); printDoc(doc, await docExtra(doc)); return false; } },
-      { label: existing ? 'Guardar cambios' : 'Generar documento', cls: 'primary', run: async ({ el }) => {
+      { label: existing ? 'Guardar cambios' : (bundle ? 'Generar contrato y enviar a firma' : 'Generar documento'), cls: 'primary', run: async ({ el }) => {
         const doc = build(el);
         if (tipo === 'convenio' && !(Number(doc.datos.monto) > 0)) throw new Error('La cantidad total debe ser mayor a 0.');
         if (tipo === 'constancia_laboral' && doc.datos.incluir_sueldo === 'si' && !(Number(doc.datos.sueldo_mensual) > 0)) throw new Error('Escribe el sueldo mensual o elige no incluirlo.');
@@ -4715,6 +4720,17 @@ async function docForm({ tipo, employee, caseRow, existing }) {
         let id;
         if (existing) { await mustUpdate(db('documents').eq('id', existing.id).update(row), 'el documento'); id = existing.id; }
         else { const [r] = await db('documents').insert([{ ...row, plantilla: blockDefaults(tipo), tipo, employee_id: e.id, case_id: caseRow ? caseRow.id : null }]); id = Array.isArray(r) ? r[0].id : r.id; }
+        if (bundle && !existing) {
+          // Genera también reglamento y acuerdo de confidencialidad (los que falten), con su plantilla estándar
+          const have = (await db('documents').select('tipo').eq('employee_id', e.id).in('tipo', DOC_CONTRATA).neq('estado', 'anulado').get().catch(() => [])).map((x) => x.tipo);
+          for (const t of ['reglamento', 'confidencialidad']) {
+            if (!have.includes(t)) await db('documents').insert([{ fecha: doc.fecha, datos: {}, snapshot: empSnapshot(e), plantilla: blockDefaults(t), tipo: t, employee_id: e.id }]);
+          }
+          toast('Contrato, reglamento y confidencialidad generados');
+          if (S.view === 'documentos') viewDocumentos().catch(() => {});
+          setTimeout(() => firmaPanel(e, { gen: true }), 0);
+          return;
+        }
         toast(existing ? 'Documento actualizado' : 'Documento generado');
         if (S.view === 'documentos') viewDocumentos().catch(() => {});
         setTimeout(() => openDocument(id), 0);
@@ -7472,7 +7488,16 @@ async function renderRegistro(tok) {
 }
 
 // ───────── Panel de RH: enlace de firma, estados e identidad ─────────
-async function firmaPanel(e) {
+// Botón del expediente: si ya existen los 3 documentos de contratación, solo abre el enlace;
+// si no, genera contrato (con carátula) + reglamento + confidencialidad y crea el enlace en un paso.
+async function firmaContrato(e) {
+  const docs = await db('documents').select('tipo').eq('employee_id', e.id).in('tipo', DOC_CONTRATA).neq('estado', 'anulado').get().catch(() => []);
+  const tiene = new Set(docs.map((d) => d.tipo));
+  if (DOC_CONTRATA.every((t) => tiene.has(t))) return firmaPanel(e);
+  return docForm({ tipo: 'contrato', employee: e, bundle: true });
+}
+
+async function firmaPanel(e, opts = {}) {
   let st;
   try { st = await rpc('firma_estado', { p_emp: e.id }); } catch (err) { return toast(err.message, true); }
   const L = st.link, I = st.identidad || {}, DS = st.documentos || [];
@@ -7505,6 +7530,7 @@ async function firmaPanel(e) {
   const rev = $('#fp_rev', m.el); if (rev) rev.onclick = async () => { try { await rpc('firma_link_revocar', { p_emp: e.id }); toast('Enlace revocado'); m.close(); } catch (err) { toast(err.message, true); } };
   $('#fp_idok', m.el).onclick = async () => { try { await rpc('firma_identidad_set', { p_emp: e.id, p_estado: 'validada', p_nota: 'INE revisada por WhatsApp' }); toast('Identidad validada'); m.close(); } catch (err) { toast(err.message, true); } };
   $('#fp_idac', m.el).onclick = async () => { try { await rpc('firma_identidad_set', { p_emp: e.id, p_estado: 'aclaracion', p_nota: null }); toast('Marcado para aclaración'); m.close(); } catch (err) { toast(err.message, true); } };
+  if (opts.gen) $('#fp_gen', m.el).click();   // recién generado el contrato: crea y muestra el enlace de una vez
 }
 
 // ───────── Portal público de firma de contratos (#/firma/<token>) ─────────
